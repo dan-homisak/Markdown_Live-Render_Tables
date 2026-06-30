@@ -1,0 +1,38 @@
+{
+  "name": "markdown-live-render-tables",
+  "displayName": "Markdown Live Render Tables",
+  "description": "A VS Code extension for live-rendering markdown tables.",
+  "version": "0.0.1",
+  "publisher": "dan-homisak",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "markdownLiveRenderTables.helloWorld",
+        "title": "Markdown Live Render Tables: Hello World"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package --allow-missing-repository --out markdown-live-render-tables-latest.vsix",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./dist/test/smoke.test.js",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.8",
+    "@types/vscode": "^1.101.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.8.3"
+  }
+}

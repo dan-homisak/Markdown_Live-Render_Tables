@@ -1,0 +1,74 @@
+#!/bin/zsh
+set -euo pipefail
+setopt NULL_GLOB
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_DIR"
+
+pause_if_clicked() {
+  if [[ -t 0 ]]; then
+    echo
+    echo "Press any key to close this window."
+    read -k 1 -s || true
+  fi
+}
+
+trap pause_if_clicked EXIT
+
+log() {
+  echo
+  echo "==> $1"
+}
+
+find_code_cli() {
+  if command -v code >/dev/null 2>&1; then
+    command -v code
+    return 0
+  fi
+
+  local stable="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+  if [[ -x "$stable" ]]; then
+    echo "$stable"
+    return 0
+  fi
+
+  local insiders="/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code"
+  if [[ -x "$insiders" ]]; then
+    echo "$insiders"
+    return 0
+  fi
+
+  return 1
+}
+
+CODE_CLI="$(find_code_cli)" || {
+  echo "Could not find the VS Code CLI."
+  echo "Install VS Code or run 'Shell Command: Install code command in PATH' from VS Code."
+  exit 1
+}
+
+VSIX_PATH="$PROJECT_DIR/markdown-live-render-tables-latest.vsix"
+
+log "Using VS Code CLI"
+"$CODE_CLI" --version
+
+log "Cleaning generated build outputs"
+rm -rf "$PROJECT_DIR/dist"
+rm -f "$PROJECT_DIR"/*.vsix
+
+log "Installing dependencies from package-lock.json"
+npm ci
+
+log "Building and packaging extension"
+npm run package
+
+if [[ ! -f "$VSIX_PATH" ]]; then
+  echo "Expected package was not created: $VSIX_PATH"
+  exit 1
+fi
+
+log "Installing latest VSIX into VS Code"
+"$CODE_CLI" --install-extension "$VSIX_PATH" --force
+
+log "Done"
+echo "Installed: $VSIX_PATH"
