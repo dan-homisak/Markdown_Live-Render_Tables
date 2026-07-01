@@ -125,14 +125,16 @@ assert.ok(
   packageJson.contributes?.menus?.["editor/title"]?.some(
     (item) =>
       item.command === "markdownLiveRenderTables.openLiveEditor" &&
-      item.when?.includes("resourceLangId == markdown"),
+      item.when?.includes("resourceExtname == .md") &&
+      item.when?.includes("resourceExtname == .markdown"),
   ),
 );
 assert.ok(
   packageJson.contributes?.menus?.["editor/title"]?.some(
     (item) =>
       item.command === "markdownLiveRenderTables.openSourceEditor" &&
-      item.when?.includes("activeCustomEditorId == markdownLiveRenderTables.liveEditor"),
+      item.when?.includes("resourceExtname == .md") &&
+      item.when?.includes("resourceExtname == .markdown"),
   ),
 );
 

@@ -23482,6 +23482,7 @@
             backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
           },
           ".cm-scroller": {
+            overflow: "auto !important",
             fontFamily: "var(--vscode-editor-font-family, monospace)",
             fontSize: "var(--vscode-editor-font-size, 13px)",
             lineHeight: "1.5"
@@ -23525,12 +23526,23 @@
     const initialDocument = readInitialDocument();
     app.replaceChildren();
     app.className = "mm-live-v4-shell";
+    const toolbar = document.createElement("div");
+    toolbar.className = "mm-live-v4-toolbar";
+    const sourceButton = document.createElement("button");
+    sourceButton.type = "button";
+    sourceButton.className = "mm-live-v4-toolbar-button";
+    sourceButton.textContent = "Source";
+    sourceButton.title = "Open normal VS Code markdown source";
+    sourceButton.addEventListener("click", () => {
+      vscode.postMessage({ type: "openSource" });
+    });
     statusElement = document.createElement("div");
     statusElement.className = "mm-live-v4-status";
     statusElement.textContent = "Loading markdown...";
+    toolbar.append(sourceButton, statusElement);
     const editorMount = document.createElement("div");
     editorMount.className = "mm-live-v4-editor-mount";
-    app.append(statusElement, editorMount);
+    app.append(toolbar, editorMount);
     view = new EditorView({
       parent: editorMount,
       state: EditorState.create({

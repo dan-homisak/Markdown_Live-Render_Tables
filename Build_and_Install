@@ -67,6 +67,9 @@ if [[ ! -f "$VSIX_PATH" ]]; then
   exit 1
 fi
 
+log "Uninstalling previously installed extension, if present"
+"$CODE_CLI" --uninstall-extension dan-homisak.markdown-live-render-tables || true
+
 log "Installing latest VSIX into VS Code"
 "$CODE_CLI" --install-extension "$VSIX_PATH" --force
 

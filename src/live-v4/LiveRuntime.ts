@@ -34,6 +34,7 @@ export function createLiveRuntime(): LiveRuntime {
           backgroundColor: "var(--vscode-editor-background, #1e1e1e)",
         },
         ".cm-scroller": {
+          overflow: "auto !important",
           fontFamily: "var(--vscode-editor-font-family, monospace)",
           fontSize: "var(--vscode-editor-font-size, 13px)",
           lineHeight: "1.5",

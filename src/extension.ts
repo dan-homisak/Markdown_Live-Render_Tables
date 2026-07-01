@@ -134,6 +134,11 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
 
+        if (isOpenSourceMessage(message)) {
+          void openSourceEditor(document.uri, this);
+          return;
+        }
+
         if (
           isChangeMessage(message) &&
           message.text !== document.getText() &&
@@ -191,25 +196,19 @@ async function openSourceEditor(
   uri: vscode.Uri | undefined,
   provider: MarkdownLiveEditorProvider,
 ): Promise<void> {
-  const targetUri = uri ?? provider.getActiveDocumentUri();
+  const targetUri =
+    uri ?? provider.getActiveDocumentUri() ?? vscode.window.activeTextEditor?.document.uri;
   if (!targetUri) {
     vscode.window.showWarningMessage("Open a live markdown editor before returning to source.");
     return;
   }
 
   const viewColumn = provider.getViewColumn(targetUri) ?? vscode.ViewColumn.Active;
-  try {
-    await vscode.commands.executeCommand("vscode.openWith", targetUri, "default", {
-      viewColumn,
-      preserveFocus: false,
-    });
-  } catch {
-    await vscode.window.showTextDocument(targetUri, {
-      viewColumn,
-      preview: false,
-      preserveFocus: false,
-    });
-  }
+  await vscode.window.showTextDocument(targetUri, {
+    viewColumn,
+    preview: false,
+    preserveFocus: false,
+  });
 }
 
 async function applyFullDocumentEdit(
@@ -245,6 +244,10 @@ interface ChangeMessage {
   baseRevision: number;
 }
 
+interface OpenSourceMessage {
+  type: "openSource";
+}
+
 interface HostSetDocumentMessage {
   type: "setDocument";
   text: string;
@@ -262,6 +265,10 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
     typeof message.text === "string" &&
     typeof message.baseRevision === "number"
   );
+}
+
+function isOpenSourceMessage(message: unknown): message is OpenSourceMessage {
+  return isMessageRecord(message) && message.type === "openSource";
 }
 
 function isMessageRecord(message: unknown): message is Record<string, unknown> {
@@ -304,18 +311,50 @@ function getEditorHtml(
     .mm-live-v4-shell {
       display: flex;
       flex-direction: column;
+      height: 100%;
       min-height: 0;
+      overflow: hidden;
+    }
+
+    .mm-live-v4-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex: 0 0 auto;
+      min-height: 28px;
+      padding: 0.2rem 0.5rem;
+      border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+      background: var(--vscode-editorWidget-background, #252526);
+    }
+
+    .mm-live-v4-toolbar-button {
+      flex: 0 0 auto;
+      height: 22px;
+      padding: 0 0.55rem;
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 2px;
+      color: var(--vscode-button-foreground, #ffffff);
+      background: var(--vscode-button-background, #0e639c);
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 12px;
+      line-height: 20px;
+      cursor: pointer;
+    }
+
+    .mm-live-v4-toolbar-button:hover {
+      background: var(--vscode-button-hoverBackground, #1177bb);
     }
 
     .mm-live-v4-status {
-      flex: 0 0 auto;
-      padding: 0.25rem 0.75rem;
-      border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+      flex: 1 1 auto;
+      min-width: 0;
       color: var(--vscode-descriptionForeground, #cccccc);
-      background: var(--vscode-editorWidget-background, #252526);
       font-family: var(--vscode-font-family, sans-serif);
       font-size: 12px;
       line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
       user-select: text;
     }
 
@@ -327,13 +366,15 @@ function getEditorHtml(
 
     .cm-editor {
       height: 100%;
+      min-height: 0;
       background: var(--vscode-editor-background, #1e1e1e);
       color: var(--vscode-editor-foreground, #d4d4d4);
     }
 
     .cm-scroller {
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
+      overflow: auto !important;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 13px);
       line-height: 1.5;
     }
 
@@ -344,10 +385,10 @@ function getEditorHtml(
     .mm-live-v4-table-widget {
       display: block;
       max-width: 100%;
-      margin: 0.2rem 0;
+      margin: 0.35rem 0;
       overflow-x: auto;
       overflow-y: hidden;
-      color: var(--vscode-editor-foreground);
+      color: var(--vscode-editor-foreground, #d4d4d4);
     }
 
     .mm-live-v4-table {
@@ -355,10 +396,10 @@ function getEditorHtml(
       max-width: 100%;
       border-collapse: collapse;
       table-layout: auto;
-      color: var(--vscode-editor-foreground);
-      background: var(--vscode-editor-background);
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
+      color: var(--vscode-editor-foreground, #d4d4d4);
+      background: var(--vscode-editor-background, #1e1e1e);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 13px);
     }
 
     .mm-live-v4-table th,
@@ -366,7 +407,8 @@ function getEditorHtml(
       min-width: 7rem;
       max-width: 24rem;
       padding: 0.25rem 0.45rem;
-      border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+      border: 1px solid var(--vscode-editorWidget-border, #6a6a6a);
+      box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.45);
       vertical-align: top;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -374,7 +416,7 @@ function getEditorHtml(
     }
 
     .mm-live-v4-table th {
-      background: var(--vscode-editorWidget-background);
+      background: var(--vscode-editorWidget-background, #252526);
       font-weight: 600;
     }
 
