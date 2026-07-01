@@ -1,7 +1,7 @@
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 
-const CONFIG_SECTION = 'markdownLiveRenderTables';
-const NBSP = '\u00A0';
+const CONFIG_SECTION = "markdownLiveRenderTables";
+const NBSP = "\u00A0";
 
 let enabled = true;
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -12,7 +12,9 @@ let headerDecoration: vscode.TextEditorDecorationType;
 let paddingDecoration: vscode.TextEditorDecorationType;
 
 export function activate(context: vscode.ExtensionContext): void {
-  enabled = vscode.workspace.getConfiguration(CONFIG_SECTION).get<boolean>('enabled', true);
+  enabled = vscode.workspace
+    .getConfiguration(CONFIG_SECTION)
+    .get<boolean>("enabled", true);
   createDecorationTypes();
 
   context.subscriptions.push(
@@ -20,24 +22,30 @@ export function activate(context: vscode.ExtensionContext): void {
     delimiterDecoration,
     headerDecoration,
     paddingDecoration,
-    vscode.commands.registerCommand(`${CONFIG_SECTION}.toggle`, () => toggleEnabled()),
-    vscode.window.onDidChangeActiveTextEditor(editor => {
+    vscode.commands.registerCommand(`${CONFIG_SECTION}.toggle`, () =>
+      toggleEnabled(),
+    ),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (editor) {
         updateDecorations(editor);
       }
     }),
-    vscode.window.onDidChangeVisibleTextEditors(() => updateAllVisibleEditors()),
-    vscode.workspace.onDidChangeTextDocument(event => {
-      if (event.document.languageId === 'markdown') {
+    vscode.window.onDidChangeVisibleTextEditors(() =>
+      updateAllVisibleEditors(),
+    ),
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document.languageId === "markdown") {
         scheduleUpdate();
       }
     }),
-    vscode.workspace.onDidChangeConfiguration(event => {
+    vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration(CONFIG_SECTION)) {
-        enabled = vscode.workspace.getConfiguration(CONFIG_SECTION).get<boolean>('enabled', true);
+        enabled = vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<boolean>("enabled", true);
         updateAllVisibleEditors();
       }
-    })
+    }),
   );
 
   updateAllVisibleEditors();
@@ -54,21 +62,25 @@ async function toggleEnabled(): Promise<void> {
   enabled = !enabled;
   await vscode.workspace
     .getConfiguration(CONFIG_SECTION)
-    .update('enabled', enabled, vscode.ConfigurationTarget.Global);
+    .update("enabled", enabled, vscode.ConfigurationTarget.Global);
   updateAllVisibleEditors();
   vscode.window.showInformationMessage(
-    `Markdown table rendering ${enabled ? 'enabled' : 'disabled'}.`
+    `Markdown table rendering ${enabled ? "enabled" : "disabled"}.`,
   );
 }
 
 function createDecorationTypes(): void {
-  const faint = new vscode.ThemeColor('editorWhitespace.foreground');
-  pipeDecoration = vscode.window.createTextEditorDecorationType({ color: faint });
+  const faint = new vscode.ThemeColor("editorWhitespace.foreground");
+  pipeDecoration = vscode.window.createTextEditorDecorationType({
+    color: faint,
+  });
   delimiterDecoration = vscode.window.createTextEditorDecorationType({
     color: faint,
-    opacity: '0.5'
+    opacity: "0.5",
   });
-  headerDecoration = vscode.window.createTextEditorDecorationType({ fontWeight: 'bold' });
+  headerDecoration = vscode.window.createTextEditorDecorationType({
+    fontWeight: "bold",
+  });
   paddingDecoration = vscode.window.createTextEditorDecorationType({});
 }
 
@@ -93,7 +105,7 @@ function clearDecorations(editor: vscode.TextEditor): void {
 }
 
 function updateDecorations(editor: vscode.TextEditor): void {
-  if (editor.document.languageId !== 'markdown' || !enabled) {
+  if (editor.document.languageId !== "markdown" || !enabled) {
     clearDecorations(editor);
     return;
   }
@@ -111,8 +123,13 @@ function updateDecorations(editor: vscode.TextEditor): void {
       const padCount = columnWidths[c] - cell.width;
       if (padCount > 0) {
         paddingOptions.push({
-          range: new vscode.Range(row.line, cell.closingPipe, row.line, cell.closingPipe),
-          renderOptions: { after: { contentText: NBSP.repeat(padCount) } }
+          range: new vscode.Range(
+            row.line,
+            cell.closingPipe,
+            row.line,
+            cell.closingPipe,
+          ),
+          renderOptions: { after: { contentText: NBSP.repeat(padCount) } },
         });
       }
     }
@@ -122,11 +139,18 @@ function updateDecorations(editor: vscode.TextEditor): void {
     // Header row: align, dim its pipes, and bold the cell contents.
     alignRow(table.header, table.columnWidths);
     for (const pipe of table.header.pipes) {
-      pipeRanges.push(new vscode.Range(table.header.line, pipe, table.header.line, pipe + 1));
+      pipeRanges.push(
+        new vscode.Range(table.header.line, pipe, table.header.line, pipe + 1),
+      );
     }
     for (const cell of table.header.cells) {
       headerRanges.push(
-        new vscode.Range(table.header.line, cell.start, table.header.line, cell.end)
+        new vscode.Range(
+          table.header.line,
+          cell.start,
+          table.header.line,
+          cell.end,
+        ),
       );
     }
 
@@ -136,7 +160,12 @@ function updateDecorations(editor: vscode.TextEditor): void {
       const first = table.delimiter.pipes[0];
       const last = table.delimiter.pipes[table.delimiter.pipes.length - 1];
       delimiterRanges.push(
-        new vscode.Range(table.delimiter.line, first, table.delimiter.line, last + 1)
+        new vscode.Range(
+          table.delimiter.line,
+          first,
+          table.delimiter.line,
+          last + 1,
+        ),
       );
     }
 
@@ -221,7 +250,11 @@ function parseTables(document: vscode.TextDocument): Table[] {
     let j = i + 2;
     while (j < lineCount) {
       const bodyText = document.lineAt(j).text;
-      if (FENCE_RE.test(bodyText) || bodyText.trim() === '' || !hasUnescapedPipe(bodyText)) {
+      if (
+        FENCE_RE.test(bodyText) ||
+        bodyText.trim() === "" ||
+        !hasUnescapedPipe(bodyText)
+      ) {
         break;
       }
       const row = parseRow(bodyText, j);
@@ -233,7 +266,7 @@ function parseTables(document: vscode.TextDocument): Table[] {
     }
 
     const allRows = [header, delimiter, ...body];
-    const maxCols = Math.max(...allRows.map(row => row.cells.length));
+    const maxCols = Math.max(...allRows.map((row) => row.cells.length));
     const columnWidths: number[] = [];
     for (let c = 0; c < maxCols; c++) {
       let width = 0;
@@ -255,7 +288,7 @@ function parseTables(document: vscode.TextDocument): Table[] {
 function parseRow(text: string, line: number): TableRow {
   const pipes: number[] = [];
   for (let k = 0; k < text.length; k++) {
-    if (text[k] === '|' && text[k - 1] !== '\\') {
+    if (text[k] === "|" && text[k - 1] !== "\\") {
       pipes.push(k);
     }
   }
@@ -270,7 +303,7 @@ function parseRow(text: string, line: number): TableRow {
       start,
       end,
       closingPipe: end,
-      width: displayWidth(cellText)
+      width: displayWidth(cellText),
     });
   }
 
@@ -279,7 +312,7 @@ function parseRow(text: string, line: number): TableRow {
 
 function hasUnescapedPipe(text: string): boolean {
   for (let k = 0; k < text.length; k++) {
-    if (text[k] === '|' && text[k - 1] !== '\\') {
+    if (text[k] === "|" && text[k - 1] !== "\\") {
       return true;
     }
   }
