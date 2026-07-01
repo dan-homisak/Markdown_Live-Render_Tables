@@ -44,6 +44,7 @@ let applyingFromHost = false;
 let debugEnabled = window.__MLRT_DEBUG__ === true;
 let hostRevision = 0;
 let view: EditorView;
+let sourceButton: HTMLButtonElement;
 let statusElement: HTMLElement;
 
 try {
@@ -53,14 +54,15 @@ try {
   app.className = "mm-live-v4-shell";
   const toolbar = document.createElement("div");
   toolbar.className = "mm-live-v4-toolbar";
-  const sourceButton = document.createElement("button");
+  sourceButton = document.createElement("button");
   sourceButton.className = "mm-live-v4-source-button";
   sourceButton.type = "button";
   sourceButton.textContent = "Source";
-  sourceButton.title = "Return to source";
+  sourceButton.title = "Reopen in the VS Code source editor";
   sourceButton.addEventListener("click", () => {
     vscode.postMessage({ type: "openSource" });
   });
+  sourceButton.setAttribute("aria-label", "Reopen in the VS Code source editor");
   statusElement = document.createElement("div");
   statusElement.className = "mm-live-v4-status";
   statusElement.textContent = "Loading markdown...";
@@ -136,7 +138,7 @@ function updateStatus(text: string, source: string): void {
   if (!statusElement) {
     return;
   }
-  statusElement.textContent = `Markdown Live Editor: ${text.length} characters loaded from ${source}`;
+  statusElement.textContent = `Rendered: ${text.length} characters loaded from ${source}`;
 }
 
 function readInitialDocument(): string {

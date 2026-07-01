@@ -24115,6 +24115,7 @@
   var debugEnabled = window.__MLRT_DEBUG__ === true;
   var hostRevision = 0;
   var view;
+  var sourceButton;
   var statusElement;
   try {
     const runtime = createLiveRuntime();
@@ -24123,14 +24124,15 @@
     app.className = "mm-live-v4-shell";
     const toolbar = document.createElement("div");
     toolbar.className = "mm-live-v4-toolbar";
-    const sourceButton = document.createElement("button");
+    sourceButton = document.createElement("button");
     sourceButton.className = "mm-live-v4-source-button";
     sourceButton.type = "button";
     sourceButton.textContent = "Source";
-    sourceButton.title = "Return to source";
+    sourceButton.title = "Reopen in the VS Code source editor";
     sourceButton.addEventListener("click", () => {
       vscode.postMessage({ type: "openSource" });
     });
+    sourceButton.setAttribute("aria-label", "Reopen in the VS Code source editor");
     statusElement = document.createElement("div");
     statusElement.className = "mm-live-v4-status";
     statusElement.textContent = "Loading markdown...";
@@ -24200,7 +24202,7 @@
     if (!statusElement) {
       return;
     }
-    statusElement.textContent = `Markdown Live Editor: ${text.length} characters loaded from ${source}`;
+    statusElement.textContent = `Rendered: ${text.length} characters loaded from ${source}`;
   }
   function readInitialDocument() {
     return typeof window.__MLRT_INITIAL_DOCUMENT__ === "string" ? window.__MLRT_INITIAL_DOCUMENT__ : "";

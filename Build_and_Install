@@ -105,6 +105,10 @@ if ! grep -q "ignored a change without source ranges" "$INSTALLED_DIR/dist/exten
   echo "Installed extension host does not contain the expected full-document fallback guard."
   exit 1
 fi
+if ! grep -q "reopenActiveEditorWith" "$INSTALLED_DIR/dist/extension.js"; then
+  echo "Installed extension host does not contain the expected active editor reopen marker."
+  exit 1
+fi
 echo "Verified installed payload markers."
 
 log "Reloading VS Code window"

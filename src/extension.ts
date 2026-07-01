@@ -3,6 +3,8 @@ import * as vscode from "vscode";
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 const LEGACY_TABLE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.tableEditor";
 const DEBUG_SETTING = "debug";
+const REOPEN_ACTIVE_EDITOR_WITH_COMMAND = "reopenActiveEditorWith";
+const DEFAULT_EDITOR_ID = "default";
 
 let debugOutputChannel: vscode.OutputChannel | undefined;
 
@@ -265,16 +267,15 @@ async function openLiveEditor(
     provider.getViewColumn(targetUri) ??
     vscode.ViewColumn.Active;
 
-  await vscode.commands.executeCommand(
-    "vscode.openWith",
-    targetUri,
-    LIVE_EDITOR_VIEW_TYPE,
-    {
-      viewColumn,
-      preserveFocus: false,
-    },
-  );
-  await closeTabIfReplaced(tabToClose, targetUri);
+  if (tabToClose && tabMatchesUri(tabToClose, targetUri)) {
+    await reopenActiveEditorWith(LIVE_EDITOR_VIEW_TYPE);
+    return;
+  }
+
+  await vscode.commands.executeCommand("vscode.openWith", targetUri, LIVE_EDITOR_VIEW_TYPE, {
+    viewColumn,
+    preserveFocus: false,
+  });
 }
 
 async function openSourceEditor(
@@ -289,38 +290,16 @@ async function openSourceEditor(
     return;
   }
 
-  const viewColumn = provider.getViewColumn(targetUri) ?? vscode.ViewColumn.Active;
+  if (tabToClose && tabMatchesUri(tabToClose, targetUri)) {
+    await reopenActiveEditorWith(DEFAULT_EDITOR_ID);
+    return;
+  }
+
   await vscode.window.showTextDocument(targetUri, {
-    viewColumn,
+    viewColumn: provider.getViewColumn(targetUri) ?? vscode.ViewColumn.Active,
     preview: false,
     preserveFocus: false,
   });
-  await closeTabIfReplaced(tabToClose, targetUri);
-}
-
-async function closeTabIfReplaced(
-  tab: vscode.Tab | undefined,
-  uri: vscode.Uri,
-): Promise<void> {
-  if (!tab || !tabMatchesUri(tab, uri)) {
-    return;
-  }
-
-  if (vscode.window.tabGroups.activeTabGroup.activeTab === tab) {
-    return;
-  }
-
-  const document = vscode.workspace.textDocuments.find(
-    (candidate) => candidate.uri.toString() === uri.toString(),
-  );
-  if (document?.isDirty) {
-    logDebug(
-      `leaving renderer tab open for dirty document ${uri.toString()} to avoid save prompt`,
-    );
-    return;
-  }
-
-  await vscode.window.tabGroups.close(tab, true);
 }
 
 function tabMatchesUri(tab: vscode.Tab, uri: vscode.Uri): boolean {
@@ -458,6 +437,10 @@ function logDebug(message: string): void {
   debugOutputChannel?.appendLine(
     `[${new Date().toISOString()}] ${message}`,
   );
+}
+
+async function reopenActiveEditorWith(editorId: string): Promise<void> {
+  await vscode.commands.executeCommand(REOPEN_ACTIVE_EDITOR_WITH_COMMAND, editorId);
 }
 
 function getEditorHtml(

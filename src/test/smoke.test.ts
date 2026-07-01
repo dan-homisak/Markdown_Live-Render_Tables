@@ -150,6 +150,15 @@ const packageJson = JSON.parse(
     }>;
   };
 };
+const extensionSource = fs.readFileSync(
+  path.join(process.cwd(), "src", "extension.ts"),
+  "utf8",
+);
+const liveEditorSource = fs.readFileSync(
+  path.join(process.cwd(), "src", "webview", "liveEditor.ts"),
+  "utf8",
+);
+
 assert.equal(
   packageJson.contributes?.customEditors?.[0]?.viewType,
   "markdownLiveRenderTables.liveEditor",
@@ -178,6 +187,13 @@ assert.equal(
     item.command?.startsWith("markdownLiveRenderTables."),
   ).length,
   1,
+);
+assert.match(extensionSource, /reopenActiveEditorWith/);
+assert.match(extensionSource, /const DEFAULT_EDITOR_ID = "default"/);
+assert.match(liveEditorSource, /type: "openSource"/);
+assert.doesNotMatch(
+  liveEditorSource,
+  /toggleMode|toggleRenderedMode|renderedMode|renderModeCompartment/,
 );
 
 console.log("Markdown live editor smoke tests passed.");
