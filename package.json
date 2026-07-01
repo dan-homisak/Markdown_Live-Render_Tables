@@ -11,15 +11,27 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "markdownLiveRenderTables.helloWorld",
-        "title": "Markdown Live Render Tables: Hello World"
+        "command": "markdownLiveRenderTables.toggle",
+        "title": "Markdown Live Render Tables: Toggle Table Rendering"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Markdown Live Render Tables",
+      "properties": {
+        "markdownLiveRenderTables.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render markdown tables as clean, aligned tables in the editor by dimming the pipe fences and aligning columns."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
