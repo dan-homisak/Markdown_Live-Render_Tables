@@ -1,4 +1,4 @@
-import { EditorState } from "@codemirror/state";
+import { ChangeSet, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createLiveRuntime } from "../live-v4/LiveRuntime";
 
@@ -18,6 +18,12 @@ interface HostSetDocumentMessage {
   revision: number;
 }
 
+interface DocumentChangeMessage {
+  from: number;
+  to: number;
+  text: string;
+}
+
 const vscode = acquireVsCodeApi();
 const app = document.getElementById("app");
 
@@ -26,7 +32,6 @@ if (!app) {
 }
 
 let applyingFromHost = false;
-let postTimer: ReturnType<typeof setTimeout> | undefined;
 let hostRevision = 0;
 let view: EditorView;
 let statusElement: HTMLElement;
@@ -38,10 +43,18 @@ try {
   app.className = "mm-live-v4-shell";
   const toolbar = document.createElement("div");
   toolbar.className = "mm-live-v4-toolbar";
+  const sourceButton = document.createElement("button");
+  sourceButton.className = "mm-live-v4-source-button";
+  sourceButton.type = "button";
+  sourceButton.textContent = "Source";
+  sourceButton.title = "Return to source";
+  sourceButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "openSource" });
+  });
   statusElement = document.createElement("div");
   statusElement.className = "mm-live-v4-status";
   statusElement.textContent = "Loading markdown...";
-  toolbar.append(statusElement);
+  toolbar.append(sourceButton, statusElement);
   const editorMount = document.createElement("div");
   editorMount.className = "mm-live-v4-editor-mount";
   app.append(toolbar, editorMount);
@@ -53,7 +66,10 @@ try {
         ...runtime.extensions,
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !applyingFromHost) {
-            schedulePostDocument(update.state.doc.toString());
+            postDocumentChanges(
+              update.changes,
+              update.state.doc.toString(),
+            );
           }
         }),
       ],
@@ -108,15 +124,24 @@ function readInitialDocument(): string {
     : "";
 }
 
-function schedulePostDocument(text: string): void {
-  if (postTimer) {
-    clearTimeout(postTimer);
-  }
-
-  postTimer = setTimeout(() => {
-    postTimer = undefined;
-    vscode.postMessage({ type: "change", text, baseRevision: hostRevision });
-  }, 150);
+function postDocumentChanges(
+  changes: ChangeSet,
+  text: string,
+): void {
+  const documentChanges: DocumentChangeMessage[] = [];
+  changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+    documentChanges.push({
+      from,
+      to,
+      text: inserted.toString(),
+    });
+  });
+  vscode.postMessage({
+    type: "change",
+    text,
+    changes: documentChanges,
+    baseRevision: hostRevision,
+  });
 }
 
 function renderStartupError(error: unknown): HTMLElement {

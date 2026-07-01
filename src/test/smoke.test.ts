@@ -6,6 +6,7 @@ import {
   formatMarkdownCell,
   formatMarkdownRow,
   formatTableCellEdit,
+  formatTableCellSourceEdit,
   markdownCellToDisplayText,
   parseMarkdownTables,
   rowToDisplayValues,
@@ -63,6 +64,54 @@ assert.equal(formatMarkdownRow(["A", "", "B | C"]), "| A |  | B &#124; C |");
 
 const edited = formatTableCellEdit(noOuterTables[0].body[0], 3, 2, "new\nvalue");
 assert.equal(edited, "| Alpha |  | new<br>value |");
+const sourceEdit = formatTableCellSourceEdit(
+  noOuterTables[0].body[0],
+  noOuterTables[0].columnCount,
+  2,
+  "new\nvalue",
+);
+assert.deepEqual(sourceEdit, {
+  from: noOuterPipes.indexOf(" wraps<br>inside"),
+  to: noOuterPipes.indexOf(" wraps<br>inside") + " wraps<br>inside".length,
+  insert: " new<br>value",
+});
+assert.equal(
+  noOuterPipes.slice(0, sourceEdit.from) +
+    sourceEdit.insert +
+    noOuterPipes.slice(sourceEdit.to),
+  ["Name | Empty | Notes", "--- | --- | ---", "Alpha |  | new<br>value"].join(
+    "\n",
+  ),
+);
+
+const spacedSource = "| Key  | Value     |\n| ---- | --------- |\n| Long | keep this |";
+const spacedTable = parseMarkdownTables(spacedSource)[0];
+const spacedEdit = formatTableCellSourceEdit(
+  spacedTable.body[0],
+  spacedTable.columnCount,
+  1,
+  "Test Edit.",
+);
+assert.equal(
+  spacedSource.slice(0, spacedEdit.from) +
+    spacedEdit.insert +
+    spacedSource.slice(spacedEdit.to),
+  "| Key  | Value     |\n| ---- | --------- |\n| Long | Test Edit. |",
+);
+const emptyCellEdit = formatTableCellSourceEdit(
+  noOuterTables[0].body[0],
+  noOuterTables[0].columnCount,
+  1,
+  "filled",
+);
+assert.equal(
+  noOuterPipes.slice(0, emptyCellEdit.from) +
+    emptyCellEdit.insert +
+    noOuterPipes.slice(emptyCellEdit.to),
+  ["Name | Empty | Notes", "--- | --- | ---", "Alpha | filled | wraps<br>inside"].join(
+    "\n",
+  ),
+);
 
 const fenced = [
   "```",

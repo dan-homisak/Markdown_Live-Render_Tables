@@ -86,7 +86,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel.title = document.fileName.split(/[\\/]/).pop() ?? "Markdown";
 
     let applyingFromWebview = false;
-    let syncTimer: ReturnType<typeof setTimeout> | undefined;
+    let applyQueue: Promise<void> = Promise.resolve();
     let documentRevision = 0;
 
     const postDocument = (): void => {
@@ -98,19 +98,33 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       } satisfies HostSetDocumentMessage);
     };
 
-    const scheduleApplyFromWebview = (text: string): void => {
-      if (syncTimer) {
-        clearTimeout(syncTimer);
-      }
-
-      syncTimer = setTimeout(() => {
-        syncTimer = undefined;
-        void applyFullDocumentEdit(document, text, () => {
+    const applyFromWebview = (message: ChangeMessage): void => {
+      applyQueue = applyQueue
+        .then(async () => {
           applyingFromWebview = true;
-        }).finally(() => {
+          try {
+            if (message.changes?.length) {
+              await applyDocumentChanges(document, message.changes);
+            } else {
+              await applyFullDocumentEdit(document, message.text);
+            }
+          } finally {
+            applyingFromWebview = false;
+          }
+
+          if (document.getText() !== message.text) {
+            vscode.window.showWarningMessage(
+              "Markdown live editor changes were applied, but the editor document is out of sync.",
+            );
+          }
+          postDocument();
+        })
+        .catch((error: unknown) => {
           applyingFromWebview = false;
+          vscode.window.showErrorMessage(
+            `Markdown live editor could not apply changes: ${String(error)}`,
+          );
         });
-      }, 150);
     };
 
     const disposables: vscode.Disposable[] = [];
@@ -148,7 +162,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           message.text !== document.getText() &&
           message.baseRevision <= documentRevision
         ) {
-          scheduleApplyFromWebview(message.text);
+          applyFromWebview(message);
         }
       }),
     );
@@ -158,9 +172,6 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     setTimeout(postDocument, 250);
 
     webviewPanel.onDidDispose(() => {
-      if (syncTimer) {
-        clearTimeout(syncTimer);
-      }
       this.panelsByDocument.delete(documentKey);
       if (this.activeLiveDocumentUri?.toString() === documentKey) {
         this.activeLiveDocumentUri = undefined;
@@ -291,7 +302,6 @@ function tabMatchesUri(tab: vscode.Tab, uri: vscode.Uri): boolean {
 async function applyFullDocumentEdit(
   document: vscode.TextDocument,
   text: string,
-  beforeApply: () => void,
 ): Promise<void> {
   if (text === document.getText()) {
     return;
@@ -304,7 +314,32 @@ async function applyFullDocumentEdit(
   );
   edit.replace(document.uri, range, text);
 
-  beforeApply();
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    vscode.window.showWarningMessage("Markdown live editor could not apply changes.");
+  }
+}
+
+async function applyDocumentChanges(
+  document: vscode.TextDocument,
+  changes: readonly DocumentChange[],
+): Promise<void> {
+  if (changes.length === 0) {
+    return;
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  for (const change of changes) {
+    edit.replace(
+      document.uri,
+      new vscode.Range(
+        document.positionAt(change.from),
+        document.positionAt(change.to),
+      ),
+      change.text,
+    );
+  }
+
   const applied = await vscode.workspace.applyEdit(edit);
   if (!applied) {
     vscode.window.showWarningMessage("Markdown live editor could not apply changes.");
@@ -315,9 +350,16 @@ interface ReadyMessage {
   type: "ready";
 }
 
+interface DocumentChange {
+  from: number;
+  to: number;
+  text: string;
+}
+
 interface ChangeMessage {
   type: "change";
   text: string;
+  changes?: DocumentChange[];
   baseRevision: number;
 }
 
@@ -340,7 +382,28 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
     isMessageRecord(message) &&
     message.type === "change" &&
     typeof message.text === "string" &&
+    (message.changes === undefined ||
+      (Array.isArray(message.changes) &&
+        message.changes.every(isDocumentChange))) &&
     typeof message.baseRevision === "number"
+  );
+}
+
+function isDocumentChange(change: unknown): change is DocumentChange {
+  if (!isMessageRecord(change)) {
+    return false;
+  }
+
+  const from = change.from;
+  const to = change.to;
+  return (
+    typeof from === "number" &&
+    Number.isInteger(from) &&
+    from >= 0 &&
+    typeof to === "number" &&
+    Number.isInteger(to) &&
+    to >= from &&
+    typeof change.text === "string"
   );
 }
 
@@ -396,11 +459,33 @@ function getEditorHtml(
     .mm-live-v4-toolbar {
       display: flex;
       align-items: center;
+      gap: 0.5rem;
       flex: 0 0 auto;
       min-height: 28px;
       padding: 0.2rem 0.5rem;
       border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
       background: var(--vscode-editorWidget-background, #252526);
+    }
+
+    .mm-live-v4-source-button {
+      flex: 0 0 auto;
+      min-height: 22px;
+      padding: 0 0.55rem;
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 2px;
+      color: var(--vscode-button-foreground, #ffffff);
+      background: var(--vscode-button-background, #0e639c);
+      font: 12px/20px var(--vscode-font-family, sans-serif);
+      cursor: pointer;
+    }
+
+    .mm-live-v4-source-button:hover {
+      background: var(--vscode-button-hoverBackground, #1177bb);
+    }
+
+    .mm-live-v4-source-button:focus {
+      outline: 1px solid var(--vscode-focusBorder, #007fd4);
+      outline-offset: 1px;
     }
 
     .mm-live-v4-status {

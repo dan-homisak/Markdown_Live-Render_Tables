@@ -1,6 +1,6 @@
 import { EditorView, WidgetType } from "@codemirror/view";
 import {
-  formatTableCellEdit,
+  formatTableCellSourceEdit,
   ParsedRow,
   ParsedTable,
   rowToDisplayValues,
@@ -170,11 +170,17 @@ function commitCellEdit(
     return;
   }
 
+  const edit = formatTableCellSourceEdit(
+    sourceRow,
+    table.columnCount,
+    column,
+    value,
+  );
   view.dispatch({
     changes: {
-      from: sourceRow.from,
-      to: sourceRow.to,
-      insert: formatTableCellEdit(sourceRow, table.columnCount, column, value),
+      from: edit.from,
+      to: edit.to,
+      insert: edit.insert,
     },
     scrollIntoView: true,
     userEvent: "input",

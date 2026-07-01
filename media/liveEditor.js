@@ -23468,6 +23468,35 @@
     values2[column] = value;
     return formatMarkdownRow(values2);
   }
+  function formatTableCellSourceEdit(row, columnCount, column, value) {
+    const cell = row.cells[column];
+    if (!cell) {
+      return {
+        from: row.from,
+        to: row.to,
+        insert: formatTableCellEdit(row, columnCount, column, value)
+      };
+    }
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(cell.raw);
+    return {
+      from: cell.start,
+      to: cell.end,
+      insert: `${leadingWhitespace}${formatMarkdownCell(value)}${trailingWhitespace}`
+    };
+  }
+  function getCellPaddingWhitespace(raw) {
+    if (raw.trim() === "") {
+      const split = Math.floor(raw.length / 2);
+      return {
+        leadingWhitespace: raw.slice(0, split),
+        trailingWhitespace: raw.slice(split)
+      };
+    }
+    return {
+      leadingWhitespace: raw.match(/^\s*/)?.[0] ?? "",
+      trailingWhitespace: raw.match(/\s*$/)?.[0] ?? ""
+    };
+  }
   function getSourceLines(source) {
     if (source.length === 0) {
       return [{ index: 0, from: 0, to: 0, text: "" }];
@@ -23777,11 +23806,17 @@
     if (value === cell.dataset.original) {
       return;
     }
+    const edit = formatTableCellSourceEdit(
+      sourceRow,
+      table.columnCount,
+      column,
+      value
+    );
     view2.dispatch({
       changes: {
-        from: sourceRow.from,
-        to: sourceRow.to,
-        insert: formatTableCellEdit(sourceRow, table.columnCount, column, value)
+        from: edit.from,
+        to: edit.to,
+        insert: edit.insert
       },
       scrollIntoView: true,
       userEvent: "input"
@@ -24075,7 +24110,6 @@
     throw new Error("Missing live editor mount element.");
   }
   var applyingFromHost = false;
-  var postTimer;
   var hostRevision = 0;
   var view;
   var statusElement;
@@ -24086,10 +24120,18 @@
     app.className = "mm-live-v4-shell";
     const toolbar = document.createElement("div");
     toolbar.className = "mm-live-v4-toolbar";
+    const sourceButton = document.createElement("button");
+    sourceButton.className = "mm-live-v4-source-button";
+    sourceButton.type = "button";
+    sourceButton.textContent = "Source";
+    sourceButton.title = "Return to source";
+    sourceButton.addEventListener("click", () => {
+      vscode.postMessage({ type: "openSource" });
+    });
     statusElement = document.createElement("div");
     statusElement.className = "mm-live-v4-status";
     statusElement.textContent = "Loading markdown...";
-    toolbar.append(statusElement);
+    toolbar.append(sourceButton, statusElement);
     const editorMount = document.createElement("div");
     editorMount.className = "mm-live-v4-editor-mount";
     app.append(toolbar, editorMount);
@@ -24101,7 +24143,10 @@
           ...runtime.extensions,
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !applyingFromHost) {
-              schedulePostDocument(update.state.doc.toString());
+              postDocumentChanges(
+                update.changes,
+                update.state.doc.toString()
+              );
             }
           })
         ]
@@ -24146,14 +24191,21 @@
   function readInitialDocument() {
     return typeof window.__MLRT_INITIAL_DOCUMENT__ === "string" ? window.__MLRT_INITIAL_DOCUMENT__ : "";
   }
-  function schedulePostDocument(text) {
-    if (postTimer) {
-      clearTimeout(postTimer);
-    }
-    postTimer = setTimeout(() => {
-      postTimer = void 0;
-      vscode.postMessage({ type: "change", text, baseRevision: hostRevision });
-    }, 150);
+  function postDocumentChanges(changes, text) {
+    const documentChanges = [];
+    changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+      documentChanges.push({
+        from,
+        to,
+        text: inserted.toString()
+      });
+    });
+    vscode.postMessage({
+      type: "change",
+      text,
+      changes: documentChanges,
+      baseRevision: hostRevision
+    });
   }
   function renderStartupError(error) {
     const wrapper = document.createElement("pre");

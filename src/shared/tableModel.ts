@@ -27,6 +27,12 @@ export interface ParsedTable {
   alignments: CellAlignment[];
 }
 
+export interface TableCellSourceEdit {
+  from: number;
+  to: number;
+  insert: string;
+}
+
 interface SourceLine {
   index: number;
   from: number;
@@ -162,6 +168,49 @@ export function formatTableCellEdit(
   const values = rowToDisplayValues(row, Math.max(columnCount, column + 1));
   values[column] = value;
   return formatMarkdownRow(values);
+}
+
+export function formatTableCellSourceEdit(
+  row: ParsedRow,
+  columnCount: number,
+  column: number,
+  value: string,
+): TableCellSourceEdit {
+  const cell = row.cells[column];
+  if (!cell) {
+    return {
+      from: row.from,
+      to: row.to,
+      insert: formatTableCellEdit(row, columnCount, column, value),
+    };
+  }
+
+  const { leadingWhitespace, trailingWhitespace } =
+    getCellPaddingWhitespace(cell.raw);
+
+  return {
+    from: cell.start,
+    to: cell.end,
+    insert: `${leadingWhitespace}${formatMarkdownCell(value)}${trailingWhitespace}`,
+  };
+}
+
+function getCellPaddingWhitespace(raw: string): {
+  leadingWhitespace: string;
+  trailingWhitespace: string;
+} {
+  if (raw.trim() === "") {
+    const split = Math.floor(raw.length / 2);
+    return {
+      leadingWhitespace: raw.slice(0, split),
+      trailingWhitespace: raw.slice(split),
+    };
+  }
+
+  return {
+    leadingWhitespace: raw.match(/^\s*/)?.[0] ?? "",
+    trailingWhitespace: raw.match(/\s*$/)?.[0] ?? "",
+  };
 }
 
 function getSourceLines(source: string): SourceLine[] {

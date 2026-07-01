@@ -158,11 +158,33 @@ function renderHarnessHtml({ fixtureName, fixtureText, scriptUrl }) {
     .mm-live-v4-toolbar {
       display: flex;
       align-items: center;
+      gap: 0.5rem;
       flex: 0 0 auto;
       min-height: 28px;
       padding: 0.2rem 0.5rem;
       border-bottom: 1px solid var(--vscode-editorWidget-border);
       background: var(--vscode-editorWidget-background);
+    }
+
+    .mm-live-v4-source-button {
+      flex: 0 0 auto;
+      min-height: 22px;
+      padding: 0 0.55rem;
+      border: 1px solid transparent;
+      border-radius: 2px;
+      color: #ffffff;
+      background: #0e639c;
+      font: 12px/20px var(--vscode-font-family);
+      cursor: pointer;
+    }
+
+    .mm-live-v4-source-button:hover {
+      background: #1177bb;
+    }
+
+    .mm-live-v4-source-button:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
     }
 
     .mm-live-v4-status {

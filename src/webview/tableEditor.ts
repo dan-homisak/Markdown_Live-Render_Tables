@@ -1,5 +1,5 @@
 import { markdown } from "@codemirror/lang-markdown";
-import { EditorState } from "@codemirror/state";
+import { ChangeSet, EditorState } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -9,7 +9,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import {
-  formatTableCellEdit,
+  formatTableCellSourceEdit,
   parseMarkdownTables,
   ParsedRow,
   ParsedTable,
@@ -26,6 +26,12 @@ interface HostSetDocumentMessage {
   revision: number;
 }
 
+interface DocumentChangeMessage {
+  from: number;
+  to: number;
+  text: string;
+}
+
 const vscode = acquireVsCodeApi();
 const app = document.getElementById("app");
 
@@ -34,7 +40,6 @@ if (!app) {
 }
 
 let applyingFromHost = false;
-let postTimer: ReturnType<typeof setTimeout> | undefined;
 let hostRevision = 0;
 let view: EditorView;
 
@@ -50,7 +55,10 @@ try {
         tableRenderer(),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !applyingFromHost) {
-            schedulePostDocument(update.state.doc.toString());
+            postDocumentChanges(
+              update.changes,
+              update.state.doc.toString(),
+            );
           }
         }),
       ],
@@ -98,14 +106,21 @@ function renderStartupError(error: unknown): HTMLElement {
   return wrapper;
 }
 
-function schedulePostDocument(text: string): void {
-  if (postTimer) {
-    clearTimeout(postTimer);
-  }
-  postTimer = setTimeout(() => {
-    postTimer = undefined;
-    vscode.postMessage({ type: "change", text, baseRevision: hostRevision });
-  }, 150);
+function postDocumentChanges(changes: ChangeSet, text: string): void {
+  const documentChanges: DocumentChangeMessage[] = [];
+  changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+    documentChanges.push({
+      from,
+      to,
+      text: inserted.toString(),
+    });
+  });
+  vscode.postMessage({
+    type: "change",
+    text,
+    changes: documentChanges,
+    baseRevision: hostRevision,
+  });
 }
 
 function tableRenderer() {
@@ -320,11 +335,17 @@ function commitCellEdit(
     return;
   }
 
+  const edit = formatTableCellSourceEdit(
+    sourceRow,
+    table.columnCount,
+    column,
+    value,
+  );
   view.dispatch({
     changes: {
-      from: sourceRow.from,
-      to: sourceRow.to,
-      insert: formatTableCellEdit(sourceRow, table.columnCount, column, value),
+      from: edit.from,
+      to: edit.to,
+      insert: edit.insert,
     },
   });
 }
