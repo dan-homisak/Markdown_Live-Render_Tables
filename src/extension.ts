@@ -1,346 +1,400 @@
 import * as vscode from "vscode";
 
-const CONFIG_SECTION = "markdownLiveRenderTables";
-const NBSP = "\u00A0";
-
-let enabled = true;
-let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-
-let pipeDecoration: vscode.TextEditorDecorationType;
-let delimiterDecoration: vscode.TextEditorDecorationType;
-let headerDecoration: vscode.TextEditorDecorationType;
-let paddingDecoration: vscode.TextEditorDecorationType;
+const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 
 export function activate(context: vscode.ExtensionContext): void {
-  enabled = vscode.workspace
-    .getConfiguration(CONFIG_SECTION)
-    .get<boolean>("enabled", true);
-  createDecorationTypes();
+  const provider = new MarkdownLiveEditorProvider(context);
 
   context.subscriptions.push(
-    pipeDecoration,
-    delimiterDecoration,
-    headerDecoration,
-    paddingDecoration,
-    vscode.commands.registerCommand(`${CONFIG_SECTION}.toggle`, () =>
-      toggleEnabled(),
+    vscode.window.registerCustomEditorProvider(
+      LIVE_EDITOR_VIEW_TYPE,
+      provider,
+      {
+        supportsMultipleEditorsPerDocument: false,
+        webviewOptions: {
+          retainContextWhenHidden: true,
+        },
+      },
     ),
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-      if (editor) {
-        updateDecorations(editor);
-      }
-    }),
-    vscode.window.onDidChangeVisibleTextEditors(() =>
-      updateAllVisibleEditors(),
+    vscode.commands.registerCommand(
+      "markdownLiveRenderTables.openLiveEditor",
+      async (uri?: vscode.Uri) => {
+        await openLiveEditor(uri, provider);
+      },
     ),
-    vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document.languageId === "markdown") {
-        scheduleUpdate();
-      }
-    }),
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration(CONFIG_SECTION)) {
-        enabled = vscode.workspace
-          .getConfiguration(CONFIG_SECTION)
-          .get<boolean>("enabled", true);
-        updateAllVisibleEditors();
-      }
-    }),
-  );
-
-  updateAllVisibleEditors();
-}
-
-export function deactivate(): void {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-    debounceTimer = undefined;
-  }
-}
-
-async function toggleEnabled(): Promise<void> {
-  enabled = !enabled;
-  await vscode.workspace
-    .getConfiguration(CONFIG_SECTION)
-    .update("enabled", enabled, vscode.ConfigurationTarget.Global);
-  updateAllVisibleEditors();
-  vscode.window.showInformationMessage(
-    `Markdown table rendering ${enabled ? "enabled" : "disabled"}.`,
+    vscode.commands.registerCommand(
+      "markdownLiveRenderTables.openSourceEditor",
+      async (uri?: vscode.Uri) => {
+        await openSourceEditor(uri, provider);
+      },
+    ),
   );
 }
 
-function createDecorationTypes(): void {
-  const faint = new vscode.ThemeColor("editorWhitespace.foreground");
-  pipeDecoration = vscode.window.createTextEditorDecorationType({
-    color: faint,
-  });
-  delimiterDecoration = vscode.window.createTextEditorDecorationType({
-    color: faint,
-    opacity: "0.5",
-  });
-  headerDecoration = vscode.window.createTextEditorDecorationType({
-    fontWeight: "bold",
-  });
-  paddingDecoration = vscode.window.createTextEditorDecorationType({});
-}
+export function deactivate(): void {}
 
-function scheduleUpdate(): void {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
+class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
+  private readonly panelsByDocument = new Map<string, vscode.WebviewPanel>();
+  private activeLiveDocumentUri: vscode.Uri | undefined;
+
+  public constructor(private readonly context: vscode.ExtensionContext) {}
+
+  public getActiveDocumentUri(): vscode.Uri | undefined {
+    return this.activeLiveDocumentUri;
   }
-  debounceTimer = setTimeout(() => updateAllVisibleEditors(), 150);
-}
 
-function updateAllVisibleEditors(): void {
-  for (const editor of vscode.window.visibleTextEditors) {
-    updateDecorations(editor);
+  public getViewColumn(uri: vscode.Uri): vscode.ViewColumn | undefined {
+    return this.panelsByDocument.get(uri.toString())?.viewColumn;
+  }
+
+  public resolveCustomTextEditor(
+    document: vscode.TextDocument,
+    webviewPanel: vscode.WebviewPanel,
+  ): void {
+    const webview = webviewPanel.webview;
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, "media", "liveEditor.js"),
+    );
+    const documentKey = document.uri.toString();
+
+    this.panelsByDocument.set(documentKey, webviewPanel);
+    if (webviewPanel.active) {
+      this.activeLiveDocumentUri = document.uri;
+    }
+
+    webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.context.extensionUri, "media"),
+      ],
+    };
+    webviewPanel.title = document.fileName.split(/[\\/]/).pop() ?? "Markdown";
+
+    let applyingFromWebview = false;
+    let syncTimer: ReturnType<typeof setTimeout> | undefined;
+    let documentRevision = 0;
+
+    const postDocument = (): void => {
+      documentRevision++;
+      void webview.postMessage({
+        type: "setDocument",
+        text: document.getText(),
+        revision: documentRevision,
+      } satisfies HostSetDocumentMessage);
+    };
+
+    const scheduleApplyFromWebview = (text: string): void => {
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+      }
+
+      syncTimer = setTimeout(() => {
+        syncTimer = undefined;
+        void applyFullDocumentEdit(document, text, () => {
+          applyingFromWebview = true;
+        }).finally(() => {
+          applyingFromWebview = false;
+        });
+      }, 150);
+    };
+
+    const disposables: vscode.Disposable[] = [];
+    disposables.push(
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (
+          event.document.uri.toString() === documentKey &&
+          !applyingFromWebview
+        ) {
+          postDocument();
+        }
+      }),
+      webviewPanel.onDidChangeViewState((event) => {
+        if (event.webviewPanel.active) {
+          this.activeLiveDocumentUri = document.uri;
+        }
+      }),
+      webview.onDidReceiveMessage((message: unknown) => {
+        if (isReadyMessage(message)) {
+          postDocument();
+          return;
+        }
+
+        if (
+          isChangeMessage(message) &&
+          message.text !== document.getText() &&
+          message.baseRevision <= documentRevision
+        ) {
+          scheduleApplyFromWebview(message.text);
+        }
+      }),
+    );
+
+    webview.html = getEditorHtml(webview, scriptUri, document.getText());
+    setTimeout(postDocument, 0);
+    setTimeout(postDocument, 250);
+
+    webviewPanel.onDidDispose(() => {
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+      }
+      this.panelsByDocument.delete(documentKey);
+      if (this.activeLiveDocumentUri?.toString() === documentKey) {
+        this.activeLiveDocumentUri = undefined;
+      }
+      vscode.Disposable.from(...disposables).dispose();
+    });
   }
 }
 
-function clearDecorations(editor: vscode.TextEditor): void {
-  editor.setDecorations(pipeDecoration, []);
-  editor.setDecorations(delimiterDecoration, []);
-  editor.setDecorations(headerDecoration, []);
-  editor.setDecorations(paddingDecoration, []);
-}
-
-function updateDecorations(editor: vscode.TextEditor): void {
-  if (editor.document.languageId !== "markdown" || !enabled) {
-    clearDecorations(editor);
+async function openLiveEditor(
+  uri: vscode.Uri | undefined,
+  provider: MarkdownLiveEditorProvider,
+): Promise<void> {
+  const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri;
+  if (!targetUri) {
+    vscode.window.showWarningMessage("Open a markdown file before opening the live editor.");
     return;
   }
 
-  const tables = parseTables(editor.document);
+  const viewColumn =
+    vscode.window.activeTextEditor?.viewColumn ??
+    provider.getViewColumn(targetUri) ??
+    vscode.ViewColumn.Active;
 
-  const pipeRanges: vscode.Range[] = [];
-  const delimiterRanges: vscode.Range[] = [];
-  const headerRanges: vscode.Range[] = [];
-  const paddingOptions: vscode.DecorationOptions[] = [];
+  await vscode.commands.executeCommand(
+    "vscode.openWith",
+    targetUri,
+    LIVE_EDITOR_VIEW_TYPE,
+    {
+      viewColumn,
+      preserveFocus: false,
+    },
+  );
+}
 
-  const alignRow = (row: TableRow, columnWidths: number[]): void => {
-    for (let c = 0; c < row.cells.length; c++) {
-      const cell = row.cells[c];
-      const padCount = columnWidths[c] - cell.width;
-      if (padCount > 0) {
-        paddingOptions.push({
-          range: new vscode.Range(
-            row.line,
-            cell.closingPipe,
-            row.line,
-            cell.closingPipe,
-          ),
-          renderOptions: { after: { contentText: NBSP.repeat(padCount) } },
-        });
-      }
-    }
-  };
-
-  for (const table of tables) {
-    // Header row: align, dim its pipes, and bold the cell contents.
-    alignRow(table.header, table.columnWidths);
-    for (const pipe of table.header.pipes) {
-      pipeRanges.push(
-        new vscode.Range(table.header.line, pipe, table.header.line, pipe + 1),
-      );
-    }
-    for (const cell of table.header.cells) {
-      headerRanges.push(
-        new vscode.Range(
-          table.header.line,
-          cell.start,
-          table.header.line,
-          cell.end,
-        ),
-      );
-    }
-
-    // Delimiter row: align, then dim the whole "|---|---|" span into a quiet divider.
-    alignRow(table.delimiter, table.columnWidths);
-    if (table.delimiter.pipes.length > 0) {
-      const first = table.delimiter.pipes[0];
-      const last = table.delimiter.pipes[table.delimiter.pipes.length - 1];
-      delimiterRanges.push(
-        new vscode.Range(
-          table.delimiter.line,
-          first,
-          table.delimiter.line,
-          last + 1,
-        ),
-      );
-    }
-
-    // Body rows: align and dim the pipes.
-    for (const row of table.body) {
-      alignRow(row, table.columnWidths);
-      for (const pipe of row.pipes) {
-        pipeRanges.push(new vscode.Range(row.line, pipe, row.line, pipe + 1));
-      }
-    }
+async function openSourceEditor(
+  uri: vscode.Uri | undefined,
+  provider: MarkdownLiveEditorProvider,
+): Promise<void> {
+  const targetUri = uri ?? provider.getActiveDocumentUri();
+  if (!targetUri) {
+    vscode.window.showWarningMessage("Open a live markdown editor before returning to source.");
+    return;
   }
 
-  editor.setDecorations(pipeDecoration, pipeRanges);
-  editor.setDecorations(delimiterDecoration, delimiterRanges);
-  editor.setDecorations(headerDecoration, headerRanges);
-  editor.setDecorations(paddingDecoration, paddingOptions);
-}
-
-interface CellSegment {
-  text: string;
-  start: number; // UTF-16 offset where the cell content starts (after the opening pipe)
-  end: number; // UTF-16 offset where the cell content ends (at the closing pipe)
-  closingPipe: number; // UTF-16 offset of the closing pipe (== end)
-  width: number; // display width of the cell content
-}
-
-interface TableRow {
-  line: number;
-  pipes: number[]; // UTF-16 offsets of every unescaped pipe on the line
-  cells: CellSegment[]; // segments strictly between consecutive pipes
-}
-
-interface Table {
-  header: TableRow;
-  delimiter: TableRow;
-  body: TableRow[];
-  columnWidths: number[];
-}
-
-const FENCE_RE = /^\s{0,3}(```|~~~)/;
-const DELIMITER_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-
-function parseTables(document: vscode.TextDocument): Table[] {
-  const tables: Table[] = [];
-  const lineCount = document.lineCount;
-  let inFence = false;
-  let i = 0;
-
-  while (i < lineCount) {
-    const text = document.lineAt(i).text;
-
-    if (FENCE_RE.test(text)) {
-      inFence = !inFence;
-      i++;
-      continue;
-    }
-    if (inFence) {
-      i++;
-      continue;
-    }
-
-    const isHeaderCandidate =
-      hasUnescapedPipe(text) &&
-      !DELIMITER_RE.test(text) &&
-      i + 1 < lineCount &&
-      DELIMITER_RE.test(document.lineAt(i + 1).text) &&
-      hasUnescapedPipe(document.lineAt(i + 1).text);
-
-    if (!isHeaderCandidate) {
-      i++;
-      continue;
-    }
-
-    const header = parseRow(text, i);
-    const delimiter = parseRow(document.lineAt(i + 1).text, i + 1);
-    if (header.cells.length === 0 || delimiter.cells.length === 0) {
-      i++;
-      continue;
-    }
-
-    const body: TableRow[] = [];
-    let j = i + 2;
-    while (j < lineCount) {
-      const bodyText = document.lineAt(j).text;
-      if (
-        FENCE_RE.test(bodyText) ||
-        bodyText.trim() === "" ||
-        !hasUnescapedPipe(bodyText)
-      ) {
-        break;
-      }
-      const row = parseRow(bodyText, j);
-      if (row.cells.length === 0) {
-        break;
-      }
-      body.push(row);
-      j++;
-    }
-
-    const allRows = [header, delimiter, ...body];
-    const maxCols = Math.max(...allRows.map((row) => row.cells.length));
-    const columnWidths: number[] = [];
-    for (let c = 0; c < maxCols; c++) {
-      let width = 0;
-      for (const row of allRows) {
-        if (row.cells[c]) {
-          width = Math.max(width, row.cells[c].width);
-        }
-      }
-      columnWidths.push(width);
-    }
-
-    tables.push({ header, delimiter, body, columnWidths });
-    i = j;
-  }
-
-  return tables;
-}
-
-function parseRow(text: string, line: number): TableRow {
-  const pipes: number[] = [];
-  for (let k = 0; k < text.length; k++) {
-    if (text[k] === "|" && text[k - 1] !== "\\") {
-      pipes.push(k);
-    }
-  }
-
-  const cells: CellSegment[] = [];
-  for (let p = 0; p + 1 < pipes.length; p++) {
-    const start = pipes[p] + 1;
-    const end = pipes[p + 1];
-    const cellText = text.substring(start, end);
-    cells.push({
-      text: cellText,
-      start,
-      end,
-      closingPipe: end,
-      width: displayWidth(cellText),
+  const viewColumn = provider.getViewColumn(targetUri) ?? vscode.ViewColumn.Active;
+  try {
+    await vscode.commands.executeCommand("vscode.openWith", targetUri, "default", {
+      viewColumn,
+      preserveFocus: false,
+    });
+  } catch {
+    await vscode.window.showTextDocument(targetUri, {
+      viewColumn,
+      preview: false,
+      preserveFocus: false,
     });
   }
-
-  return { line, pipes, cells };
 }
 
-function hasUnescapedPipe(text: string): boolean {
-  for (let k = 0; k < text.length; k++) {
-    if (text[k] === "|" && text[k - 1] !== "\\") {
-      return true;
-    }
+async function applyFullDocumentEdit(
+  document: vscode.TextDocument,
+  text: string,
+  beforeApply: () => void,
+): Promise<void> {
+  if (text === document.getText()) {
+    return;
   }
-  return false;
-}
 
-function displayWidth(text: string): number {
-  let width = 0;
-  for (const char of text) {
-    width += isWideChar(char.codePointAt(0) ?? 0) ? 2 : 1;
-  }
-  return width;
-}
-
-function isWideChar(code: number): boolean {
-  return (
-    (code >= 0x1100 && code <= 0x115f) || // Hangul Jamo
-    (code >= 0x2e80 && code <= 0x303e) || // CJK radicals, Kangxi, symbols
-    (code >= 0x3041 && code <= 0x33ff) || // Hiragana, Katakana, CJK symbols
-    (code >= 0x3400 && code <= 0x4dbf) || // CJK Extension A
-    (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified Ideographs
-    (code >= 0xa000 && code <= 0xa4cf) || // Yi
-    (code >= 0xac00 && code <= 0xd7a3) || // Hangul Syllables
-    (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility Ideographs
-    (code >= 0xfe30 && code <= 0xfe4f) || // CJK Compatibility Forms
-    (code >= 0xff00 && code <= 0xff60) || // Fullwidth Forms
-    (code >= 0xffe0 && code <= 0xffe6) || // Fullwidth signs
-    (code >= 0x1f300 && code <= 0x1faff) || // Emoji and pictographs
-    (code >= 0x20000 && code <= 0x3fffd) // CJK Extension B+
+  const edit = new vscode.WorkspaceEdit();
+  const range = new vscode.Range(
+    document.positionAt(0),
+    document.positionAt(document.getText().length),
   );
+  edit.replace(document.uri, range, text);
+
+  beforeApply();
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    vscode.window.showWarningMessage("Markdown live editor could not apply changes.");
+  }
+}
+
+interface ReadyMessage {
+  type: "ready";
+}
+
+interface ChangeMessage {
+  type: "change";
+  text: string;
+  baseRevision: number;
+}
+
+interface HostSetDocumentMessage {
+  type: "setDocument";
+  text: string;
+  revision: number;
+}
+
+function isReadyMessage(message: unknown): message is ReadyMessage {
+  return isMessageRecord(message) && message.type === "ready";
+}
+
+function isChangeMessage(message: unknown): message is ChangeMessage {
+  return (
+    isMessageRecord(message) &&
+    message.type === "change" &&
+    typeof message.text === "string" &&
+    typeof message.baseRevision === "number"
+  );
+}
+
+function isMessageRecord(message: unknown): message is Record<string, unknown> {
+  return Boolean(message) && typeof message === "object";
+}
+
+function getEditorHtml(
+  webview: vscode.Webview,
+  scriptUri: vscode.Uri,
+  initialText: string,
+): string {
+  const nonce = getNonce();
+  const initialDocumentScript = JSON.stringify(initialText).replace(
+    /<\/script/gi,
+    "<\\/script",
+  );
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};"
+  >
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html,
+    body,
+    #app {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-editor-font-family);
+      font-size: var(--vscode-editor-font-size);
+    }
+
+    .mm-live-v4-shell {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .mm-live-v4-status {
+      flex: 0 0 auto;
+      padding: 0.25rem 0.75rem;
+      border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+      color: var(--vscode-descriptionForeground, #cccccc);
+      background: var(--vscode-editorWidget-background, #252526);
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 12px;
+      line-height: 1.4;
+      user-select: text;
+    }
+
+    .mm-live-v4-editor-mount {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .cm-editor {
+      height: 100%;
+      background: var(--vscode-editor-background, #1e1e1e);
+      color: var(--vscode-editor-foreground, #d4d4d4);
+    }
+
+    .cm-scroller {
+      font-family: var(--vscode-editor-font-family);
+      font-size: var(--vscode-editor-font-size);
+      line-height: 1.5;
+    }
+
+    .cm-content {
+      caret-color: var(--vscode-editorCursor-foreground);
+    }
+
+    .mm-live-v4-table-widget {
+      display: block;
+      max-width: 100%;
+      margin: 0.2rem 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      color: var(--vscode-editor-foreground);
+    }
+
+    .mm-live-v4-table {
+      width: max-content;
+      max-width: 100%;
+      border-collapse: collapse;
+      table-layout: auto;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-editor-font-family);
+      font-size: var(--vscode-editor-font-size);
+    }
+
+    .mm-live-v4-table th,
+    .mm-live-v4-table td {
+      min-width: 7rem;
+      max-width: 24rem;
+      padding: 0.25rem 0.45rem;
+      border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+      vertical-align: top;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .mm-live-v4-table th {
+      background: var(--vscode-editorWidget-background);
+      font-weight: 600;
+    }
+
+    .mm-live-v4-table-cell[contenteditable="true"] {
+      outline: none;
+    }
+
+    .mm-live-v4-table-cell[contenteditable="true"]:focus {
+      background: var(--vscode-list-activeSelectionBackground);
+      color: var(--vscode-list-activeSelectionForeground);
+      box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+    }
+
+    .mm-live-v4-loading {
+      padding: 1rem;
+      color: var(--vscode-descriptionForeground);
+      font-family: var(--vscode-font-family);
+    }
+  </style>
+  <title>Markdown Live Editor</title>
+</head>
+<body>
+  <div id="app"><div class="mm-live-v4-loading">Loading Markdown live editor...</div></div>
+  <script nonce="${nonce}">window.__MLRT_INITIAL_DOCUMENT__ = ${initialDocumentScript};</script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>`;
+}
+
+function getNonce(): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let nonce = "";
+  for (let index = 0; index < 32; index++) {
+    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return nonce;
 }

@@ -1,8 +1,8 @@
 {
   "name": "markdown-live-render-tables",
-  "displayName": "Markdown Live Render Tables",
-  "description": "A VS Code extension for live-rendering markdown tables.",
-  "version": "0.0.1",
+  "displayName": "Markdown Live Editor",
+  "description": "A VS Code extension for editing markdown in a live rendered editor.",
+  "version": "0.1.0",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -12,29 +12,59 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:markdown"
+    "onStartupFinished",
+    "onLanguage:markdown",
+    "onCustomEditor:markdownLiveRenderTables.liveEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "markdownLiveRenderTables.toggle",
-        "title": "Markdown Live Render Tables: Toggle Table Rendering"
+        "command": "markdownLiveRenderTables.openLiveEditor",
+        "title": "Open Markdown Live Editor",
+        "category": "Markdown Live Editor",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "markdownLiveRenderTables.openSourceEditor",
+        "title": "Open Markdown Source",
+        "category": "Markdown Live Editor",
+        "icon": "$(code)"
       }
     ],
-    "configuration": {
-      "title": "Markdown Live Render Tables",
-      "properties": {
-        "markdownLiveRenderTables.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Render markdown tables as clean, aligned tables in the editor by dimming the pipe fences and aligning columns."
-        }
+    "customEditors": [
+      {
+        "viewType": "markdownLiveRenderTables.liveEditor",
+        "displayName": "Markdown Live Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          },
+          {
+            "filenamePattern": "*.markdown"
+          }
+        ],
+        "priority": "option"
       }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "markdownLiveRenderTables.openLiveEditor",
+          "when": "resourceLangId == markdown && !activeCustomEditorId",
+          "group": "navigation"
+        },
+        {
+          "command": "markdownLiveRenderTables.openSourceEditor",
+          "when": "activeCustomEditorId == markdownLiveRenderTables.liveEditor",
+          "group": "navigation"
+        }
+      ]
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "bundle:webview": "esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/liveEditor.js",
+    "compile": "tsc -p ./ && npm run bundle:webview",
     "package": "vsce package --allow-missing-repository --out markdown-live-render-tables-latest.vsix",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
@@ -42,9 +72,13 @@
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/state": "^6.7.0",
+    "@codemirror/view": "^6.43.4",
     "@types/node": "^24.0.8",
     "@types/vscode": "^1.101.0",
     "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
     "typescript": "^5.8.3"
   }
 }

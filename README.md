@@ -1,23 +1,25 @@
-# Markdown Live Render Tables
+# Markdown Live Editor
 
-A VS Code extension that live-renders GitHub-flavored markdown tables directly in
-the source editor so you can read and edit them without fighting the pipe fences.
-
-When a table is detected it is rendered in place, non-destructively (your file text
-is never changed):
-
-- Columns are aligned into a clean grid using visual-only padding.
-- The `|` pipe fences are dimmed so they read as subtle grid lines.
-- The `|---|---|` delimiter row is dimmed into a quiet header divider.
-- Header cells are bolded.
-
-Everything stays fully editable — you are still editing the real markdown.
+A VS Code extension that ports the Meeting_Minutes live editor into a custom
+markdown editor. V1 is intentionally table-first: markdown tables render as live
+editable grids, while the rest of the document remains editable markdown source.
 
 ## Usage
 
-Rendering is on by default for markdown files. Use the command
-`Markdown Live Render Tables: Toggle Table Rendering` to turn it on or off, or set
-`markdownLiveRenderTables.enabled` in settings.
+Open a markdown file and use the preview button in the editor title bar to open
+the live editor for that document. In the live editor, use the code button in the
+editor title bar to return to the normal VS Code markdown source editor.
+
+In V1, tables support:
+
+- live rendered grid editing
+- cell edits that write back to markdown source
+- Tab and Shift-Tab cell navigation
+- Shift-Enter multiline cells
+- escaped pipes
+- alignment preservation
+
+Broader markdown live rendering is planned for V2.
 
 ## Development
 
@@ -27,21 +29,35 @@ Install dependencies:
 npm install
 ```
 
-Compile TypeScript:
+Compile TypeScript and bundle the webview:
 
 ```sh
 npm run compile
 ```
 
-Run the extension:
+Run tests:
 
-1. Open this folder in VS Code.
-2. Press `F5` or run the `Run Extension` launch configuration.
-3. In the Extension Development Host, open any markdown file that contains a table
-   (for example `standard-markdown-fixture.md`) to see it rendered in the editor.
+```sh
+npm test
+```
+
+Package the extension:
+
+```sh
+npm run package
+```
+
+Install the latest local VSIX into VS Code:
+
+```sh
+./Build_and_Install
+```
 
 ## Project Layout
 
-- `src/extension.ts` contains the extension activation entrypoint.
-- `package.json` declares VS Code contribution points and build scripts.
-- `.vscode/launch.json` starts an Extension Development Host for local testing.
+- `src/extension.ts` registers the VS Code custom editor and toolbar commands.
+- `src/webview/liveEditor.ts` boots the webview CodeMirror editor.
+- `src/live-v4` contains the Meeting_Minutes-style live runtime, parser, model,
+  projection, and table renderer.
+- `src/shared/tableModel.ts` contains the markdown table parsing and formatting
+  logic used by the V1 renderer.
