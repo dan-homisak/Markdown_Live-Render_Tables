@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const wantsScreenshot = args.includes("--screenshot");
+const wantsDebug = args.includes("--debug");
 const fixtureArg =
   args.find((arg) => !arg.startsWith("--")) ??
   "standard-markdown-in-table-fixture.md";
@@ -35,6 +36,7 @@ await writeFile(
   renderHarnessHtml({
     fixtureName: path.relative(repoRoot, fixturePath),
     fixtureText,
+    debug: wantsDebug,
     scriptUrl: pathToFileURL(bundlePath).href,
   }),
 );
@@ -101,7 +103,7 @@ function findChrome() {
   return undefined;
 }
 
-function renderHarnessHtml({ fixtureName, fixtureText, scriptUrl }) {
+function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
   const serializedText = JSON.stringify(fixtureText).replace(
     /<\/script/gi,
     "<\\/script",
@@ -288,6 +290,7 @@ function renderHarnessHtml({ fixtureName, fixtureText, scriptUrl }) {
         }
       };
     };
+    window.__MLRT_DEBUG__ = ${debug ? "true" : "false"};
     window.__MLRT_INITIAL_DOCUMENT__ = ${serializedText};
   </script>
   <script src="${scriptUrl}"></script>

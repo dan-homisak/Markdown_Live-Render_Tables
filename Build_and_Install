@@ -72,6 +72,15 @@ fi
 log "Uninstalling previously installed extension, if present"
 "$CODE_CLI" --uninstall-extension "$EXTENSION_ID" || true
 
+log "Removing stale installed extension directories"
+STALE_EXTENSION_DIRS=("$HOME/.vscode/extensions/${EXTENSION_ID}-"*)
+if (( ${#STALE_EXTENSION_DIRS[@]} > 0 )); then
+  rm -rf "${STALE_EXTENSION_DIRS[@]}"
+  printf 'Removed %d stale extension directorie(s).\n' "${#STALE_EXTENSION_DIRS[@]}"
+else
+  echo "No stale extension directories found."
+fi
+
 log "Installing latest VSIX into VS Code"
 "$CODE_CLI" --install-extension "$VSIX_PATH" --force
 
@@ -82,6 +91,21 @@ if [[ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]]; then
   exit 1
 fi
 echo "Verified: $EXTENSION_ID@$INSTALLED_VERSION"
+
+INSTALLED_DIR="$HOME/.vscode/extensions/${EXTENSION_ID}-${EXPECTED_VERSION}"
+if [[ ! -d "$INSTALLED_DIR" ]]; then
+  echo "Expected installed extension directory was not found: $INSTALLED_DIR"
+  exit 1
+fi
+if ! grep -q "formatTableCellSourceEdit" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain the expected source-span edit marker."
+  exit 1
+fi
+if ! grep -q "ignored a change without source ranges" "$INSTALLED_DIR/dist/extension.js"; then
+  echo "Installed extension host does not contain the expected full-document fallback guard."
+  exit 1
+fi
+echo "Verified installed payload markers."
 
 log "Reloading VS Code window"
 if command -v osascript >/dev/null 2>&1; then

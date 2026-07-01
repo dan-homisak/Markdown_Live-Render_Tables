@@ -2,7 +2,7 @@
   "name": "markdown-live-render-tables",
   "displayName": "Markdown Live Editor",
   "description": "A VS Code extension for editing markdown in a live rendered editor.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -25,8 +25,23 @@
         "title": "Toggle Markdown Live Editor",
         "category": "Markdown Live Editor",
         "icon": "$(git-compare)"
+      },
+      {
+        "command": "markdownLiveRenderTables.showDebugLog",
+        "title": "Show Debug Log",
+        "category": "Markdown Live Editor"
       }
     ],
+    "configuration": {
+      "title": "Markdown Live Editor",
+      "properties": {
+        "markdownLiveRenderTables.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write live editor cursor, focus, and source edit diagnostics to the Markdown Live Editor output channel."
+        }
+      }
+    },
     "customEditors": [
       {
         "viewType": "markdownLiveRenderTables.liveEditor",
@@ -66,10 +81,11 @@
     }
   },
   "scripts": {
-    "bundle:webview": "esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/liveEditor.js && esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/tableEditor.js",
+    "bundle:webview": "esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/liveEditor.js && esbuild src/webview/tableEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/tableEditor.js",
     "compile": "tsc -p ./ && npm run bundle:webview",
     "package": "vsce package --allow-missing-repository --out markdown-live-render-tables-latest.vsix",
     "qa:harness": "npm run compile && node scripts/render-live-editor-harness.mjs",
+    "qa:cursor": "npm run compile && node scripts/render-live-editor-harness.mjs --debug",
     "qa:screenshot": "npm run compile && node scripts/render-live-editor-harness.mjs --screenshot",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",

@@ -17650,7 +17650,7 @@
       });
     }
   };
-  var Element = class {
+  var Element2 = class {
     /**
     @internal
     */
@@ -17698,7 +17698,7 @@
     }
   };
   function elt(type, from, to, children) {
-    return new Element(type, from, to, children);
+    return new Element2(type, from, to, children);
   }
   var EmphasisUnderscore = { resolve: "Emphasis", mark: "EmphasisMark" };
   var EmphasisAsterisk = { resolve: "Emphasis", mark: "EmphasisMark" };
@@ -18044,7 +18044,7 @@
         if (open.type.mark)
           content2.push(this.elt(open.type.mark, start, open.to));
         for (let k = j + 1; k < i2; k++) {
-          if (this.parts[k] instanceof Element)
+          if (this.parts[k] instanceof Element2)
             content2.push(this.parts[k]);
           this.parts[k] = null;
         }
@@ -18061,7 +18061,7 @@
       let result = [];
       for (let i2 = from; i2 < this.parts.length; i2++) {
         let part = this.parts[i2];
-        if (part instanceof Element)
+        if (part instanceof Element2)
           result.push(part);
       }
       return result;
@@ -18128,8 +18128,8 @@
         eI++;
       if (eI < elts.length && elts[eI].from < mark.from) {
         let e = elts[eI];
-        if (e instanceof Element)
-          elts[eI] = new Element(e.type, e.from, e.to, injectMarks(e.children, [mark]));
+        if (e instanceof Element2)
+          elts[eI] = new Element2(e.type, e.from, e.to, injectMarks(e.children, [mark]));
       } else {
         elts.splice(eI++, 0, mark);
       }
@@ -20337,7 +20337,7 @@
   var IncompleteTag = 14;
   var IncompleteCloseTag = 15;
   var commentContent$1 = 59;
-  var Element2 = 21;
+  var Element3 = 21;
   var TagName = 23;
   var Attribute = 24;
   var AttributeName = 25;
@@ -20464,7 +20464,7 @@
       return startTagTerms.indexOf(term) > -1 ? new ElementContext(tagNameAfter(input, 1) || "", context) : context;
     },
     reduce(context, term) {
-      return term == Element2 && context ? context.parent : context;
+      return term == Element3 && context ? context.parent : context;
     },
     reuse(context, node, stack, input) {
       let type = node.type.id;
@@ -20628,7 +20628,7 @@
       if (id2 == ScriptText) return maybeNest(node, input, script);
       if (id2 == StyleText) return maybeNest(node, input, style);
       if (id2 == TextareaText) return maybeNest(node, input, textarea);
-      if (id2 == Element2 && other.length) {
+      if (id2 == Element3 && other.length) {
         let n = node.node, open = n.firstChild, tagName = open && findTagName(open, input), attrs2;
         if (tagName) for (let tag of other) {
           if (tag.tag == tagName && (!tag.attrs || tag.attrs(attrs2 || (attrs2 = getAttrs2(open, input))))) {
@@ -23368,16 +23368,6 @@
     }
   });
 
-  // src/live-v4/CursorController.ts
-  function createCursorController() {
-    return {
-      focusEditor(view2) {
-        view2.focus();
-        return true;
-      }
-    };
-  }
-
   // src/shared/tableModel.ts
   var FENCE_RE = /^\s{0,3}(```|~~~)/;
   var DELIMITER_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
@@ -23765,7 +23755,11 @@
     wrapper.addEventListener("focusout", (event) => {
       const cell = findCell(event.target);
       if (cell) {
-        commitCellEdit(view2, table, cell);
+        setTimeout(() => {
+          if (cell.isConnected) {
+            commitCellEdit(view2, table, cell);
+          }
+        }, 0);
       }
     });
     wrapper.addEventListener("keydown", (event) => {
@@ -23811,6 +23805,20 @@
       table.columnCount,
       column,
       value
+    );
+    view2.dom.dispatchEvent(
+      new CustomEvent("mlrt:table-cell-commit", {
+        bubbles: true,
+        detail: {
+          rowKind,
+          rowIndex,
+          column,
+          from: edit.from,
+          to: edit.to,
+          insertLength: edit.insert.length,
+          valueLength: value.length
+        }
+      })
     );
     view2.dispatch({
       changes: {
@@ -23939,7 +23947,6 @@
   function createLiveRuntime() {
     const parser5 = createTableFirstParser();
     const { liveStateField, liveAtomicRanges } = createLiveStateField({ parser: parser5 });
-    const cursorController = createCursorController();
     const pointerController = createPointerController();
     const livePointerHandlers = EditorView.domEventHandlers({
       mousedown(_event, view2) {
@@ -24018,12 +24025,7 @@
         EditorView.lineWrapping,
         liveStateField,
         liveAtomicRanges,
-        livePointerHandlers,
-        EditorView.updateListener.of((update) => {
-          if (update.focusChanged && update.view.hasFocus) {
-            cursorController.focusEditor(update.view);
-          }
-        })
+        livePointerHandlers
       ]
     };
   }
@@ -24110,6 +24112,7 @@
     throw new Error("Missing live editor mount element.");
   }
   var applyingFromHost = false;
+  var debugEnabled = window.__MLRT_DEBUG__ === true;
   var hostRevision = 0;
   var view;
   var statusElement;
@@ -24142,6 +24145,15 @@
         extensions: [
           ...runtime.extensions,
           EditorView.updateListener.of((update) => {
+            if (update.selectionSet || update.focusChanged || update.docChanged) {
+              recordDebug("editor-update", {
+                docChanged: update.docChanged,
+                focusChanged: update.focusChanged,
+                hasFocus: update.view.hasFocus,
+                selectionSet: update.selectionSet,
+                editorSelection: summarizeEditorSelection(update.view)
+              });
+            }
             if (update.docChanged && !applyingFromHost) {
               postDocumentChanges(
                 update.changes,
@@ -24153,6 +24165,7 @@
       })
     });
     setEditorDocument(initialDocument, "embedded");
+    installCursorDebugListeners(app);
   } catch (error) {
     app.replaceChildren(renderStartupError(error));
     throw error;
@@ -24163,6 +24176,7 @@
       return;
     }
     hostRevision = message.revision;
+    debugEnabled = message.debug;
     setEditorDocument(message.text, `host revision ${message.revision}`);
   });
   vscode.postMessage({ type: "ready" });
@@ -24200,12 +24214,119 @@
         text: inserted.toString()
       });
     });
+    recordDebug("post-change", {
+      baseRevision: hostRevision,
+      changes: documentChanges
+    });
     vscode.postMessage({
       type: "change",
       text,
       changes: documentChanges,
       baseRevision: hostRevision
     });
+  }
+  function installCursorDebugListeners(root) {
+    for (const eventName of ["focusin", "focusout", "mousedown", "mouseup", "click", "keydown"]) {
+      root.addEventListener(
+        eventName,
+        (event) => {
+          recordDebug(`dom-${event.type}`, {
+            target: summarizeTarget(event.target),
+            relatedTarget: "relatedTarget" in event ? summarizeTarget(event.relatedTarget) : null,
+            key: event instanceof KeyboardEvent ? event.key : void 0,
+            selection: summarizeDomSelection(),
+            editorSelection: view ? summarizeEditorSelection(view) : null,
+            activeElement: summarizeTarget(document.activeElement)
+          });
+        },
+        true
+      );
+    }
+    document.addEventListener("selectionchange", () => {
+      if (!root.contains(document.activeElement)) {
+        return;
+      }
+      recordDebug("dom-selectionchange", {
+        selection: summarizeDomSelection(),
+        editorSelection: view ? summarizeEditorSelection(view) : null,
+        activeElement: summarizeTarget(document.activeElement)
+      });
+    });
+    root.addEventListener("mlrt:table-cell-commit", (event) => {
+      recordDebug("table-cell-commit", {
+        detail: event instanceof CustomEvent ? event.detail : null,
+        selection: summarizeDomSelection(),
+        editorSelection: view ? summarizeEditorSelection(view) : null,
+        activeElement: summarizeTarget(document.activeElement)
+      });
+    });
+  }
+  function recordDebug(event, details) {
+    const debugEvent = {
+      event,
+      details,
+      timestamp: Date.now()
+    };
+    window.__MLRT_DEBUG_EVENTS__ = window.__MLRT_DEBUG_EVENTS__ ?? [];
+    window.__MLRT_DEBUG_EVENTS__.push(debugEvent);
+    if (window.__MLRT_DEBUG_EVENTS__.length > 500) {
+      window.__MLRT_DEBUG_EVENTS__.splice(
+        0,
+        window.__MLRT_DEBUG_EVENTS__.length - 500
+      );
+    }
+    if (debugEnabled) {
+      vscode.postMessage({
+        type: "debug",
+        event,
+        details
+      });
+    }
+  }
+  function summarizeEditorSelection(editorView) {
+    return {
+      ranges: editorView.state.selection.ranges.map((range) => ({
+        from: range.from,
+        to: range.to,
+        empty: range.empty
+      }))
+    };
+  }
+  function summarizeDomSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return null;
+    }
+    return {
+      anchor: summarizeNodePosition(selection.anchorNode, selection.anchorOffset),
+      focus: summarizeNodePosition(selection.focusNode, selection.focusOffset),
+      textLength: selection.toString().length,
+      collapsed: selection.isCollapsed
+    };
+  }
+  function summarizeNodePosition(node, offset) {
+    if (!node) {
+      return null;
+    }
+    const element = node instanceof HTMLElement ? node : node.parentElement ?? void 0;
+    return {
+      target: summarizeTarget(element ?? node),
+      offset
+    };
+  }
+  function summarizeTarget(target) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+    return {
+      tag: target.tagName.toLowerCase(),
+      className: target.className,
+      text: target.textContent?.slice(0, 80) ?? "",
+      rowKind: target.getAttribute("data-row-kind"),
+      rowIndex: target.getAttribute("data-row-index"),
+      column: target.getAttribute("data-column"),
+      tableFrom: target.getAttribute("data-table-from")
+    };
   }
   function renderStartupError(error) {
     const wrapper = document.createElement("pre");

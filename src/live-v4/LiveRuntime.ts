@@ -6,7 +6,6 @@ import {
   lineNumbers,
   lineNumberWidgetMarker,
 } from "@codemirror/view";
-import { createCursorController } from "./CursorController";
 import { createLiveStateField } from "./LiveStateField";
 import { createPointerController } from "./PointerController";
 import { createTableFirstParser } from "./parser/TableFirstParser";
@@ -19,7 +18,6 @@ export interface LiveRuntime {
 export function createLiveRuntime(): LiveRuntime {
   const parser = createTableFirstParser();
   const { liveStateField, liveAtomicRanges } = createLiveStateField({ parser });
-  const cursorController = createCursorController();
   const pointerController = createPointerController();
 
   const livePointerHandlers = EditorView.domEventHandlers({
@@ -102,11 +100,6 @@ export function createLiveRuntime(): LiveRuntime {
       liveStateField,
       liveAtomicRanges,
       livePointerHandlers,
-      EditorView.updateListener.of((update) => {
-        if (update.focusChanged && update.view.hasFocus) {
-          cursorController.focusEditor(update.view);
-        }
-      }),
     ],
   };
 }

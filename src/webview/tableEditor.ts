@@ -246,7 +246,11 @@ function bindTableEditing(
   wrapper.addEventListener("focusout", (event) => {
     const cell = findCell(event.target);
     if (cell) {
-      commitCellEdit(view, table, cell);
+      setTimeout(() => {
+        if (cell.isConnected) {
+          commitCellEdit(view, table, cell);
+        }
+      }, 0);
     }
   });
 
@@ -340,6 +344,20 @@ function commitCellEdit(
     table.columnCount,
     column,
     value,
+  );
+  view.dom.dispatchEvent(
+    new CustomEvent("mlrt:table-cell-commit", {
+      bubbles: true,
+      detail: {
+        rowKind,
+        rowIndex,
+        column,
+        from: edit.from,
+        to: edit.to,
+        insertLength: edit.insert.length,
+        valueLength: value.length,
+      },
+    }),
   );
   view.dispatch({
     changes: {

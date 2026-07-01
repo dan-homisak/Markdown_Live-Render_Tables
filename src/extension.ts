@@ -2,11 +2,16 @@ import * as vscode from "vscode";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 const LEGACY_TABLE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.tableEditor";
+const DEBUG_SETTING = "debug";
+
+let debugOutputChannel: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new MarkdownLiveEditorProvider(context);
+  debugOutputChannel = vscode.window.createOutputChannel("Markdown Live Editor");
 
   context.subscriptions.push(
+    debugOutputChannel,
     vscode.window.registerCustomEditorProvider(
       LIVE_EDITOR_VIEW_TYPE,
       provider,
@@ -37,6 +42,12 @@ export function activate(context: vscode.ExtensionContext): void {
       "markdownLiveRenderTables.openSourceEditor",
       async (uri?: vscode.Uri) => {
         await openSourceEditor(uri, provider);
+      },
+    ),
+    vscode.commands.registerCommand(
+      "markdownLiveRenderTables.showDebugLog",
+      () => {
+        debugOutputChannel?.show(true);
       },
     ),
   );
@@ -95,6 +106,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         type: "setDocument",
         text: document.getText(),
         revision: documentRevision,
+        debug: isDebugEnabled(),
       } satisfies HostSetDocumentMessage);
     };
 
@@ -104,9 +116,15 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           applyingFromWebview = true;
           try {
             if (message.changes?.length) {
+              logDebug(
+                `apply ${message.changes.length} change(s) from webview at revision ${message.baseRevision}`,
+              );
               await applyDocumentChanges(document, message.changes);
             } else {
-              await applyFullDocumentEdit(document, message.text);
+              vscode.window.showWarningMessage(
+                "Markdown live editor ignored a change without source ranges.",
+              );
+              logDebug("ignored change message without source ranges");
             }
           } finally {
             applyingFromWebview = false;
@@ -149,11 +167,17 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         }
 
         if (isOpenSourceMessage(message)) {
+          logDebug(`open source requested for ${document.uri.toString()}`);
           void openSourceEditor(
             document.uri,
             this,
             vscode.window.tabGroups.activeTabGroup.activeTab,
           );
+          return;
+        }
+
+        if (isDebugMessage(message)) {
+          logDebug(`${message.event}: ${JSON.stringify(message.details)}`);
           return;
         }
 
@@ -286,6 +310,16 @@ async function closeTabIfReplaced(
     return;
   }
 
+  const document = vscode.workspace.textDocuments.find(
+    (candidate) => candidate.uri.toString() === uri.toString(),
+  );
+  if (document?.isDirty) {
+    logDebug(
+      `leaving renderer tab open for dirty document ${uri.toString()} to avoid save prompt`,
+    );
+    return;
+  }
+
   await vscode.window.tabGroups.close(tab, true);
 }
 
@@ -297,27 +331,6 @@ function tabMatchesUri(tab: vscode.Tab, uri: vscode.Uri): boolean {
     (input instanceof vscode.TabInputCustom &&
       input.uri.toString() === uri.toString())
   );
-}
-
-async function applyFullDocumentEdit(
-  document: vscode.TextDocument,
-  text: string,
-): Promise<void> {
-  if (text === document.getText()) {
-    return;
-  }
-
-  const edit = new vscode.WorkspaceEdit();
-  const range = new vscode.Range(
-    document.positionAt(0),
-    document.positionAt(document.getText().length),
-  );
-  edit.replace(document.uri, range, text);
-
-  const applied = await vscode.workspace.applyEdit(edit);
-  if (!applied) {
-    vscode.window.showWarningMessage("Markdown live editor could not apply changes.");
-  }
 }
 
 async function applyDocumentChanges(
@@ -363,6 +376,12 @@ interface ChangeMessage {
   baseRevision: number;
 }
 
+interface DebugMessage {
+  type: "debug";
+  event: string;
+  details: unknown;
+}
+
 interface OpenSourceMessage {
   type: "openSource";
 }
@@ -371,6 +390,7 @@ interface HostSetDocumentMessage {
   type: "setDocument";
   text: string;
   revision: number;
+  debug: boolean;
 }
 
 function isReadyMessage(message: unknown): message is ReadyMessage {
@@ -411,8 +431,33 @@ function isOpenSourceMessage(message: unknown): message is OpenSourceMessage {
   return isMessageRecord(message) && message.type === "openSource";
 }
 
+function isDebugMessage(message: unknown): message is DebugMessage {
+  return (
+    isMessageRecord(message) &&
+    message.type === "debug" &&
+    typeof message.event === "string" &&
+    "details" in message
+  );
+}
+
 function isMessageRecord(message: unknown): message is Record<string, unknown> {
   return Boolean(message) && typeof message === "object";
+}
+
+function isDebugEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("markdownLiveRenderTables")
+    .get<boolean>(DEBUG_SETTING, false);
+}
+
+function logDebug(message: string): void {
+  if (!isDebugEnabled()) {
+    return;
+  }
+
+  debugOutputChannel?.appendLine(
+    `[${new Date().toISOString()}] ${message}`,
+  );
 }
 
 function getEditorHtml(
