@@ -10,7 +10,9 @@ let debugOutputChannel: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new MarkdownLiveEditorProvider(context);
-  debugOutputChannel = vscode.window.createOutputChannel("Markdown Live Editor");
+  debugOutputChannel = vscode.window.createOutputChannel(
+    "Markdown Live Editor",
+  );
 
   context.subscriptions.push(
     debugOutputChannel,
@@ -82,6 +84,9 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         : "liveEditor.js";
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, "media", scriptFileName),
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, "media", "liveEditor.css"),
     );
     const documentKey = document.uri.toString();
 
@@ -193,7 +198,13 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       }),
     );
 
-    webview.html = getEditorHtml(webview, scriptUri, document.getText(), document.uri);
+    webview.html = getEditorHtml(
+      webview,
+      scriptUri,
+      styleUri,
+      document.getText(),
+      document.uri,
+    );
     setTimeout(postDocument, 0);
     setTimeout(postDocument, 250);
 
@@ -258,7 +269,9 @@ async function openLiveEditor(
 ): Promise<void> {
   const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri;
   if (!targetUri) {
-    vscode.window.showWarningMessage("Open a markdown file before opening the live editor.");
+    vscode.window.showWarningMessage(
+      "Open a markdown file before opening the live editor.",
+    );
     return;
   }
 
@@ -272,10 +285,15 @@ async function openLiveEditor(
     return;
   }
 
-  await vscode.commands.executeCommand("vscode.openWith", targetUri, LIVE_EDITOR_VIEW_TYPE, {
-    viewColumn,
-    preserveFocus: false,
-  });
+  await vscode.commands.executeCommand(
+    "vscode.openWith",
+    targetUri,
+    LIVE_EDITOR_VIEW_TYPE,
+    {
+      viewColumn,
+      preserveFocus: false,
+    },
+  );
 }
 
 async function openSourceEditor(
@@ -284,9 +302,13 @@ async function openSourceEditor(
   tabToClose?: vscode.Tab,
 ): Promise<void> {
   const targetUri =
-    uri ?? provider.getActiveDocumentUri() ?? vscode.window.activeTextEditor?.document.uri;
+    uri ??
+    provider.getActiveDocumentUri() ??
+    vscode.window.activeTextEditor?.document.uri;
   if (!targetUri) {
-    vscode.window.showWarningMessage("Open a live markdown editor before returning to source.");
+    vscode.window.showWarningMessage(
+      "Open a live markdown editor before returning to source.",
+    );
     return;
   }
 
@@ -334,7 +356,9 @@ async function applyDocumentChanges(
 
   const applied = await vscode.workspace.applyEdit(edit);
   if (!applied) {
-    vscode.window.showWarningMessage("Markdown live editor could not apply changes.");
+    vscode.window.showWarningMessage(
+      "Markdown live editor could not apply changes.",
+    );
   }
 }
 
@@ -434,18 +458,20 @@ function logDebug(message: string): void {
     return;
   }
 
-  debugOutputChannel?.appendLine(
-    `[${new Date().toISOString()}] ${message}`,
-  );
+  debugOutputChannel?.appendLine(`[${new Date().toISOString()}] ${message}`);
 }
 
 async function reopenActiveEditorWith(editorId: string): Promise<void> {
-  await vscode.commands.executeCommand(REOPEN_ACTIVE_EDITOR_WITH_COMMAND, editorId);
+  await vscode.commands.executeCommand(
+    REOPEN_ACTIVE_EDITOR_WITH_COMMAND,
+    editorId,
+  );
 }
 
 function getEditorHtml(
   webview: vscode.Webview,
   scriptUri: vscode.Uri,
+  styleUri: vscode.Uri,
   initialText: string,
   documentUri: vscode.Uri,
 ): string {
@@ -469,117 +495,8 @@ function getEditorHtml(
     :root {
 ${editorMetricsCss}
     }
-
-    html,
-    body,
-    #app {
-      height: 100%;
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      color: var(--vscode-editor-foreground);
-      background: var(--vscode-editor-background);
-      font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family));
-      font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size));
-    }
-
-    .mm-live-v4-shell {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .mm-live-v4-editor-mount {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .cm-editor {
-      height: 100%;
-      min-height: 0;
-      background: var(--vscode-editor-background, #1e1e1e);
-      color: var(--vscode-editor-foreground, #d4d4d4);
-    }
-
-    .cm-scroller {
-      overflow: auto !important;
-      height: 100%;
-      font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace));
-      font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px));
-      font-weight: var(--mlrt-editor-font-weight, normal);
-      line-height: var(--mlrt-editor-line-height, normal);
-      letter-spacing: var(--mlrt-editor-letter-spacing, normal);
-      font-feature-settings: var(--mlrt-editor-font-feature-settings, normal);
-      font-variation-settings: var(--mlrt-editor-font-variation-settings, normal);
-    }
-
-    .cm-content {
-      caret-color: var(--vscode-editorCursor-foreground);
-    }
-
-    .mm-live-v4-table-widget {
-      display: block;
-      max-width: 100%;
-      margin: 0;
-      padding: 0;
-      overflow-x: auto;
-      overflow-y: hidden;
-      color: var(--vscode-editor-foreground, #d4d4d4);
-    }
-
-    .mm-live-v4-table {
-      width: calc(100vw - 8rem);
-      max-width: none;
-      box-sizing: border-box;
-      border-collapse: collapse;
-      table-layout: auto;
-      color: var(--vscode-editor-foreground, #d4d4d4);
-      background: var(--vscode-editor-background, #1e1e1e);
-      font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace));
-      font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px));
-      font-weight: var(--mlrt-editor-font-weight, normal);
-      line-height: var(--mlrt-editor-line-height, normal);
-      letter-spacing: var(--mlrt-editor-letter-spacing, normal);
-      font-feature-settings: var(--mlrt-editor-font-feature-settings, normal);
-      font-variation-settings: var(--mlrt-editor-font-variation-settings, normal);
-    }
-
-    .mm-live-v4-table th,
-    .mm-live-v4-table td {
-      min-width: 5ch;
-      max-width: none;
-      padding: 0 1ch;
-      border: 1px solid var(--vscode-editorWidget-border, #6a6a6a);
-      vertical-align: top;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    .mm-live-v4-table th {
-      background: var(--vscode-editorWidget-background, #252526);
-      font-weight: 600;
-    }
-
-    .mm-live-v4-table-cell[contenteditable="true"] {
-      outline: none;
-    }
-
-    .mm-live-v4-table-cell[contenteditable="true"]:focus {
-      background: var(--vscode-list-activeSelectionBackground);
-      color: var(--vscode-list-activeSelectionForeground);
-      box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
-    }
-
-    .mm-live-v4-loading {
-      padding: 1rem;
-      color: var(--vscode-descriptionForeground);
-      font-family: var(--vscode-font-family);
-    }
   </style>
+  <link rel="stylesheet" href="${styleUri}">
   <title>Markdown Live Editor</title>
 </head>
 <body>
@@ -595,14 +512,16 @@ ${editorMetricsCss}
 
 function getEditorMetricsCss(documentUri: vscode.Uri): string {
   const editorConfig = vscode.workspace.getConfiguration("editor", documentUri);
-  const fontSize = clampNumber(editorConfig.get<number>("fontSize", 14), 6, 100);
+  const fontSize = clampNumber(
+    editorConfig.get<number>("fontSize", 14),
+    6,
+    100,
+  );
   const configuredLineHeight = clampNumber(
     editorConfig.get<number>("lineHeight", 0),
     0,
     300,
   );
-  const lineHeight =
-    configuredLineHeight > 0 ? configuredLineHeight : Math.round(fontSize * 1.5);
   const cursorWidth = clampNumber(
     editorConfig.get<number>("cursorWidth", 1),
     1,
@@ -629,18 +548,26 @@ function getEditorMetricsCss(documentUri: vscode.Uri): string {
   );
   const fontFeatureSettings = getFontFeatureSettings(editorConfig);
   const fontVariationSettings = getFontVariationSettings(editorConfig);
+  const lineHeightRatio =
+    configuredLineHeight > 0 ? configuredLineHeight / fontSize : 1.5;
 
   return [
-    `      --mlrt-editor-font-family: ${fontFamily};`,
-    `      --mlrt-editor-font-size: ${fontSize}px;`,
-    `      --mlrt-editor-font-weight: ${fontWeight};`,
-    `      --mlrt-editor-line-height: ${lineHeight}px;`,
+    `      --mlrt-editor-font-family: var(--vscode-editor-font-family, ${fontFamily});`,
+    `      --mlrt-editor-font-size: var(--vscode-editor-font-size, ${fontSize}px);`,
+    `      --mlrt-editor-font-weight: var(--vscode-editor-font-weight, ${fontWeight});`,
+    `      --mlrt-editor-line-height: calc(var(--mlrt-editor-font-size) * ${lineHeightRatio.toFixed(4)});`,
     `      --mlrt-editor-letter-spacing: ${letterSpacing}px;`,
     `      --mlrt-editor-font-feature-settings: ${fontFeatureSettings};`,
     `      --mlrt-editor-font-variation-settings: ${fontVariationSettings};`,
     `      --mlrt-editor-cursor-width: ${cursorWidth}px;`,
     `      --mlrt-editor-top-padding: ${paddingTop}px;`,
     `      --mlrt-editor-bottom-padding: ${paddingBottom}px;`,
+    `      --mlrt-editor-gutter-left-padding: 30px;`,
+    `      --mlrt-editor-line-number-width: 22px;`,
+    `      --mlrt-editor-gutter-right-padding: 14px;`,
+    `      --mlrt-editor-gutter-width: calc(var(--mlrt-editor-gutter-left-padding) + var(--mlrt-editor-line-number-width) + var(--mlrt-editor-gutter-right-padding));`,
+    `      --mlrt-live-content-width: 100vw;`,
+    `      --mlrt-live-gutter-width: var(--mlrt-editor-gutter-width);`,
   ].join("\n");
 }
 
@@ -663,7 +590,7 @@ function getFontFeatureSettings(
     return sanitizeCssValue(fontLigatures, "normal");
   }
 
-  return fontLigatures ? "\"liga\" on, \"calt\" on" : "normal";
+  return fontLigatures ? '"liga" on, "calt" on' : "normal";
 }
 
 function getFontVariationSettings(

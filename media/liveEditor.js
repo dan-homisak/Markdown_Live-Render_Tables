@@ -23731,12 +23731,6 @@
     getTableFrom() {
       return this.table.from;
     }
-    getSourceLineNumbers() {
-      return [
-        this.table.header.lineIndex + 1,
-        ...this.table.body.map((row) => row.lineIndex + 1)
-      ];
-    }
     toDOM(view2) {
       const wrapper = document.createElement("section");
       wrapper.className = "mm-live-v4-table-widget";
@@ -23746,6 +23740,7 @@
       wrapper.contentEditable = "false";
       const tableElement = document.createElement("table");
       tableElement.className = "mm-live-v4-table";
+      appendColumnSizing(tableElement, this.table);
       const thead = document.createElement("thead");
       const headerRow = document.createElement("tr");
       appendCells({
@@ -23754,7 +23749,8 @@
         tableRow: headerRow,
         tagName: "th",
         rowKind: "header",
-        rowIndex: 0
+        rowIndex: 0,
+        sourceLineNumber: this.table.header.lineIndex + 1
       });
       thead.append(headerRow);
       tableElement.append(thead);
@@ -23767,7 +23763,8 @@
           tableRow,
           tagName: "td",
           rowKind: "body",
-          rowIndex
+          rowIndex,
+          sourceLineNumber: sourceRow.lineIndex + 1
         });
         tbody.append(tableRow);
       });
@@ -23793,9 +23790,38 @@
       cell.dataset.rowIndex = String(options.rowIndex);
       cell.dataset.column = String(column);
       cell.dataset.original = value;
+      if (column === 0) {
+        cell.dataset.sourceLine = String(options.sourceLineNumber);
+      }
       cell.style.textAlign = options.table.alignments[column] ?? "left";
       options.tableRow.append(cell);
     });
+  }
+  function appendColumnSizing(tableElement, table) {
+    const colgroup = document.createElement("colgroup");
+    const widthPercentages = measureColumnWidthPercentages(table);
+    for (let column = 0; column < table.columnCount; column++) {
+      const col = document.createElement("col");
+      col.className = "mm-live-v4-table-sized-col";
+      col.style.width = `${widthPercentages[column].toFixed(4)}%`;
+      colgroup.append(col);
+    }
+    tableElement.append(colgroup);
+  }
+  function measureColumnWidthPercentages(table) {
+    const rows = [table.header, ...table.body];
+    const weights = Array.from({ length: table.columnCount }, (_value, column) => {
+      const longestValue = rows.reduce((longest, row) => {
+        const value = rowToDisplayValues(row, table.columnCount)[column] ?? "";
+        return Math.max(longest, value.length);
+      }, 0);
+      return Math.max(8, Math.min(longestValue + 4, 28));
+    });
+    const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+    if (totalWeight <= 0) {
+      return weights.map(() => 100 / Math.max(1, table.columnCount));
+    }
+    return weights.map((weight) => weight / totalWeight * 100);
   }
   function bindTableEditing(wrapper, view2, table) {
     wrapper.addEventListener("focusout", (event) => {
@@ -24025,6 +24051,8 @@
             backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e))",
             color: "var(--vscode-editorLineNumber-foreground, #858585)",
             borderRight: "none",
+            boxSizing: "border-box",
+            paddingLeft: "var(--mlrt-editor-gutter-left-padding, 18px)",
             fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
             fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
             fontWeight: "var(--mlrt-editor-font-weight, normal)",
@@ -24039,32 +24067,11 @@
           },
           ".cm-lineNumbers .cm-gutterElement": {
             minHeight: "var(--mlrt-editor-line-height, 1.5em)",
-            padding: "0 18px 0 0"
+            minWidth: "var(--mlrt-editor-line-number-width, 22px)",
+            padding: "0 var(--mlrt-editor-gutter-right-padding, 26px) 0 0"
           },
           '.cm-lineNumbers .cm-gutterElement[style*="visibility: hidden"]': {
             minHeight: "0"
-          },
-          ".cm-lineNumbers .mm-live-v4-table-gutter-lines": {
-            boxSizing: "border-box",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "stretch",
-            minWidth: "100%",
-            paddingTop: "0",
-            paddingBottom: "0",
-            color: "var(--vscode-editorLineNumber-foreground, #858585)",
-            fontVariantNumeric: "tabular-nums",
-            userSelect: "none"
-          },
-          ".cm-lineNumbers .mm-live-v4-table-gutter-line": {
-            boxSizing: "border-box",
-            display: "flex",
-            justifyContent: "flex-end",
-            alignItems: "flex-start",
-            minHeight: "var(--mlrt-editor-line-height, 1.5em)",
-            paddingRight: "0",
-            paddingTop: "0",
-            whiteSpace: "nowrap"
           },
           ".cm-content": {
             minHeight: "100%",
@@ -24086,15 +24093,7 @@
         highlightActiveLineGutter(),
         lineNumbers(),
         createTableLineNumberSuppressions(),
-        lineNumberWidgetMarker.of((_view, widget) => {
-          if (!(widget instanceof RenderedTableWidget)) {
-            return null;
-          }
-          return new TableRowLineNumberMarker(
-            widget.getTableFrom(),
-            widget.getSourceLineNumbers()
-          );
-        }),
+        createEditorGeometrySync(),
         markdown(),
         ...options.lineWrapping ? [EditorView.lineWrapping] : [],
         liveStateField,
@@ -24103,21 +24102,66 @@
       ]
     };
   }
-  function createTableLineNumberSuppressions() {
-    const tableLineNumberSuppressions = StateField.define({
-      create(state) {
-        return buildTableLineNumberSuppressions(state.doc.toString());
-      },
-      update(value, transaction) {
-        if (!transaction.docChanged) {
-          return value;
+  function createEditorGeometrySync() {
+    return ViewPlugin.fromClass(
+      class {
+        lastContentWidth = -1;
+        lastGutterWidth = -1;
+        constructor(view2) {
+          this.schedule(view2);
         }
-        return buildTableLineNumberSuppressions(transaction.state.doc.toString());
-      },
-      provide(field) {
-        return lineNumberMarkers.from(field);
+        update(update) {
+          if (update.geometryChanged || update.viewportChanged || update.docChanged) {
+            this.schedule(update.view);
+          }
+        }
+        schedule(view2) {
+          view2.requestMeasure({
+            read: (measuredView) => ({
+              contentWidth: measuredView.scrollDOM.clientWidth,
+              gutterWidth: measuredView.dom.querySelector(".cm-gutters")?.offsetWidth ?? 0
+            }),
+            write: (metrics, measuredView) => {
+              const scrollerStyle = measuredView.scrollDOM.style;
+              if (metrics.contentWidth !== this.lastContentWidth) {
+                this.lastContentWidth = metrics.contentWidth;
+                scrollerStyle.setProperty(
+                  "--mlrt-live-content-width",
+                  `${metrics.contentWidth}px`
+                );
+              }
+              if (metrics.gutterWidth > 0 && metrics.gutterWidth !== this.lastGutterWidth) {
+                this.lastGutterWidth = metrics.gutterWidth;
+                scrollerStyle.setProperty(
+                  "--mlrt-live-gutter-width",
+                  `${metrics.gutterWidth}px`
+                );
+              }
+            }
+          });
+        }
       }
-    });
+    );
+  }
+  function createTableLineNumberSuppressions() {
+    const tableLineNumberSuppressions = StateField.define(
+      {
+        create(state) {
+          return buildTableLineNumberSuppressions(state.doc.toString());
+        },
+        update(value, transaction) {
+          if (!transaction.docChanged) {
+            return value;
+          }
+          return buildTableLineNumberSuppressions(
+            transaction.state.doc.toString()
+          );
+        },
+        provide(field) {
+          return lineNumberMarkers.from(field);
+        }
+      }
+    );
     return tableLineNumberSuppressions;
   }
   var hiddenLineNumberMarker = new class extends GutterMarker {
@@ -24134,79 +24178,6 @@
       builder.add(table.from, table.from, hiddenLineNumberMarker);
     }
     return builder.finish();
-  }
-  var TableRowLineNumberMarker = class extends GutterMarker {
-    constructor(tableFrom, lineNumbers2) {
-      super();
-      this.tableFrom = tableFrom;
-      this.lineNumbers = lineNumbers2;
-    }
-    tableFrom;
-    lineNumbers;
-    eq(_other) {
-      return false;
-    }
-    toDOM(view2) {
-      const wrapper = view2.dom.ownerDocument.createElement("div");
-      wrapper.className = "mm-live-v4-table-gutter-lines";
-      wrapper.dataset.tableFrom = String(this.tableFrom);
-      this.lineNumbers.forEach((lineNumber) => {
-        const line = view2.dom.ownerDocument.createElement("div");
-        line.className = "mm-live-v4-table-gutter-line";
-        line.textContent = String(lineNumber);
-        wrapper.append(line);
-      });
-      scheduleTableGutterSync(view2, wrapper, this.tableFrom);
-      return wrapper;
-    }
-    destroy(dom) {
-      if (dom instanceof HTMLElement) {
-        const observer = tableGutterObservers.get(dom);
-        observer?.disconnect();
-        tableGutterObservers.delete(dom);
-      }
-    }
-  };
-  var tableGutterObservers = /* @__PURE__ */ new WeakMap();
-  function scheduleTableGutterSync(view2, gutter2, tableFrom) {
-    const win = view2.dom.ownerDocument.defaultView ?? window;
-    win.requestAnimationFrame(() => {
-      syncTableGutterRows(view2, gutter2, tableFrom);
-    });
-  }
-  function syncTableGutterRows(view2, gutter2, tableFrom) {
-    const table = view2.dom.ownerDocument.querySelector(
-      `.mm-live-v4-table-widget[data-src-from="${tableFrom}"] .mm-live-v4-table`
-    );
-    if (!table) {
-      return;
-    }
-    const tableRows = Array.from(
-      table.querySelectorAll("thead tr, tbody tr")
-    );
-    const gutterRows = Array.from(
-      gutter2.querySelectorAll(".mm-live-v4-table-gutter-line")
-    );
-    tableRows.forEach((tableRow, index) => {
-      const gutterRow = gutterRows[index];
-      if (!gutterRow) {
-        return;
-      }
-      gutterRow.style.height = `${tableRow.getBoundingClientRect().height}px`;
-    });
-    if (typeof ResizeObserver === "undefined" || tableGutterObservers.has(gutter2)) {
-      return;
-    }
-    const observer = new ResizeObserver(() => {
-      tableRows.forEach((tableRow, index) => {
-        const gutterRow = gutterRows[index];
-        if (gutterRow) {
-          gutterRow.style.height = `${tableRow.getBoundingClientRect().height}px`;
-        }
-      });
-    });
-    observer.observe(table);
-    tableGutterObservers.set(gutter2, observer);
   }
 
   // src/webview/liveEditor.ts

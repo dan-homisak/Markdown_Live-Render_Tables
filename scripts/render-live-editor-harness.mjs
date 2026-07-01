@@ -5,16 +5,23 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 const args = process.argv.slice(2);
 const wantsScreenshot = args.includes("--screenshot");
 const wantsDebug = args.includes("--debug");
+const lineWrapping = !args.includes("--no-wrap");
+const windowSizeArg = args.find((arg) => arg.startsWith("--window-size="));
+const windowSize = windowSizeArg?.slice("--window-size=".length) ?? "1800,1200";
 const fixtureArg =
   args.find((arg) => !arg.startsWith("--")) ??
   "standard-markdown-in-table-fixture.md";
 
 const fixturePath = path.resolve(repoRoot, fixtureArg);
 const bundlePath = path.join(repoRoot, "media", "liveEditor.js");
+const stylePath = path.join(repoRoot, "media", "liveEditor.css");
 const qaDir = path.join(repoRoot, "qa");
 const htmlPath = path.join(qaDir, "live-editor-harness.html");
 const screenshotPath = path.join(qaDir, "live-editor-harness.png");
@@ -30,13 +37,16 @@ if (!existsSync(bundlePath)) {
 }
 
 const fixtureText = await readFile(fixturePath, "utf8");
+const sharedCss = await readFile(stylePath, "utf8");
 await mkdir(qaDir, { recursive: true });
 await writeFile(
   htmlPath,
   renderHarnessHtml({
     fixtureName: path.relative(repoRoot, fixturePath),
     fixtureText,
+    sharedCss,
     debug: wantsDebug,
+    lineWrapping,
     scriptUrl: pathToFileURL(bundlePath).href,
   }),
 );
@@ -58,7 +68,7 @@ if (wantsScreenshot) {
       "--disable-gpu",
       "--allow-file-access-from-files",
       "--virtual-time-budget=3000",
-      "--window-size=1800,1200",
+      `--window-size=${windowSize}`,
       `--screenshot=${screenshotPath}`,
       htmlUrl,
     ],
@@ -103,7 +113,14 @@ function findChrome() {
   return undefined;
 }
 
-function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
+function renderHarnessHtml({
+  fixtureName,
+  fixtureText,
+  sharedCss,
+  debug,
+  lineWrapping,
+  scriptUrl,
+}) {
   const serializedText = JSON.stringify(fixtureText).replace(
     /<\/script/gi,
     "<\\/script",
@@ -124,10 +141,16 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
       --mlrt-editor-font-family: var(--vscode-editor-font-family);
       --mlrt-editor-font-size: var(--vscode-editor-font-size);
       --mlrt-editor-font-weight: normal;
-      --mlrt-editor-line-height: 19px;
+      --mlrt-editor-line-height: calc(var(--mlrt-editor-font-size) * 1.5);
       --mlrt-editor-letter-spacing: 0px;
       --mlrt-editor-cursor-width: 1px;
       --mlrt-editor-top-padding: 4px;
+      --mlrt-editor-gutter-left-padding: 30px;
+      --mlrt-editor-line-number-width: 22px;
+      --mlrt-editor-gutter-right-padding: 14px;
+      --mlrt-editor-gutter-width: calc(var(--mlrt-editor-gutter-left-padding) + var(--mlrt-editor-line-number-width) + var(--mlrt-editor-gutter-right-padding));
+      --mlrt-live-content-width: 100vw;
+      --mlrt-live-gutter-width: var(--mlrt-editor-gutter-width);
       --vscode-editorCursor-foreground: #aeafad;
       --vscode-editor-lineHighlightBackground: #2a2d2e;
       --vscode-editorGutter-background: #1e1e1e;
@@ -144,107 +167,7 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
       --vscode-errorForeground: #f48771;
     }
 
-    html,
-    body,
-    #app {
-      height: 100%;
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      color: var(--vscode-editor-foreground);
-      background: var(--vscode-editor-background);
-      font-family: var(--mlrt-editor-font-family);
-      font-size: var(--mlrt-editor-font-size);
-    }
-
-    .mm-live-v4-shell {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .mm-live-v4-editor-mount {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .cm-editor {
-      height: 100%;
-      min-height: 0;
-      background: var(--vscode-editor-background);
-      color: var(--vscode-editor-foreground);
-    }
-
-    .cm-scroller {
-      overflow: auto !important;
-      height: 100%;
-      font-family: var(--mlrt-editor-font-family);
-      font-size: var(--mlrt-editor-font-size);
-      font-weight: var(--mlrt-editor-font-weight);
-      line-height: var(--mlrt-editor-line-height);
-      letter-spacing: var(--mlrt-editor-letter-spacing);
-    }
-
-    .mm-live-v4-table-widget {
-      display: block;
-      max-width: 100%;
-      margin: 0;
-      padding: 0;
-      overflow-x: auto;
-      overflow-y: hidden;
-      color: var(--vscode-editor-foreground);
-    }
-
-    .mm-live-v4-table {
-      width: calc(100vw - 8rem);
-      max-width: none;
-      box-sizing: border-box;
-      border-collapse: collapse;
-      table-layout: auto;
-      color: var(--vscode-editor-foreground);
-      background: var(--vscode-editor-background);
-      font-family: var(--mlrt-editor-font-family);
-      font-size: var(--mlrt-editor-font-size);
-      font-weight: var(--mlrt-editor-font-weight);
-      line-height: var(--mlrt-editor-line-height);
-      letter-spacing: var(--mlrt-editor-letter-spacing);
-    }
-
-    .mm-live-v4-table th,
-    .mm-live-v4-table td {
-      min-width: 5ch;
-      max-width: none;
-      padding: 0 1ch;
-      border: 1px solid var(--vscode-editorWidget-border);
-      vertical-align: top;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    .mm-live-v4-table th {
-      background: var(--vscode-editorWidget-background);
-      font-weight: 600;
-    }
-
-    .mm-live-v4-table-cell[contenteditable="true"] {
-      outline: none;
-    }
-
-    .mm-live-v4-table-cell[contenteditable="true"]:focus {
-      background: var(--vscode-list-activeSelectionBackground);
-      color: var(--vscode-list-activeSelectionForeground);
-      box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
-    }
-
-    .mm-live-v4-loading {
-      padding: 1rem;
-      color: var(--vscode-descriptionForeground);
-      font-family: var(--vscode-font-family);
-    }
+${sharedCss}
   </style>
 </head>
 <body>
@@ -261,6 +184,7 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
     };
     window.__MLRT_DEBUG__ = ${debug ? "true" : "false"};
     window.__MLRT_INITIAL_DOCUMENT__ = ${serializedText};
+    window.__MLRT_EDITOR_OPTIONS__ = ${JSON.stringify({ lineWrapping })};
   </script>
   <script src="${scriptUrl}"></script>
 </body>

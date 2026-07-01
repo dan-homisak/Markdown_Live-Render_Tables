@@ -12,13 +12,13 @@ import {
   highlightActiveLineGutter,
   lineNumbers,
   lineNumberMarkers,
-  lineNumberWidgetMarker,
+  ViewPlugin,
+  ViewUpdate,
 } from "@codemirror/view";
 import { parseMarkdownTables } from "../shared/tableModel";
 import { createLiveStateField } from "./LiveStateField";
 import { createPointerController } from "./PointerController";
 import { createTableFirstParser } from "./parser/TableFirstParser";
-import { RenderedTableWidget } from "./render/TableWidget";
 
 export interface LiveRuntime {
   extensions: Extension[];
@@ -53,69 +53,62 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
         ".cm-scroller": {
           overflow: "auto !important",
           height: "100%",
-          fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
-          fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
+          fontFamily:
+            "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
+          fontSize:
+            "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
           fontWeight: "var(--mlrt-editor-font-weight, normal)",
           lineHeight: "var(--mlrt-editor-line-height, normal)",
           letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
-          fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
-          fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)",
+          fontFeatureSettings:
+            "var(--mlrt-editor-font-feature-settings, normal)",
+          fontVariationSettings:
+            "var(--mlrt-editor-font-variation-settings, normal)",
         },
         ".cm-gutters": {
-          backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e))",
+          backgroundColor:
+            "var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e))",
           color: "var(--vscode-editorLineNumber-foreground, #858585)",
           borderRight: "none",
-          fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
-          fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
+          boxSizing: "border-box",
+          paddingLeft: "var(--mlrt-editor-gutter-left-padding, 18px)",
+          fontFamily:
+            "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
+          fontSize:
+            "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
           fontWeight: "var(--mlrt-editor-font-weight, normal)",
           lineHeight: "var(--mlrt-editor-line-height, normal)",
           letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
-          fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
-          fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)",
+          fontFeatureSettings:
+            "var(--mlrt-editor-font-feature-settings, normal)",
+          fontVariationSettings:
+            "var(--mlrt-editor-font-variation-settings, normal)",
         },
         ".cm-activeLineGutter": {
-          backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)",
+          backgroundColor:
+            "var(--vscode-editor-lineHighlightBackground, transparent)",
           color: "var(--vscode-editorLineNumber-activeForeground, #c6c6c6)",
         },
         ".cm-lineNumbers .cm-gutterElement": {
           minHeight: "var(--mlrt-editor-line-height, 1.5em)",
-          padding: "0 18px 0 0",
+          minWidth: "var(--mlrt-editor-line-number-width, 22px)",
+          padding: "0 var(--mlrt-editor-gutter-right-padding, 26px) 0 0",
         },
-        ".cm-lineNumbers .cm-gutterElement[style*=\"visibility: hidden\"]": {
+        '.cm-lineNumbers .cm-gutterElement[style*="visibility: hidden"]': {
           minHeight: "0",
-        },
-        ".cm-lineNumbers .mm-live-v4-table-gutter-lines": {
-          boxSizing: "border-box",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "stretch",
-          minWidth: "100%",
-          paddingTop: "0",
-          paddingBottom: "0",
-          color: "var(--vscode-editorLineNumber-foreground, #858585)",
-          fontVariantNumeric: "tabular-nums",
-          userSelect: "none",
-        },
-        ".cm-lineNumbers .mm-live-v4-table-gutter-line": {
-          boxSizing: "border-box",
-          display: "flex",
-          justifyContent: "flex-end",
-          alignItems: "flex-start",
-          minHeight: "var(--mlrt-editor-line-height, 1.5em)",
-          paddingRight: "0",
-          paddingTop: "0",
-          whiteSpace: "nowrap",
         },
         ".cm-content": {
           minHeight: "100%",
-          padding: "var(--mlrt-editor-top-padding, 0px) 0 var(--mlrt-editor-bottom-padding, 0px) 0",
+          padding:
+            "var(--mlrt-editor-top-padding, 0px) 0 var(--mlrt-editor-bottom-padding, 0px) 0",
           caretColor: "var(--vscode-editorCursor-foreground, #aeafad)",
         },
         ".cm-line": {
           color: "var(--vscode-editor-foreground, #d4d4d4)",
         },
         ".cm-activeLine": {
-          backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)",
+          backgroundColor:
+            "var(--vscode-editor-lineHighlightBackground, transparent)",
         },
         ".cm-cursor, .cm-dropCursor": {
           borderLeftColor: "var(--vscode-editorCursor-foreground, #aeafad)",
@@ -126,16 +119,7 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
       highlightActiveLineGutter(),
       lineNumbers(),
       createTableLineNumberSuppressions(),
-      lineNumberWidgetMarker.of((_view, widget) => {
-        if (!(widget instanceof RenderedTableWidget)) {
-          return null;
-        }
-
-        return new TableRowLineNumberMarker(
-          widget.getTableFrom(),
-          widget.getSourceLineNumbers(),
-        );
-      }),
+      createEditorGeometrySync(),
       markdown(),
       ...(options.lineWrapping ? [EditorView.lineWrapping] : []),
       liveStateField,
@@ -145,26 +129,97 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
   };
 }
 
-function createTableLineNumberSuppressions(): Extension {
-  const tableLineNumberSuppressions = StateField.define<RangeSet<GutterMarker>>({
-    create(state) {
-      return buildTableLineNumberSuppressions(state.doc.toString());
-    },
-    update(value, transaction) {
-      if (!transaction.docChanged) {
-        return value;
+/**
+ * Publishes live editor geometry (the usable content width and the real
+ * line-number gutter width) as CSS custom properties on the scroller.
+ *
+ * The rendered table is a block widget living inside `.cm-content`. When line
+ * wrapping is disabled the content box is sized to `max-content`, so a table
+ * with `width: 100%` resolves against a shrink-to-fit container and never
+ * wraps. Exposing the measured viewport width lets the table adopt a definite
+ * width (viewport minus gutter) regardless of the editor's word-wrap setting.
+ *
+ * Measuring the actual gutter width keeps the table's per-row line numbers
+ * aligned with the native gutter even when the line-number digit count grows.
+ */
+function createEditorGeometrySync(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      private lastContentWidth = -1;
+      private lastGutterWidth = -1;
+
+      public constructor(view: EditorView) {
+        this.schedule(view);
       }
-      return buildTableLineNumberSuppressions(transaction.state.doc.toString());
+
+      public update(update: ViewUpdate): void {
+        if (
+          update.geometryChanged ||
+          update.viewportChanged ||
+          update.docChanged
+        ) {
+          this.schedule(update.view);
+        }
+      }
+
+      private schedule(view: EditorView): void {
+        view.requestMeasure({
+          read: (measuredView) => ({
+            contentWidth: measuredView.scrollDOM.clientWidth,
+            gutterWidth:
+              measuredView.dom.querySelector<HTMLElement>(".cm-gutters")
+                ?.offsetWidth ?? 0,
+          }),
+          write: (metrics, measuredView) => {
+            const scrollerStyle = measuredView.scrollDOM.style;
+            if (metrics.contentWidth !== this.lastContentWidth) {
+              this.lastContentWidth = metrics.contentWidth;
+              scrollerStyle.setProperty(
+                "--mlrt-live-content-width",
+                `${metrics.contentWidth}px`,
+              );
+            }
+            if (
+              metrics.gutterWidth > 0 &&
+              metrics.gutterWidth !== this.lastGutterWidth
+            ) {
+              this.lastGutterWidth = metrics.gutterWidth;
+              scrollerStyle.setProperty(
+                "--mlrt-live-gutter-width",
+                `${metrics.gutterWidth}px`,
+              );
+            }
+          },
+        });
+      }
     },
-    provide(field) {
-      return lineNumberMarkers.from(field);
+  );
+}
+
+function createTableLineNumberSuppressions(): Extension {
+  const tableLineNumberSuppressions = StateField.define<RangeSet<GutterMarker>>(
+    {
+      create(state) {
+        return buildTableLineNumberSuppressions(state.doc.toString());
+      },
+      update(value, transaction) {
+        if (!transaction.docChanged) {
+          return value;
+        }
+        return buildTableLineNumberSuppressions(
+          transaction.state.doc.toString(),
+        );
+      },
+      provide(field) {
+        return lineNumberMarkers.from(field);
+      },
     },
-  });
+  );
 
   return tableLineNumberSuppressions;
 }
 
-const hiddenLineNumberMarker = new class extends GutterMarker {
+const hiddenLineNumberMarker = new (class extends GutterMarker {
   public eq(other: GutterMarker): boolean {
     return other === this;
   }
@@ -172,106 +227,14 @@ const hiddenLineNumberMarker = new class extends GutterMarker {
   public toDOM(view: EditorView): Node {
     return view.dom.ownerDocument.createTextNode("");
   }
-}();
+})();
 
-function buildTableLineNumberSuppressions(text: string): RangeSet<GutterMarker> {
+function buildTableLineNumberSuppressions(
+  text: string,
+): RangeSet<GutterMarker> {
   const builder = new RangeSetBuilder<GutterMarker>();
   for (const table of parseMarkdownTables(text)) {
     builder.add(table.from, table.from, hiddenLineNumberMarker);
   }
   return builder.finish();
-}
-
-class TableRowLineNumberMarker extends GutterMarker {
-  public constructor(
-    private readonly tableFrom: number,
-    private readonly lineNumbers: readonly number[],
-  ) {
-    super();
-  }
-
-  public eq(_other: GutterMarker): boolean {
-    return false;
-  }
-
-  public toDOM(view: EditorView): Node {
-    const wrapper = view.dom.ownerDocument.createElement("div");
-    wrapper.className = "mm-live-v4-table-gutter-lines";
-    wrapper.dataset.tableFrom = String(this.tableFrom);
-
-    this.lineNumbers.forEach((lineNumber) => {
-      const line = view.dom.ownerDocument.createElement("div");
-      line.className = "mm-live-v4-table-gutter-line";
-      line.textContent = String(lineNumber);
-      wrapper.append(line);
-    });
-
-    scheduleTableGutterSync(view, wrapper, this.tableFrom);
-    return wrapper;
-  }
-
-  public destroy(dom: Node): void {
-    if (dom instanceof HTMLElement) {
-      const observer = tableGutterObservers.get(dom);
-      observer?.disconnect();
-      tableGutterObservers.delete(dom);
-    }
-  }
-}
-
-const tableGutterObservers = new WeakMap<HTMLElement, ResizeObserver>();
-
-function scheduleTableGutterSync(
-  view: EditorView,
-  gutter: HTMLElement,
-  tableFrom: number,
-): void {
-  const win = view.dom.ownerDocument.defaultView ?? window;
-  win.requestAnimationFrame(() => {
-    syncTableGutterRows(view, gutter, tableFrom);
-  });
-}
-
-function syncTableGutterRows(
-  view: EditorView,
-  gutter: HTMLElement,
-  tableFrom: number,
-): void {
-  const table = view.dom.ownerDocument.querySelector<HTMLElement>(
-    `.mm-live-v4-table-widget[data-src-from="${tableFrom}"] .mm-live-v4-table`,
-  );
-  if (!table) {
-    return;
-  }
-
-  const tableRows = Array.from(
-    table.querySelectorAll<HTMLTableRowElement>("thead tr, tbody tr"),
-  );
-  const gutterRows = Array.from(
-    gutter.querySelectorAll<HTMLElement>(".mm-live-v4-table-gutter-line"),
-  );
-
-  tableRows.forEach((tableRow, index) => {
-    const gutterRow = gutterRows[index];
-    if (!gutterRow) {
-      return;
-    }
-
-    gutterRow.style.height = `${tableRow.getBoundingClientRect().height}px`;
-  });
-
-  if (typeof ResizeObserver === "undefined" || tableGutterObservers.has(gutter)) {
-    return;
-  }
-
-  const observer = new ResizeObserver(() => {
-    tableRows.forEach((tableRow, index) => {
-      const gutterRow = gutterRows[index];
-      if (gutterRow) {
-        gutterRow.style.height = `${tableRow.getBoundingClientRect().height}px`;
-      }
-    });
-  });
-  observer.observe(table);
-  tableGutterObservers.set(gutter, observer);
 }

@@ -1,0 +1,177 @@
+/*
+ * Shared static styles for the Markdown Live Editor webview.
+ *
+ * Single source of truth consumed by BOTH:
+ *   - src/extension.ts (linked into the webview via <link rel="stylesheet">)
+ *   - scripts/render-live-editor-harness.mjs (inlined for standalone QA)
+ *
+ * Per-document dynamic metrics (font size, gutter geometry, etc.) are injected
+ * separately as a `:root { ... }` block; see getEditorMetricsCss in extension.ts.
+ * Do not add document-specific values here.
+ */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family));
+  font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size));
+}
+
+.mm-live-v4-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mm-live-v4-editor-mount {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cm-editor {
+  height: 100%;
+  min-height: 0;
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #d4d4d4);
+}
+
+.cm-scroller {
+  overflow: auto !important;
+  height: 100%;
+  font-family: var(
+    --mlrt-editor-font-family,
+    var(--vscode-editor-font-family, monospace)
+  );
+  font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px));
+  font-weight: var(--mlrt-editor-font-weight, normal);
+  line-height: var(--mlrt-editor-line-height, normal);
+  letter-spacing: var(--mlrt-editor-letter-spacing, normal);
+  font-feature-settings: var(--mlrt-editor-font-feature-settings, normal);
+  font-variation-settings: var(--mlrt-editor-font-variation-settings, normal);
+}
+
+.cm-content {
+  caret-color: var(--vscode-editorCursor-foreground);
+}
+
+.mm-live-v4-table-widget {
+  display: block;
+  position: relative;
+  z-index: 250;
+  width: max(
+    0px,
+    calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+  );
+  max-width: max(
+    0px,
+    calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+  );
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  color: var(--vscode-editor-foreground, #d4d4d4);
+}
+
+.mm-live-v4-table {
+  width: max(
+    0px,
+    calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+  );
+  max-width: max(
+    0px,
+    calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+  );
+  margin-left: 0;
+  box-sizing: border-box;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: var(--vscode-editor-foreground, #d4d4d4);
+  background: var(--vscode-editor-background, #1e1e1e);
+  font-family: var(
+    --mlrt-editor-font-family,
+    var(--vscode-editor-font-family, monospace)
+  );
+  font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px));
+  font-weight: var(--mlrt-editor-font-weight, normal);
+  line-height: var(--mlrt-editor-line-height, normal);
+  letter-spacing: var(--mlrt-editor-letter-spacing, normal);
+  font-feature-settings: var(--mlrt-editor-font-feature-settings, normal);
+  font-variation-settings: var(--mlrt-editor-font-variation-settings, normal);
+}
+
+.mm-live-v4-table tr {
+  position: relative;
+}
+
+.mm-live-v4-table th,
+.mm-live-v4-table td {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 1ch;
+  border: 1px solid var(--vscode-editorWidget-border, #6a6a6a);
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mm-live-v4-table-cell[data-source-line] {
+  position: relative;
+}
+
+.mm-live-v4-table-cell[data-source-line]::before {
+  content: attr(data-source-line);
+  box-sizing: border-box;
+  position: absolute;
+  left: calc(-1 * var(--mlrt-live-gutter-width));
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: var(--mlrt-live-gutter-width);
+  min-width: var(--mlrt-live-gutter-width);
+  max-width: var(--mlrt-live-gutter-width);
+  padding: 0 var(--mlrt-editor-gutter-right-padding) 0
+    var(--mlrt-editor-gutter-left-padding);
+  border: 0;
+  color: var(--vscode-editorLineNumber-foreground, #858585);
+  background: var(
+    --vscode-editorGutter-background,
+    var(--vscode-editor-background, #1e1e1e)
+  );
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+
+.mm-live-v4-table th {
+  background: var(--vscode-editorWidget-background, #252526);
+  font-weight: 600;
+}
+
+.mm-live-v4-table-cell[contenteditable="true"] {
+  outline: none;
+}
+
+.mm-live-v4-table-cell[contenteditable="true"]:focus {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.mm-live-v4-loading {
+  padding: 1rem;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-font-family);
+}

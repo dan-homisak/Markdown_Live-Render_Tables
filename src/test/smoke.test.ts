@@ -162,6 +162,10 @@ const liveRuntimeSource = fs.readFileSync(
   path.join(process.cwd(), "src", "live-v4", "LiveRuntime.ts"),
   "utf8",
 );
+const tableWidgetSource = fs.readFileSync(
+  path.join(process.cwd(), "src", "live-v4", "render", "TableWidget.ts"),
+  "utf8",
+);
 
 assert.equal(
   packageJson.contributes?.customEditors?.[0]?.viewType,
@@ -194,14 +198,16 @@ assert.equal(
 );
 assert.match(extensionSource, /reopenActiveEditorWith/);
 assert.match(extensionSource, /const DEFAULT_EDITOR_ID = "default"/);
-assert.match(liveEditorSource, /type: "openSource"/);
 assert.doesNotMatch(
   liveEditorSource,
   /toggleMode|toggleRenderedMode|renderedMode|renderModeCompartment/,
 );
 assert.match(liveRuntimeSource, /lineNumberMarkers/);
 assert.match(liveRuntimeSource, /hiddenLineNumberMarker/);
-assert.match(liveRuntimeSource, /class TableRowLineNumberMarker/);
-assert.match(liveRuntimeSource, /public eq\(_other: GutterMarker\): boolean {\n    return false;/);
+assert.match(tableWidgetSource, /dataset\.sourceLine/);
+assert.match(tableWidgetSource, /measureColumnWidthPercentages/);
+assert.doesNotMatch(tableWidgetSource, /appendLineNumberCell/);
+assert.doesNotMatch(liveRuntimeSource, /class TableRowLineNumberMarker/);
+assert.doesNotMatch(liveRuntimeSource, /lineNumberWidgetMarker/);
 
 console.log("Markdown live editor smoke tests passed.");

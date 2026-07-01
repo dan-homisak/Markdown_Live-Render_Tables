@@ -58,6 +58,12 @@ log "Cleaning generated build outputs"
 rm -rf "$PROJECT_DIR/dist"
 rm -f "$PROJECT_DIR"/*.vsix
 
+log "Bumping patch version so VS Code sees a genuine update"
+PREVIOUS_VERSION="$EXPECTED_VERSION"
+npm version patch --no-git-tag-version >/dev/null
+EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+echo "Version: ${PREVIOUS_VERSION} -> ${EXPECTED_VERSION}"
+
 log "Installing dependencies from package-lock.json"
 npm ci
 
@@ -113,36 +119,99 @@ if ! grep -q "hiddenLineNumberMarker" "$INSTALLED_DIR/media/liveEditor.js"; then
   echo "Installed webview bundle does not contain the expected table gutter suppression marker."
   exit 1
 fi
+if ! grep -q "table-layout: fixed" "$INSTALLED_DIR/media/liveEditor.css"; then
+  echo "Installed webview stylesheet does not contain the fixed table-layout marker."
+  exit 1
+fi
+if ! grep -q "data-source-line" "$INSTALLED_DIR/media/liveEditor.css"; then
+  echo "Installed webview stylesheet does not contain the table row line-number marker."
+  exit 1
+fi
+if ! grep -q "mlrt-live-content-width" "$INSTALLED_DIR/media/liveEditor.css"; then
+  echo "Installed webview stylesheet does not contain the live table width marker."
+  exit 1
+fi
+if ! grep -q "createEditorGeometrySync" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain the editor geometry sync marker."
+  exit 1
+fi
+if ! grep -q "appendColumnSizing" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain the table column sizing marker."
+  exit 1
+fi
+if ! grep -q "measureColumnWidthPercentages" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain the proportional table column sizing marker."
+  exit 1
+fi
+if ! grep -q "col.style.width =.*%" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain percentage table column widths."
+  exit 1
+fi
 echo "Verified installed payload markers."
 
-log "Reloading VS Code window"
-if command -v osascript >/dev/null 2>&1; then
-  if osascript <<'APPLESCRIPT'
-tell application "Visual Studio Code" to activate
-delay 0.3
-tell application "System Events"
-  if exists process "Code" then
+log "Reloading the VS Code window(s) for this project"
+PROJECT_NAME="$(basename "$PROJECT_DIR")"
+RELOAD_OK=0
+if [[ "${SKIP_RELOAD:-0}" == "1" ]]; then
+  echo "SKIP_RELOAD=1 set; not reloading. Run 'Developer: Reload Window' to apply the new build."
+elif command -v osascript >/dev/null 2>&1; then
+  if osascript - "$PROJECT_NAME" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+  set targetName to item 1 of argv
+  tell application "Visual Studio Code" to activate
+  delay 0.3
+  tell application "System Events"
+    if not (exists process "Code") then error "VS Code process was not found."
     tell process "Code"
-      keystroke "p" using {command down, shift down}
-      delay 0.3
-      keystroke ">Developer: Reload Window"
-      delay 0.2
-      key code 36
+      set reloadedCount to 0
+      repeat with w in windows
+        if (name of w) contains targetName then
+          perform action "AXRaise" of w
+          delay 0.2
+          keystroke "p" using {command down, shift down}
+          delay 0.3
+          keystroke ">Developer: Reload Window"
+          delay 0.2
+          key code 36
+          set reloadedCount to reloadedCount + 1
+          delay 0.5
+        end if
+      end repeat
+      if reloadedCount is 0 then error "No VS Code window for this project was found."
     end tell
-  else
-    error "VS Code process was not found."
-  end if
-end tell
+  end tell
+end run
 APPLESCRIPT
   then
-    echo "Reload command sent to VS Code."
+    RELOAD_OK=1
+    echo "Reloaded the VS Code window(s) titled with '$PROJECT_NAME'."
   else
-    echo "Could not automatically reload VS Code. macOS may require Accessibility permission for the terminal running this script."
-    echo "Run 'Developer: Reload Window' in VS Code before testing the extension."
+    echo "Automatic reload was skipped or blocked (Accessibility permission or no matching window)."
   fi
 else
-  echo "osascript is unavailable. Run 'Developer: Reload Window' in VS Code before testing the extension."
+  echo "osascript is unavailable; automatic reload skipped."
 fi
 
 log "Done"
 echo "Installed: $VSIX_PATH"
+
+if (( RELOAD_OK == 0 )) && [[ "${SKIP_RELOAD:-0}" != "1" ]]; then
+  cat <<BANNER
+
+========================================================================
+  ACTION REQUIRED: could not auto-reload your VS Code window.
+
+  Because the version was bumped to ${EXPECTED_VERSION}, VS Code will
+  show a "reload to update" prompt automatically -- click it.
+
+  Or run it yourself in the project window:
+    Developer: Reload Window   (Cmd+R)
+
+  To enable fully automatic reloads, grant Accessibility permission to
+  your terminal:
+  System Settings > Privacy & Security > Accessibility > enable your
+  terminal app (Terminal / iTerm / VS Code).
+========================================================================
+
+BANNER
+fi

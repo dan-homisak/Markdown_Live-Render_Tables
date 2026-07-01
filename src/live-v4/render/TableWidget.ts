@@ -19,13 +19,6 @@ export class RenderedTableWidget extends WidgetType {
     return this.table.from;
   }
 
-  public getSourceLineNumbers(): number[] {
-    return [
-      this.table.header.lineIndex + 1,
-      ...this.table.body.map((row) => row.lineIndex + 1),
-    ];
-  }
-
   public toDOM(view: EditorView): HTMLElement {
     const wrapper = document.createElement("section");
     wrapper.className = "mm-live-v4-table-widget";
@@ -36,6 +29,7 @@ export class RenderedTableWidget extends WidgetType {
 
     const tableElement = document.createElement("table");
     tableElement.className = "mm-live-v4-table";
+    appendColumnSizing(tableElement, this.table);
 
     const thead = document.createElement("thead");
     const headerRow = document.createElement("tr");
@@ -46,6 +40,7 @@ export class RenderedTableWidget extends WidgetType {
       tagName: "th",
       rowKind: "header",
       rowIndex: 0,
+      sourceLineNumber: this.table.header.lineIndex + 1,
     });
     thead.append(headerRow);
     tableElement.append(thead);
@@ -60,6 +55,7 @@ export class RenderedTableWidget extends WidgetType {
         tagName: "td",
         rowKind: "body",
         rowIndex,
+        sourceLineNumber: sourceRow.lineIndex + 1,
       });
       tbody.append(tableRow);
     });
@@ -82,6 +78,7 @@ interface AppendCellsOptions {
   tagName: "th" | "td";
   rowKind: "header" | "body";
   rowIndex: number;
+  sourceLineNumber: number;
 }
 
 interface CellTarget {
@@ -103,9 +100,45 @@ function appendCells(options: AppendCellsOptions): void {
     cell.dataset.rowIndex = String(options.rowIndex);
     cell.dataset.column = String(column);
     cell.dataset.original = value;
+    if (column === 0) {
+      cell.dataset.sourceLine = String(options.sourceLineNumber);
+    }
     cell.style.textAlign = options.table.alignments[column] ?? "left";
     options.tableRow.append(cell);
   });
+}
+
+function appendColumnSizing(
+  tableElement: HTMLTableElement,
+  table: ParsedTable,
+): void {
+  const colgroup = document.createElement("colgroup");
+  const widthPercentages = measureColumnWidthPercentages(table);
+  for (let column = 0; column < table.columnCount; column++) {
+    const col = document.createElement("col");
+    col.className = "mm-live-v4-table-sized-col";
+    col.style.width = `${widthPercentages[column].toFixed(4)}%`;
+    colgroup.append(col);
+  }
+
+  tableElement.append(colgroup);
+}
+
+function measureColumnWidthPercentages(table: ParsedTable): number[] {
+  const rows = [table.header, ...table.body];
+  const weights = Array.from({ length: table.columnCount }, (_value, column) => {
+    const longestValue = rows.reduce((longest, row) => {
+      const value = rowToDisplayValues(row, table.columnCount)[column] ?? "";
+      return Math.max(longest, value.length);
+    }, 0);
+    return Math.max(8, Math.min(longestValue + 4, 28));
+  });
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  if (totalWeight <= 0) {
+    return weights.map(() => 100 / Math.max(1, table.columnCount));
+  }
+
+  return weights.map((weight) => (weight / totalWeight) * 100);
 }
 
 function bindTableEditing(
