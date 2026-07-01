@@ -24012,6 +24012,7 @@
           }
         }),
         lineNumbers(),
+        createTableLineNumberSuppressions(),
         lineNumberWidgetMarker.of((_view, widget) => {
           if (!(widget instanceof RenderedTableWidget)) {
             return null;
@@ -24029,7 +24030,39 @@
       ]
     };
   }
-  var TableRowLineNumberMarker = class _TableRowLineNumberMarker extends GutterMarker {
+  function createTableLineNumberSuppressions() {
+    const tableLineNumberSuppressions = StateField.define({
+      create(state) {
+        return buildTableLineNumberSuppressions(state.doc.toString());
+      },
+      update(value, transaction) {
+        if (!transaction.docChanged) {
+          return value;
+        }
+        return buildTableLineNumberSuppressions(transaction.state.doc.toString());
+      },
+      provide(field) {
+        return lineNumberMarkers.from(field);
+      }
+    });
+    return tableLineNumberSuppressions;
+  }
+  var hiddenLineNumberMarker = new class extends GutterMarker {
+    eq(other) {
+      return other === this;
+    }
+    toDOM(view2) {
+      return view2.dom.ownerDocument.createTextNode("");
+    }
+  }();
+  function buildTableLineNumberSuppressions(text) {
+    const builder = new RangeSetBuilder();
+    for (const table of parseMarkdownTables(text)) {
+      builder.add(table.from, table.from, hiddenLineNumberMarker);
+    }
+    return builder.finish();
+  }
+  var TableRowLineNumberMarker = class extends GutterMarker {
     constructor(tableFrom, lineNumbers2) {
       super();
       this.tableFrom = tableFrom;
@@ -24037,10 +24070,8 @@
     }
     tableFrom;
     lineNumbers;
-    eq(other) {
-      return other instanceof _TableRowLineNumberMarker && other.tableFrom === this.tableFrom && other.lineNumbers.length === this.lineNumbers.length && other.lineNumbers.every(
-        (lineNumber, index) => lineNumber === this.lineNumbers[index]
-      );
+    eq(_other) {
+      return false;
     }
     toDOM(view2) {
       const wrapper = view2.dom.ownerDocument.createElement("div");

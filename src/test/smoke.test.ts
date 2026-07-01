@@ -158,6 +158,10 @@ const liveEditorSource = fs.readFileSync(
   path.join(process.cwd(), "src", "webview", "liveEditor.ts"),
   "utf8",
 );
+const liveRuntimeSource = fs.readFileSync(
+  path.join(process.cwd(), "src", "live-v4", "LiveRuntime.ts"),
+  "utf8",
+);
 
 assert.equal(
   packageJson.contributes?.customEditors?.[0]?.viewType,
@@ -195,5 +199,9 @@ assert.doesNotMatch(
   liveEditorSource,
   /toggleMode|toggleRenderedMode|renderedMode|renderModeCompartment/,
 );
+assert.match(liveRuntimeSource, /lineNumberMarkers/);
+assert.match(liveRuntimeSource, /hiddenLineNumberMarker/);
+assert.match(liveRuntimeSource, /class TableRowLineNumberMarker/);
+assert.match(liveRuntimeSource, /public eq\(_other: GutterMarker\): boolean {\n    return false;/);
 
 console.log("Markdown live editor smoke tests passed.");

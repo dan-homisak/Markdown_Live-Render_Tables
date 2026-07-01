@@ -1,11 +1,18 @@
 import { markdown } from "@codemirror/lang-markdown";
-import { Extension } from "@codemirror/state";
+import {
+  Extension,
+  RangeSet,
+  RangeSetBuilder,
+  StateField,
+} from "@codemirror/state";
 import {
   EditorView,
   GutterMarker,
   lineNumbers,
+  lineNumberMarkers,
   lineNumberWidgetMarker,
 } from "@codemirror/view";
+import { parseMarkdownTables } from "../shared/tableModel";
 import { createLiveStateField } from "./LiveStateField";
 import { createPointerController } from "./PointerController";
 import { createTableFirstParser } from "./parser/TableFirstParser";
@@ -85,6 +92,7 @@ export function createLiveRuntime(): LiveRuntime {
         },
       }),
       lineNumbers(),
+      createTableLineNumberSuppressions(),
       lineNumberWidgetMarker.of((_view, widget) => {
         if (!(widget instanceof RenderedTableWidget)) {
           return null;
@@ -104,6 +112,43 @@ export function createLiveRuntime(): LiveRuntime {
   };
 }
 
+function createTableLineNumberSuppressions(): Extension {
+  const tableLineNumberSuppressions = StateField.define<RangeSet<GutterMarker>>({
+    create(state) {
+      return buildTableLineNumberSuppressions(state.doc.toString());
+    },
+    update(value, transaction) {
+      if (!transaction.docChanged) {
+        return value;
+      }
+      return buildTableLineNumberSuppressions(transaction.state.doc.toString());
+    },
+    provide(field) {
+      return lineNumberMarkers.from(field);
+    },
+  });
+
+  return tableLineNumberSuppressions;
+}
+
+const hiddenLineNumberMarker = new class extends GutterMarker {
+  public eq(other: GutterMarker): boolean {
+    return other === this;
+  }
+
+  public toDOM(view: EditorView): Node {
+    return view.dom.ownerDocument.createTextNode("");
+  }
+}();
+
+function buildTableLineNumberSuppressions(text: string): RangeSet<GutterMarker> {
+  const builder = new RangeSetBuilder<GutterMarker>();
+  for (const table of parseMarkdownTables(text)) {
+    builder.add(table.from, table.from, hiddenLineNumberMarker);
+  }
+  return builder.finish();
+}
+
 class TableRowLineNumberMarker extends GutterMarker {
   public constructor(
     private readonly tableFrom: number,
@@ -112,15 +157,8 @@ class TableRowLineNumberMarker extends GutterMarker {
     super();
   }
 
-  public eq(other: GutterMarker): boolean {
-    return (
-      other instanceof TableRowLineNumberMarker &&
-      other.tableFrom === this.tableFrom &&
-      other.lineNumbers.length === this.lineNumbers.length &&
-      other.lineNumbers.every(
-        (lineNumber, index) => lineNumber === this.lineNumbers[index],
-      )
-    );
+  public eq(_other: GutterMarker): boolean {
+    return false;
   }
 
   public toDOM(view: EditorView): Node {

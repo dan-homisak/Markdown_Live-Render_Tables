@@ -109,6 +109,10 @@ if ! grep -q "reopenActiveEditorWith" "$INSTALLED_DIR/dist/extension.js"; then
   echo "Installed extension host does not contain the expected active editor reopen marker."
   exit 1
 fi
+if ! grep -q "hiddenLineNumberMarker" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain the expected table gutter suppression marker."
+  exit 1
+fi
 echo "Verified installed payload markers."
 
 log "Reloading VS Code window"
