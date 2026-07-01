@@ -107,6 +107,11 @@ assert.equal(
 );
 assert.equal(packageJson.contributes?.customEditors?.[0]?.priority, "option");
 assert.ok(
+  packageJson.contributes?.customEditors?.some(
+    (editor) => editor.viewType === "markdownLiveRenderTables.tableEditor",
+  ),
+);
+assert.ok(
   packageJson.contributes?.commands?.some(
     (command) => command.command === "markdownLiveRenderTables.openLiveEditor",
   ),

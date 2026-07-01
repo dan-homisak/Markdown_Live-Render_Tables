@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
+const LEGACY_TABLE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.tableEditor";
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new MarkdownLiveEditorProvider(context);
@@ -8,6 +9,16 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       LIVE_EDITOR_VIEW_TYPE,
+      provider,
+      {
+        supportsMultipleEditorsPerDocument: false,
+        webviewOptions: {
+          retainContextWhenHidden: true,
+        },
+      },
+    ),
+    vscode.window.registerCustomEditorProvider(
+      LEGACY_TABLE_EDITOR_VIEW_TYPE,
       provider,
       {
         supportsMultipleEditorsPerDocument: false,
@@ -52,8 +63,12 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel: vscode.WebviewPanel,
   ): void {
     const webview = webviewPanel.webview;
+    const scriptFileName =
+      webviewPanel.viewType === LEGACY_TABLE_EDITOR_VIEW_TYPE
+        ? "tableEditor.js"
+        : "liveEditor.js";
     const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, "media", "liveEditor.js"),
+      vscode.Uri.joinPath(this.context.extensionUri, "media", scriptFileName),
     );
     const documentKey = document.uri.toString();
 
