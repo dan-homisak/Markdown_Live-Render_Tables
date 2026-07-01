@@ -9,6 +9,7 @@ declare function acquireVsCodeApi(): {
 declare global {
   interface Window {
     __MLRT_INITIAL_DOCUMENT__?: unknown;
+    __MLRT_EDITOR_OPTIONS__?: unknown;
     __MLRT_DEBUG__?: unknown;
     __MLRT_DEBUG_EVENTS__?: DebugEvent[];
   }
@@ -33,6 +34,10 @@ interface DebugEvent {
   timestamp: number;
 }
 
+interface EditorOptions {
+  lineWrapping: boolean;
+}
+
 const vscode = acquireVsCodeApi();
 const app = document.getElementById("app");
 
@@ -44,32 +49,15 @@ let applyingFromHost = false;
 let debugEnabled = window.__MLRT_DEBUG__ === true;
 let hostRevision = 0;
 let view: EditorView;
-let sourceButton: HTMLButtonElement;
-let statusElement: HTMLElement;
 
 try {
-  const runtime = createLiveRuntime();
+  const runtime = createLiveRuntime(readEditorOptions());
   const initialDocument = readInitialDocument();
   app.replaceChildren();
   app.className = "mm-live-v4-shell";
-  const toolbar = document.createElement("div");
-  toolbar.className = "mm-live-v4-toolbar";
-  sourceButton = document.createElement("button");
-  sourceButton.className = "mm-live-v4-source-button";
-  sourceButton.type = "button";
-  sourceButton.textContent = "Source";
-  sourceButton.title = "Reopen in the VS Code source editor";
-  sourceButton.addEventListener("click", () => {
-    vscode.postMessage({ type: "openSource" });
-  });
-  sourceButton.setAttribute("aria-label", "Reopen in the VS Code source editor");
-  statusElement = document.createElement("div");
-  statusElement.className = "mm-live-v4-status";
-  statusElement.textContent = "Loading markdown...";
-  toolbar.append(sourceButton, statusElement);
   const editorMount = document.createElement("div");
   editorMount.className = "mm-live-v4-editor-mount";
-  app.append(toolbar, editorMount);
+  app.append(editorMount);
   view = new EditorView({
     parent: editorMount,
     state: EditorState.create({
@@ -135,16 +123,29 @@ function setEditorDocument(text: string, source: string): void {
 }
 
 function updateStatus(text: string, source: string): void {
-  if (!statusElement) {
-    return;
-  }
-  statusElement.textContent = `Rendered: ${text.length} characters loaded from ${source}`;
+  document.documentElement.dataset.mlrtDocumentStatus =
+    `${text.length} characters loaded from ${source}`;
 }
 
 function readInitialDocument(): string {
   return typeof window.__MLRT_INITIAL_DOCUMENT__ === "string"
     ? window.__MLRT_INITIAL_DOCUMENT__
     : "";
+}
+
+function readEditorOptions(): EditorOptions {
+  const options = window.__MLRT_EDITOR_OPTIONS__;
+  if (!options || typeof options !== "object") {
+    return { lineWrapping: true };
+  }
+  const optionRecord = options as Record<string, unknown>;
+
+  return {
+    lineWrapping:
+      typeof optionRecord.lineWrapping === "boolean"
+        ? optionRecord.lineWrapping
+        : true,
+  };
 }
 
 function postDocumentChanges(

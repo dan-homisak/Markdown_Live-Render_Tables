@@ -121,7 +121,15 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
       --vscode-editor-foreground: #d4d4d4;
       --vscode-editor-font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
       --vscode-editor-font-size: 13px;
+      --mlrt-editor-font-family: var(--vscode-editor-font-family);
+      --mlrt-editor-font-size: var(--vscode-editor-font-size);
+      --mlrt-editor-font-weight: normal;
+      --mlrt-editor-line-height: 19px;
+      --mlrt-editor-letter-spacing: 0px;
+      --mlrt-editor-cursor-width: 1px;
+      --mlrt-editor-top-padding: 4px;
       --vscode-editorCursor-foreground: #aeafad;
+      --vscode-editor-lineHighlightBackground: #2a2d2e;
       --vscode-editorGutter-background: #1e1e1e;
       --vscode-editorGutter-border: #2b2b2b;
       --vscode-editorLineNumber-foreground: #858585;
@@ -145,8 +153,8 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
       overflow: hidden;
       color: var(--vscode-editor-foreground);
       background: var(--vscode-editor-background);
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
+      font-family: var(--mlrt-editor-font-family);
+      font-size: var(--mlrt-editor-font-size);
     }
 
     .mm-live-v4-shell {
@@ -155,51 +163,6 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
       height: 100%;
       min-height: 0;
       overflow: hidden;
-    }
-
-    .mm-live-v4-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      flex: 0 0 auto;
-      min-height: 28px;
-      padding: 0.2rem 0.5rem;
-      border-bottom: 1px solid var(--vscode-editorWidget-border);
-      background: var(--vscode-editorWidget-background);
-    }
-
-    .mm-live-v4-source-button {
-      flex: 0 0 auto;
-      min-height: 22px;
-      padding: 0 0.55rem;
-      border: 1px solid transparent;
-      border-radius: 2px;
-      color: #ffffff;
-      background: #0e639c;
-      font: 12px/20px var(--vscode-font-family);
-      cursor: pointer;
-    }
-
-    .mm-live-v4-source-button:hover {
-      background: #1177bb;
-    }
-
-    .mm-live-v4-source-button:focus {
-      outline: 1px solid var(--vscode-focusBorder);
-      outline-offset: 1px;
-    }
-
-    .mm-live-v4-status {
-      flex: 1 1 auto;
-      min-width: 0;
-      color: var(--vscode-descriptionForeground);
-      font-family: var(--vscode-font-family);
-      font-size: 12px;
-      line-height: 1.4;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      user-select: text;
     }
 
     .mm-live-v4-editor-mount {
@@ -218,37 +181,43 @@ function renderHarnessHtml({ fixtureName, fixtureText, debug, scriptUrl }) {
     .cm-scroller {
       overflow: auto !important;
       height: 100%;
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
-      line-height: 1.5;
+      font-family: var(--mlrt-editor-font-family);
+      font-size: var(--mlrt-editor-font-size);
+      font-weight: var(--mlrt-editor-font-weight);
+      line-height: var(--mlrt-editor-line-height);
+      letter-spacing: var(--mlrt-editor-letter-spacing);
     }
 
     .mm-live-v4-table-widget {
       display: block;
       max-width: 100%;
       margin: 0;
-      padding: 0.35rem 0;
+      padding: 0;
       overflow-x: auto;
       overflow-y: hidden;
       color: var(--vscode-editor-foreground);
     }
 
     .mm-live-v4-table {
-      width: max-content;
-      max-width: 100%;
+      width: calc(100vw - 8rem);
+      max-width: none;
+      box-sizing: border-box;
       border-collapse: collapse;
       table-layout: auto;
       color: var(--vscode-editor-foreground);
       background: var(--vscode-editor-background);
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
+      font-family: var(--mlrt-editor-font-family);
+      font-size: var(--mlrt-editor-font-size);
+      font-weight: var(--mlrt-editor-font-weight);
+      line-height: var(--mlrt-editor-line-height);
+      letter-spacing: var(--mlrt-editor-letter-spacing);
     }
 
     .mm-live-v4-table th,
     .mm-live-v4-table td {
-      min-width: 7rem;
-      max-width: 24rem;
-      padding: 0.25rem 0.45rem;
+      min-width: 5ch;
+      max-width: none;
+      padding: 0 1ch;
       border: 1px solid var(--vscode-editorWidget-border);
       vertical-align: top;
       white-space: pre-wrap;

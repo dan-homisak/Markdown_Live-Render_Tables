@@ -193,7 +193,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       }),
     );
 
-    webview.html = getEditorHtml(webview, scriptUri, document.getText());
+    webview.html = getEditorHtml(webview, scriptUri, document.getText(), document.uri);
     setTimeout(postDocument, 0);
     setTimeout(postDocument, 250);
 
@@ -447,12 +447,15 @@ function getEditorHtml(
   webview: vscode.Webview,
   scriptUri: vscode.Uri,
   initialText: string,
+  documentUri: vscode.Uri,
 ): string {
   const nonce = getNonce();
   const initialDocumentScript = JSON.stringify(initialText).replace(
     /<\/script/gi,
     "<\\/script",
   );
+  const editorMetricsCss = getEditorMetricsCss(documentUri);
+  const editorOptionsScript = JSON.stringify(getEditorOptions(documentUri));
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -463,6 +466,10 @@ function getEditorHtml(
   >
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
+    :root {
+${editorMetricsCss}
+    }
+
     html,
     body,
     #app {
@@ -472,8 +479,8 @@ function getEditorHtml(
       overflow: hidden;
       color: var(--vscode-editor-foreground);
       background: var(--vscode-editor-background);
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
+      font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family));
+      font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size));
     }
 
     .mm-live-v4-shell {
@@ -482,51 +489,6 @@ function getEditorHtml(
       height: 100%;
       min-height: 0;
       overflow: hidden;
-    }
-
-    .mm-live-v4-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      flex: 0 0 auto;
-      min-height: 28px;
-      padding: 0.2rem 0.5rem;
-      border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
-      background: var(--vscode-editorWidget-background, #252526);
-    }
-
-    .mm-live-v4-source-button {
-      flex: 0 0 auto;
-      min-height: 22px;
-      padding: 0 0.55rem;
-      border: 1px solid var(--vscode-button-border, transparent);
-      border-radius: 2px;
-      color: var(--vscode-button-foreground, #ffffff);
-      background: var(--vscode-button-background, #0e639c);
-      font: 12px/20px var(--vscode-font-family, sans-serif);
-      cursor: pointer;
-    }
-
-    .mm-live-v4-source-button:hover {
-      background: var(--vscode-button-hoverBackground, #1177bb);
-    }
-
-    .mm-live-v4-source-button:focus {
-      outline: 1px solid var(--vscode-focusBorder, #007fd4);
-      outline-offset: 1px;
-    }
-
-    .mm-live-v4-status {
-      flex: 1 1 auto;
-      min-width: 0;
-      color: var(--vscode-descriptionForeground, #cccccc);
-      font-family: var(--vscode-font-family, sans-serif);
-      font-size: 12px;
-      line-height: 1.4;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      user-select: text;
     }
 
     .mm-live-v4-editor-mount {
@@ -545,9 +507,13 @@ function getEditorHtml(
     .cm-scroller {
       overflow: auto !important;
       height: 100%;
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: var(--vscode-editor-font-size, 13px);
-      line-height: 1.5;
+      font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace));
+      font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px));
+      font-weight: var(--mlrt-editor-font-weight, normal);
+      line-height: var(--mlrt-editor-line-height, normal);
+      letter-spacing: var(--mlrt-editor-letter-spacing, normal);
+      font-feature-settings: var(--mlrt-editor-font-feature-settings, normal);
+      font-variation-settings: var(--mlrt-editor-font-variation-settings, normal);
     }
 
     .cm-content {
@@ -558,28 +524,34 @@ function getEditorHtml(
       display: block;
       max-width: 100%;
       margin: 0;
-      padding: 0.35rem 0;
+      padding: 0;
       overflow-x: auto;
       overflow-y: hidden;
       color: var(--vscode-editor-foreground, #d4d4d4);
     }
 
     .mm-live-v4-table {
-      width: max-content;
-      max-width: 100%;
+      width: calc(100vw - 8rem);
+      max-width: none;
+      box-sizing: border-box;
       border-collapse: collapse;
       table-layout: auto;
       color: var(--vscode-editor-foreground, #d4d4d4);
       background: var(--vscode-editor-background, #1e1e1e);
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: var(--vscode-editor-font-size, 13px);
+      font-family: var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace));
+      font-size: var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px));
+      font-weight: var(--mlrt-editor-font-weight, normal);
+      line-height: var(--mlrt-editor-line-height, normal);
+      letter-spacing: var(--mlrt-editor-letter-spacing, normal);
+      font-feature-settings: var(--mlrt-editor-font-feature-settings, normal);
+      font-variation-settings: var(--mlrt-editor-font-variation-settings, normal);
     }
 
     .mm-live-v4-table th,
     .mm-live-v4-table td {
-      min-width: 7rem;
-      max-width: 24rem;
-      padding: 0.25rem 0.45rem;
+      min-width: 5ch;
+      max-width: none;
+      padding: 0 1ch;
       border: 1px solid var(--vscode-editorWidget-border, #6a6a6a);
       vertical-align: top;
       white-space: pre-wrap;
@@ -612,10 +584,113 @@ function getEditorHtml(
 </head>
 <body>
   <div id="app"><div class="mm-live-v4-loading">Loading Markdown live editor...</div></div>
-  <script nonce="${nonce}">window.__MLRT_INITIAL_DOCUMENT__ = ${initialDocumentScript};</script>
+  <script nonce="${nonce}">
+    window.__MLRT_INITIAL_DOCUMENT__ = ${initialDocumentScript};
+    window.__MLRT_EDITOR_OPTIONS__ = ${editorOptionsScript};
+  </script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
+}
+
+function getEditorMetricsCss(documentUri: vscode.Uri): string {
+  const editorConfig = vscode.workspace.getConfiguration("editor", documentUri);
+  const fontSize = clampNumber(editorConfig.get<number>("fontSize", 14), 6, 100);
+  const configuredLineHeight = clampNumber(
+    editorConfig.get<number>("lineHeight", 0),
+    0,
+    300,
+  );
+  const lineHeight =
+    configuredLineHeight > 0 ? configuredLineHeight : Math.round(fontSize * 1.5);
+  const cursorWidth = clampNumber(
+    editorConfig.get<number>("cursorWidth", 1),
+    1,
+    10,
+  );
+  const letterSpacing = clampNumber(
+    editorConfig.get<number>("letterSpacing", 0),
+    -10,
+    20,
+  );
+  const padding = editorConfig.get<{ top?: number; bottom?: number }>(
+    "padding",
+    {},
+  );
+  const paddingTop = clampNumber(padding.top ?? 0, 0, 200);
+  const paddingBottom = clampNumber(padding.bottom ?? 0, 0, 200);
+  const fontFamily = sanitizeCssValue(
+    editorConfig.get<string>("fontFamily", "monospace"),
+    "monospace",
+  );
+  const fontWeight = sanitizeCssValue(
+    editorConfig.get<string>("fontWeight", "normal"),
+    "normal",
+  );
+  const fontFeatureSettings = getFontFeatureSettings(editorConfig);
+  const fontVariationSettings = getFontVariationSettings(editorConfig);
+
+  return [
+    `      --mlrt-editor-font-family: ${fontFamily};`,
+    `      --mlrt-editor-font-size: ${fontSize}px;`,
+    `      --mlrt-editor-font-weight: ${fontWeight};`,
+    `      --mlrt-editor-line-height: ${lineHeight}px;`,
+    `      --mlrt-editor-letter-spacing: ${letterSpacing}px;`,
+    `      --mlrt-editor-font-feature-settings: ${fontFeatureSettings};`,
+    `      --mlrt-editor-font-variation-settings: ${fontVariationSettings};`,
+    `      --mlrt-editor-cursor-width: ${cursorWidth}px;`,
+    `      --mlrt-editor-top-padding: ${paddingTop}px;`,
+    `      --mlrt-editor-bottom-padding: ${paddingBottom}px;`,
+  ].join("\n");
+}
+
+function getEditorOptions(documentUri: vscode.Uri): { lineWrapping: boolean } {
+  const editorConfig = vscode.workspace.getConfiguration("editor", documentUri);
+  const wordWrap = editorConfig.get<string>("wordWrap", "off");
+  return {
+    lineWrapping: wordWrap !== "off",
+  };
+}
+
+function getFontFeatureSettings(
+  editorConfig: vscode.WorkspaceConfiguration,
+): string {
+  const fontLigatures = editorConfig.get<boolean | string>(
+    "fontLigatures",
+    false,
+  );
+  if (typeof fontLigatures === "string") {
+    return sanitizeCssValue(fontLigatures, "normal");
+  }
+
+  return fontLigatures ? "\"liga\" on, \"calt\" on" : "normal";
+}
+
+function getFontVariationSettings(
+  editorConfig: vscode.WorkspaceConfiguration,
+): string {
+  const fontVariations = editorConfig.get<boolean | string>(
+    "fontVariations",
+    false,
+  );
+  if (typeof fontVariations === "string") {
+    return sanitizeCssValue(fontVariations, "normal");
+  }
+
+  return fontVariations ? "normal" : "normal";
+}
+
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) {
+    return minimum;
+  }
+
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function sanitizeCssValue(value: string, fallback: string): string {
+  const cleaned = value.replace(/[;{}<>]/g, "").trim();
+  return cleaned.length > 0 ? cleaned : fallback;
 }
 
 function getNonce(): string {

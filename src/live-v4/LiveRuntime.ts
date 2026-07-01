@@ -8,6 +8,8 @@ import {
 import {
   EditorView,
   GutterMarker,
+  highlightActiveLine,
+  highlightActiveLineGutter,
   lineNumbers,
   lineNumberMarkers,
   lineNumberWidgetMarker,
@@ -22,7 +24,11 @@ export interface LiveRuntime {
   extensions: Extension[];
 }
 
-export function createLiveRuntime(): LiveRuntime {
+export interface LiveRuntimeOptions {
+  lineWrapping: boolean;
+}
+
+export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
   const parser = createTableFirstParser();
   const { liveStateField, liveAtomicRanges } = createLiveStateField({ parser });
   const pointerController = createPointerController();
@@ -47,18 +53,36 @@ export function createLiveRuntime(): LiveRuntime {
         ".cm-scroller": {
           overflow: "auto !important",
           height: "100%",
-          fontFamily: "var(--vscode-editor-font-family, monospace)",
-          fontSize: "var(--vscode-editor-font-size, 13px)",
-          lineHeight: "1.5",
+          fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
+          fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
+          fontWeight: "var(--mlrt-editor-font-weight, normal)",
+          lineHeight: "var(--mlrt-editor-line-height, normal)",
+          letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
+          fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
+          fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)",
         },
         ".cm-gutters": {
-          backgroundColor: "var(--vscode-editor-background, #1e1e1e)",
+          backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e))",
           color: "var(--vscode-editorLineNumber-foreground, #858585)",
-          borderRight: "1px solid var(--vscode-editorGutter-border, transparent)",
+          borderRight: "none",
+          fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
+          fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
+          fontWeight: "var(--mlrt-editor-font-weight, normal)",
+          lineHeight: "var(--mlrt-editor-line-height, normal)",
+          letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
+          fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
+          fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)",
         },
         ".cm-activeLineGutter": {
           backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)",
           color: "var(--vscode-editorLineNumber-activeForeground, #c6c6c6)",
+        },
+        ".cm-lineNumbers .cm-gutterElement": {
+          minHeight: "var(--mlrt-editor-line-height, 1.5em)",
+          padding: "0 18px 0 0",
+        },
+        ".cm-lineNumbers .cm-gutterElement[style*=\"visibility: hidden\"]": {
+          minHeight: "0",
         },
         ".cm-lineNumbers .mm-live-v4-table-gutter-lines": {
           boxSizing: "border-box",
@@ -66,8 +90,8 @@ export function createLiveRuntime(): LiveRuntime {
           flexDirection: "column",
           alignItems: "stretch",
           minWidth: "100%",
-          paddingTop: "0.35rem",
-          paddingBottom: "0.35rem",
+          paddingTop: "0",
+          paddingBottom: "0",
           color: "var(--vscode-editorLineNumber-foreground, #858585)",
           fontVariantNumeric: "tabular-nums",
           userSelect: "none",
@@ -77,20 +101,29 @@ export function createLiveRuntime(): LiveRuntime {
           display: "flex",
           justifyContent: "flex-end",
           alignItems: "flex-start",
-          minHeight: "1.5em",
-          paddingRight: "2px",
-          paddingTop: "0.25rem",
+          minHeight: "var(--mlrt-editor-line-height, 1.5em)",
+          paddingRight: "0",
+          paddingTop: "0",
           whiteSpace: "nowrap",
         },
         ".cm-content": {
           minHeight: "100%",
-          padding: "8px 12px",
+          padding: "var(--mlrt-editor-top-padding, 0px) 0 var(--mlrt-editor-bottom-padding, 0px) 0",
           caretColor: "var(--vscode-editorCursor-foreground, #aeafad)",
         },
         ".cm-line": {
           color: "var(--vscode-editor-foreground, #d4d4d4)",
         },
+        ".cm-activeLine": {
+          backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)",
+        },
+        ".cm-cursor, .cm-dropCursor": {
+          borderLeftColor: "var(--vscode-editorCursor-foreground, #aeafad)",
+          borderLeftWidth: "var(--mlrt-editor-cursor-width, 1px)",
+        },
       }),
+      highlightActiveLine(),
+      highlightActiveLineGutter(),
       lineNumbers(),
       createTableLineNumberSuppressions(),
       lineNumberWidgetMarker.of((_view, widget) => {
@@ -104,7 +137,7 @@ export function createLiveRuntime(): LiveRuntime {
         );
       }),
       markdown(),
-      EditorView.lineWrapping,
+      ...(options.lineWrapping ? [EditorView.lineWrapping] : []),
       liveStateField,
       liveAtomicRanges,
       livePointerHandlers,
