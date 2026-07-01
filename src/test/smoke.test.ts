@@ -113,29 +113,22 @@ assert.ok(
 );
 assert.ok(
   packageJson.contributes?.commands?.some(
-    (command) => command.command === "markdownLiveRenderTables.openLiveEditor",
-  ),
-);
-assert.ok(
-  packageJson.contributes?.commands?.some(
-    (command) => command.command === "markdownLiveRenderTables.openSourceEditor",
+    (command) => command.command === "markdownLiveRenderTables.toggleEditor",
   ),
 );
 assert.ok(
   packageJson.contributes?.menus?.["editor/title"]?.some(
     (item) =>
-      item.command === "markdownLiveRenderTables.openLiveEditor" &&
+      item.command === "markdownLiveRenderTables.toggleEditor" &&
       item.when?.includes("resourceExtname == .md") &&
       item.when?.includes("resourceExtname == .markdown"),
   ),
 );
-assert.ok(
-  packageJson.contributes?.menus?.["editor/title"]?.some(
-    (item) =>
-      item.command === "markdownLiveRenderTables.openSourceEditor" &&
-      item.when?.includes("resourceExtname == .md") &&
-      item.when?.includes("resourceExtname == .markdown"),
-  ),
+assert.equal(
+  packageJson.contributes?.menus?.["editor/title"]?.filter((item) =>
+    item.command?.startsWith("markdownLiveRenderTables."),
+  ).length,
+  1,
 );
 
 console.log("Markdown live editor smoke tests passed.");

@@ -1,6 +1,8 @@
 .vscode/**
 src/**
 node_modules/**
+scripts/**
+qa/**
 Build_and_Install
 tsconfig.json
 package-lock.json

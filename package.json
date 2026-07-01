@@ -2,7 +2,7 @@
   "name": "markdown-live-render-tables",
   "displayName": "Markdown Live Editor",
   "description": "A VS Code extension for editing markdown in a live rendered editor.",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -21,16 +21,10 @@
   "contributes": {
     "commands": [
       {
-        "command": "markdownLiveRenderTables.openLiveEditor",
-        "title": "Open Markdown Live Editor",
+        "command": "markdownLiveRenderTables.toggleEditor",
+        "title": "Toggle Markdown Live Editor",
         "category": "Markdown Live Editor",
-        "icon": "$(preview)"
-      },
-      {
-        "command": "markdownLiveRenderTables.openSourceEditor",
-        "title": "Open Markdown Source",
-        "category": "Markdown Live Editor",
-        "icon": "$(code)"
+        "icon": "$(git-compare)"
       }
     ],
     "customEditors": [
@@ -64,14 +58,9 @@
     "menus": {
       "editor/title": [
         {
-          "command": "markdownLiveRenderTables.openLiveEditor",
+          "command": "markdownLiveRenderTables.toggleEditor",
           "when": "resourceExtname == .md || resourceExtname == .markdown",
           "group": "navigation@1"
-        },
-        {
-          "command": "markdownLiveRenderTables.openSourceEditor",
-          "when": "resourceExtname == .md || resourceExtname == .markdown",
-          "group": "navigation@2"
         }
       ]
     }
@@ -80,6 +69,8 @@
     "bundle:webview": "esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/liveEditor.js && esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/tableEditor.js",
     "compile": "tsc -p ./ && npm run bundle:webview",
     "package": "vsce package --allow-missing-repository --out markdown-live-render-tables-latest.vsix",
+    "qa:harness": "npm run compile && node scripts/render-live-editor-harness.mjs",
+    "qa:screenshot": "npm run compile && node scripts/render-live-editor-harness.mjs --screenshot",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "test": "node ./dist/test/smoke.test.js",

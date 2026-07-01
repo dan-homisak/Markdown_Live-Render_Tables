@@ -15,6 +15,17 @@ export class RenderedTableWidget extends WidgetType {
     return false;
   }
 
+  public getTableFrom(): number {
+    return this.table.from;
+  }
+
+  public getSourceLineNumbers(): number[] {
+    return [
+      this.table.header.lineIndex + 1,
+      ...this.table.body.map((row) => row.lineIndex + 1),
+    ];
+  }
+
   public toDOM(view: EditorView): HTMLElement {
     const wrapper = document.createElement("section");
     wrapper.className = "mm-live-v4-table-widget";

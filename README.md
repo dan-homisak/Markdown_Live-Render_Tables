@@ -41,6 +41,18 @@ Run tests:
 npm test
 ```
 
+Generate a standalone browser harness for the live editor bundle:
+
+```sh
+npm run qa:harness
+```
+
+Capture that harness with headless Chrome when visual layout needs checking:
+
+```sh
+npm run qa:screenshot
+```
+
 Package the extension:
 
 ```sh

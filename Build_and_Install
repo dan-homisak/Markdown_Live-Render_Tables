@@ -48,6 +48,8 @@ CODE_CLI="$(find_code_cli)" || {
 }
 
 VSIX_PATH="$PROJECT_DIR/markdown-live-render-tables-latest.vsix"
+EXTENSION_ID="dan-homisak.markdown-live-render-tables"
+EXPECTED_VERSION="$(node -p "require('./package.json').version")"
 
 log "Using VS Code CLI"
 "$CODE_CLI" --version
@@ -68,10 +70,47 @@ if [[ ! -f "$VSIX_PATH" ]]; then
 fi
 
 log "Uninstalling previously installed extension, if present"
-"$CODE_CLI" --uninstall-extension dan-homisak.markdown-live-render-tables || true
+"$CODE_CLI" --uninstall-extension "$EXTENSION_ID" || true
 
 log "Installing latest VSIX into VS Code"
 "$CODE_CLI" --install-extension "$VSIX_PATH" --force
+
+log "Verifying installed extension version"
+INSTALLED_VERSION="$("$CODE_CLI" --list-extensions --show-versions | awk -F@ -v id="$EXTENSION_ID" '$1 == id { print $2 }' | tail -n 1)"
+if [[ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]]; then
+  echo "Expected $EXTENSION_ID@$EXPECTED_VERSION but found ${INSTALLED_VERSION:-not installed}."
+  exit 1
+fi
+echo "Verified: $EXTENSION_ID@$INSTALLED_VERSION"
+
+log "Reloading VS Code window"
+if command -v osascript >/dev/null 2>&1; then
+  if osascript <<'APPLESCRIPT'
+tell application "Visual Studio Code" to activate
+delay 0.3
+tell application "System Events"
+  if exists process "Code" then
+    tell process "Code"
+      keystroke "p" using {command down, shift down}
+      delay 0.3
+      keystroke ">Developer: Reload Window"
+      delay 0.2
+      key code 36
+    end tell
+  else
+    error "VS Code process was not found."
+  end if
+end tell
+APPLESCRIPT
+  then
+    echo "Reload command sent to VS Code."
+  else
+    echo "Could not automatically reload VS Code. macOS may require Accessibility permission for the terminal running this script."
+    echo "Run 'Developer: Reload Window' in VS Code before testing the extension."
+  fi
+else
+  echo "osascript is unavailable. Run 'Developer: Reload Window' in VS Code before testing the extension."
+fi
 
 log "Done"
 echo "Installed: $VSIX_PATH"

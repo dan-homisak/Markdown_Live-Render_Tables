@@ -28,9 +28,9 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
-      "markdownLiveRenderTables.openLiveEditor",
+      "markdownLiveRenderTables.toggleEditor",
       async (uri?: vscode.Uri) => {
-        await openLiveEditor(uri, provider);
+        await toggleEditor(uri, provider);
       },
     ),
     vscode.commands.registerCommand(
@@ -135,7 +135,11 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         }
 
         if (isOpenSourceMessage(message)) {
-          void openSourceEditor(document.uri, this);
+          void openSourceEditor(
+            document.uri,
+            this,
+            vscode.window.tabGroups.activeTabGroup.activeTab,
+          );
           return;
         }
 
@@ -166,9 +170,54 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
   }
 }
 
+async function toggleEditor(
+  uri: vscode.Uri | undefined,
+  provider: MarkdownLiveEditorProvider,
+): Promise<void> {
+  const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  const activeInput = activeTab?.input;
+
+  if (
+    activeInput instanceof vscode.TabInputCustom &&
+    isLiveEditorViewType(activeInput.viewType)
+  ) {
+    await openSourceEditor(uri ?? activeInput.uri, provider, activeTab);
+    return;
+  }
+
+  if (activeInput instanceof vscode.TabInputText) {
+    await openLiveEditor(uri ?? activeInput.uri, provider, activeTab);
+    return;
+  }
+
+  const activeTextUri = vscode.window.activeTextEditor?.document.uri;
+  const activeLiveUri = provider.getActiveDocumentUri();
+  if (activeTextUri) {
+    await openLiveEditor(
+      uri ?? activeTextUri,
+      provider,
+      vscode.window.tabGroups.activeTabGroup.activeTab,
+    );
+    return;
+  }
+  await openSourceEditor(
+    uri ?? activeLiveUri,
+    provider,
+    vscode.window.tabGroups.activeTabGroup.activeTab,
+  );
+}
+
+function isLiveEditorViewType(viewType: string): boolean {
+  return (
+    viewType === LIVE_EDITOR_VIEW_TYPE ||
+    viewType === LEGACY_TABLE_EDITOR_VIEW_TYPE
+  );
+}
+
 async function openLiveEditor(
   uri: vscode.Uri | undefined,
   provider: MarkdownLiveEditorProvider,
+  tabToClose?: vscode.Tab,
 ): Promise<void> {
   const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri;
   if (!targetUri) {
@@ -190,11 +239,13 @@ async function openLiveEditor(
       preserveFocus: false,
     },
   );
+  await closeTabIfReplaced(tabToClose, targetUri);
 }
 
 async function openSourceEditor(
   uri: vscode.Uri | undefined,
   provider: MarkdownLiveEditorProvider,
+  tabToClose?: vscode.Tab,
 ): Promise<void> {
   const targetUri =
     uri ?? provider.getActiveDocumentUri() ?? vscode.window.activeTextEditor?.document.uri;
@@ -209,6 +260,32 @@ async function openSourceEditor(
     preview: false,
     preserveFocus: false,
   });
+  await closeTabIfReplaced(tabToClose, targetUri);
+}
+
+async function closeTabIfReplaced(
+  tab: vscode.Tab | undefined,
+  uri: vscode.Uri,
+): Promise<void> {
+  if (!tab || !tabMatchesUri(tab, uri)) {
+    return;
+  }
+
+  if (vscode.window.tabGroups.activeTabGroup.activeTab === tab) {
+    return;
+  }
+
+  await vscode.window.tabGroups.close(tab, true);
+}
+
+function tabMatchesUri(tab: vscode.Tab, uri: vscode.Uri): boolean {
+  const input = tab.input;
+  return (
+    (input instanceof vscode.TabInputText &&
+      input.uri.toString() === uri.toString()) ||
+    (input instanceof vscode.TabInputCustom &&
+      input.uri.toString() === uri.toString())
+  );
 }
 
 async function applyFullDocumentEdit(
@@ -319,30 +396,11 @@ function getEditorHtml(
     .mm-live-v4-toolbar {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
       flex: 0 0 auto;
       min-height: 28px;
       padding: 0.2rem 0.5rem;
       border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
       background: var(--vscode-editorWidget-background, #252526);
-    }
-
-    .mm-live-v4-toolbar-button {
-      flex: 0 0 auto;
-      height: 22px;
-      padding: 0 0.55rem;
-      border: 1px solid var(--vscode-button-border, transparent);
-      border-radius: 2px;
-      color: var(--vscode-button-foreground, #ffffff);
-      background: var(--vscode-button-background, #0e639c);
-      font-family: var(--vscode-font-family, sans-serif);
-      font-size: 12px;
-      line-height: 20px;
-      cursor: pointer;
-    }
-
-    .mm-live-v4-toolbar-button:hover {
-      background: var(--vscode-button-hoverBackground, #1177bb);
     }
 
     .mm-live-v4-status {
@@ -373,6 +431,7 @@ function getEditorHtml(
 
     .cm-scroller {
       overflow: auto !important;
+      height: 100%;
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: var(--vscode-editor-font-size, 13px);
       line-height: 1.5;
@@ -385,7 +444,8 @@ function getEditorHtml(
     .mm-live-v4-table-widget {
       display: block;
       max-width: 100%;
-      margin: 0.35rem 0;
+      margin: 0;
+      padding: 0.35rem 0;
       overflow-x: auto;
       overflow-y: hidden;
       color: var(--vscode-editor-foreground, #d4d4d4);
@@ -408,7 +468,6 @@ function getEditorHtml(
       max-width: 24rem;
       padding: 0.25rem 0.45rem;
       border: 1px solid var(--vscode-editorWidget-border, #6a6a6a);
-      box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.45);
       vertical-align: top;
       white-space: pre-wrap;
       overflow-wrap: anywhere;

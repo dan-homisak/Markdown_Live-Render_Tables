@@ -2614,6 +2614,24 @@
   EditorState.transactionFilter = transactionFilter;
   EditorState.transactionExtender = transactionExtender;
   Compartment.reconfigure = /* @__PURE__ */ StateEffect.define();
+  function combineConfig(configs, defaults, combine = {}) {
+    let result = {};
+    for (let config of configs)
+      for (let key of Object.keys(config)) {
+        let value = config[key], current = result[key];
+        if (current === void 0)
+          result[key] = value;
+        else if (current === value || value === void 0) ;
+        else if (Object.hasOwnProperty.call(combine, key))
+          result[key] = combine[key](current, value);
+        else
+          throw new Error("Config merge conflict for field " + key);
+      }
+    for (let key in defaults)
+      if (result[key] === void 0)
+        result[key] = defaults[key];
+    return result;
+  }
   var RangeValue = class {
     /**
     Compare this value with another value. Used when comparing
@@ -12068,6 +12086,420 @@
   GutterMarker.prototype.mapMode = MapMode.TrackBefore;
   GutterMarker.prototype.startSide = GutterMarker.prototype.endSide = -1;
   GutterMarker.prototype.point = true;
+  var gutterLineClass = /* @__PURE__ */ Facet.define();
+  var gutterWidgetClass = /* @__PURE__ */ Facet.define();
+  var activeGutters = /* @__PURE__ */ Facet.define();
+  var unfixGutters = /* @__PURE__ */ Facet.define({
+    combine: (values2) => values2.some((x) => x)
+  });
+  function gutters(config) {
+    let result = [
+      gutterView
+    ];
+    if (config && config.fixed === false)
+      result.push(unfixGutters.of(true));
+    return result;
+  }
+  var gutterView = /* @__PURE__ */ ViewPlugin.fromClass(class {
+    constructor(view2) {
+      this.view = view2;
+      this.domAfter = null;
+      this.prevViewport = view2.viewport;
+      this.dom = document.createElement("div");
+      this.dom.className = "cm-gutters cm-gutters-before";
+      this.dom.setAttribute("aria-hidden", "true");
+      this.dom.style.minHeight = this.view.contentHeight / this.view.scaleY + "px";
+      this.gutters = view2.state.facet(activeGutters).map((conf) => new SingleGutterView(view2, conf));
+      this.fixed = !view2.state.facet(unfixGutters);
+      for (let gutter2 of this.gutters) {
+        if (gutter2.config.side == "after")
+          this.getDOMAfter().appendChild(gutter2.dom);
+        else
+          this.dom.appendChild(gutter2.dom);
+      }
+      if (this.fixed) {
+        this.dom.style.position = "sticky";
+      }
+      this.syncGutters(false);
+      view2.scrollDOM.insertBefore(this.dom, view2.contentDOM);
+    }
+    getDOMAfter() {
+      if (!this.domAfter) {
+        this.domAfter = document.createElement("div");
+        this.domAfter.className = "cm-gutters cm-gutters-after";
+        this.domAfter.setAttribute("aria-hidden", "true");
+        this.domAfter.style.minHeight = this.view.contentHeight / this.view.scaleY + "px";
+        this.domAfter.style.position = this.fixed ? "sticky" : "";
+        this.view.scrollDOM.appendChild(this.domAfter);
+      }
+      return this.domAfter;
+    }
+    update(update) {
+      if (this.updateGutters(update)) {
+        let vpA = this.prevViewport, vpB = update.view.viewport;
+        let vpOverlap = Math.min(vpA.to, vpB.to) - Math.max(vpA.from, vpB.from);
+        this.syncGutters(vpOverlap < (vpB.to - vpB.from) * 0.8);
+      }
+      if (update.geometryChanged) {
+        let min = this.view.contentHeight / this.view.scaleY + "px";
+        this.dom.style.minHeight = min;
+        if (this.domAfter)
+          this.domAfter.style.minHeight = min;
+      }
+      if (this.view.state.facet(unfixGutters) != !this.fixed) {
+        this.fixed = !this.fixed;
+        this.dom.style.position = this.fixed ? "sticky" : "";
+        if (this.domAfter)
+          this.domAfter.style.position = this.fixed ? "sticky" : "";
+      }
+      this.prevViewport = update.view.viewport;
+    }
+    syncGutters(detach) {
+      let after = this.dom.nextSibling;
+      if (detach) {
+        this.dom.remove();
+        if (this.domAfter)
+          this.domAfter.remove();
+      }
+      let lineClasses = RangeSet.iter(this.view.state.facet(gutterLineClass), this.view.viewport.from);
+      let classSet = [];
+      let contexts = this.gutters.map((gutter2) => new UpdateContext(gutter2, this.view.viewport, -this.view.documentPadding.top));
+      for (let line of this.view.viewportLineBlocks) {
+        if (classSet.length)
+          classSet = [];
+        if (Array.isArray(line.type)) {
+          let first = true;
+          for (let b of line.type) {
+            if (b.type == BlockType.Text && first) {
+              advanceCursor(lineClasses, classSet, b.from);
+              for (let cx of contexts)
+                cx.line(this.view, b, classSet);
+              first = false;
+            } else if (b.widget) {
+              for (let cx of contexts)
+                cx.widget(this.view, b);
+            }
+          }
+        } else if (line.type == BlockType.Text) {
+          advanceCursor(lineClasses, classSet, line.from);
+          for (let cx of contexts)
+            cx.line(this.view, line, classSet);
+        } else if (line.widget) {
+          for (let cx of contexts)
+            cx.widget(this.view, line);
+        }
+      }
+      for (let cx of contexts)
+        cx.finish();
+      if (detach) {
+        this.view.scrollDOM.insertBefore(this.dom, after);
+        if (this.domAfter)
+          this.view.scrollDOM.appendChild(this.domAfter);
+      }
+    }
+    updateGutters(update) {
+      let prev = update.startState.facet(activeGutters), cur = update.state.facet(activeGutters);
+      let change = update.docChanged || update.heightChanged || update.viewportChanged || !RangeSet.eq(update.startState.facet(gutterLineClass), update.state.facet(gutterLineClass), update.view.viewport.from, update.view.viewport.to);
+      if (prev == cur) {
+        for (let gutter2 of this.gutters)
+          if (gutter2.update(update))
+            change = true;
+      } else {
+        change = true;
+        let gutters2 = [];
+        for (let conf of cur) {
+          let known = prev.indexOf(conf);
+          if (known < 0) {
+            gutters2.push(new SingleGutterView(this.view, conf));
+          } else {
+            this.gutters[known].update(update);
+            gutters2.push(this.gutters[known]);
+          }
+        }
+        for (let g of this.gutters) {
+          g.dom.remove();
+          if (gutters2.indexOf(g) < 0)
+            g.destroy();
+        }
+        for (let g of gutters2) {
+          if (g.config.side == "after")
+            this.getDOMAfter().appendChild(g.dom);
+          else
+            this.dom.appendChild(g.dom);
+        }
+        this.gutters = gutters2;
+      }
+      return change;
+    }
+    destroy() {
+      for (let view2 of this.gutters)
+        view2.destroy();
+      this.dom.remove();
+      if (this.domAfter)
+        this.domAfter.remove();
+    }
+  }, {
+    provide: (plugin) => EditorView.scrollMargins.of((view2) => {
+      let value = view2.plugin(plugin);
+      if (!value || value.gutters.length == 0 || !value.fixed)
+        return null;
+      let before = value.dom.offsetWidth * view2.scaleX, after = value.domAfter ? value.domAfter.offsetWidth * view2.scaleX : 0;
+      return view2.textDirection == Direction.LTR ? { left: before, right: after } : { right: before, left: after };
+    })
+  });
+  function asArray2(val) {
+    return Array.isArray(val) ? val : [val];
+  }
+  function advanceCursor(cursor, collect, pos) {
+    while (cursor.value && cursor.from <= pos) {
+      if (cursor.from == pos)
+        collect.push(cursor.value);
+      cursor.next();
+    }
+  }
+  var UpdateContext = class {
+    constructor(gutter2, viewport, height) {
+      this.gutter = gutter2;
+      this.height = height;
+      this.i = 0;
+      this.cursor = RangeSet.iter(gutter2.markers, viewport.from);
+    }
+    addElement(view2, block, markers) {
+      let { gutter: gutter2 } = this, above = (block.top - this.height) / view2.scaleY, height = block.height / view2.scaleY;
+      if (this.i == gutter2.elements.length) {
+        let newElt = new GutterElement(view2, height, above, markers);
+        gutter2.elements.push(newElt);
+        gutter2.dom.appendChild(newElt.dom);
+      } else {
+        gutter2.elements[this.i].update(view2, height, above, markers);
+      }
+      this.height = block.bottom;
+      this.i++;
+    }
+    line(view2, line, extraMarkers) {
+      let localMarkers = [];
+      advanceCursor(this.cursor, localMarkers, line.from);
+      if (extraMarkers.length)
+        localMarkers = localMarkers.concat(extraMarkers);
+      let forLine = this.gutter.config.lineMarker(view2, line, localMarkers);
+      if (forLine)
+        localMarkers.unshift(forLine);
+      let gutter2 = this.gutter;
+      if (localMarkers.length == 0 && !gutter2.config.renderEmptyElements)
+        return;
+      this.addElement(view2, line, localMarkers);
+    }
+    widget(view2, block) {
+      let marker = this.gutter.config.widgetMarker(view2, block.widget, block), markers = marker ? [marker] : null;
+      for (let cls of view2.state.facet(gutterWidgetClass)) {
+        let marker2 = cls(view2, block.widget, block);
+        if (marker2)
+          (markers || (markers = [])).push(marker2);
+      }
+      if (markers)
+        this.addElement(view2, block, markers);
+    }
+    finish() {
+      let gutter2 = this.gutter;
+      while (gutter2.elements.length > this.i) {
+        let last = gutter2.elements.pop();
+        gutter2.dom.removeChild(last.dom);
+        last.destroy();
+      }
+    }
+  };
+  var SingleGutterView = class {
+    constructor(view2, config) {
+      this.view = view2;
+      this.config = config;
+      this.elements = [];
+      this.spacer = null;
+      this.dom = document.createElement("div");
+      this.dom.className = "cm-gutter" + (this.config.class ? " " + this.config.class : "");
+      for (let prop in config.domEventHandlers) {
+        this.dom.addEventListener(prop, (event) => {
+          let target = event.target, y;
+          if (target != this.dom && this.dom.contains(target)) {
+            while (target.parentNode != this.dom)
+              target = target.parentNode;
+            let rect = target.getBoundingClientRect();
+            y = (rect.top + rect.bottom) / 2;
+          } else {
+            y = event.clientY;
+          }
+          let line = view2.lineBlockAtHeight(y - view2.documentTop);
+          if (config.domEventHandlers[prop](view2, line, event))
+            event.preventDefault();
+        });
+      }
+      this.markers = asArray2(config.markers(view2));
+      if (config.initialSpacer) {
+        this.spacer = new GutterElement(view2, 0, 0, [config.initialSpacer(view2)]);
+        this.dom.appendChild(this.spacer.dom);
+        this.spacer.dom.style.cssText += "visibility: hidden; pointer-events: none";
+      }
+    }
+    update(update) {
+      let prevMarkers = this.markers;
+      this.markers = asArray2(this.config.markers(update.view));
+      if (this.spacer && this.config.updateSpacer) {
+        let updated = this.config.updateSpacer(this.spacer.markers[0], update);
+        if (updated != this.spacer.markers[0])
+          this.spacer.update(update.view, 0, 0, [updated]);
+      }
+      let vp = update.view.viewport;
+      return !RangeSet.eq(this.markers, prevMarkers, vp.from, vp.to) || (this.config.lineMarkerChange ? this.config.lineMarkerChange(update) : false);
+    }
+    destroy() {
+      for (let elt2 of this.elements)
+        elt2.destroy();
+    }
+  };
+  var GutterElement = class {
+    constructor(view2, height, above, markers) {
+      this.height = -1;
+      this.above = 0;
+      this.markers = [];
+      this.dom = document.createElement("div");
+      this.dom.className = "cm-gutterElement";
+      this.update(view2, height, above, markers);
+    }
+    update(view2, height, above, markers) {
+      if (this.height != height) {
+        this.height = height;
+        this.dom.style.height = height + "px";
+      }
+      if (this.above != above)
+        this.dom.style.marginTop = (this.above = above) ? above + "px" : "";
+      if (!sameMarkers(this.markers, markers))
+        this.setMarkers(view2, markers);
+    }
+    setMarkers(view2, markers) {
+      let cls = "cm-gutterElement", domPos = this.dom.firstChild;
+      for (let iNew = 0, iOld = 0; ; ) {
+        let skipTo = iOld, marker = iNew < markers.length ? markers[iNew++] : null, matched = false;
+        if (marker) {
+          let c = marker.elementClass;
+          if (c)
+            cls += " " + c;
+          for (let i2 = iOld; i2 < this.markers.length; i2++)
+            if (this.markers[i2].compare(marker)) {
+              skipTo = i2;
+              matched = true;
+              break;
+            }
+        } else {
+          skipTo = this.markers.length;
+        }
+        while (iOld < skipTo) {
+          let next = this.markers[iOld++];
+          if (next.toDOM) {
+            next.destroy(domPos);
+            let after = domPos.nextSibling;
+            domPos.remove();
+            domPos = after;
+          }
+        }
+        if (!marker)
+          break;
+        if (marker.toDOM) {
+          if (matched)
+            domPos = domPos.nextSibling;
+          else
+            this.dom.insertBefore(marker.toDOM(view2), domPos);
+        }
+        if (matched)
+          iOld++;
+      }
+      this.dom.className = cls;
+      this.markers = markers;
+    }
+    destroy() {
+      this.setMarkers(null, []);
+    }
+  };
+  function sameMarkers(a, b) {
+    if (a.length != b.length)
+      return false;
+    for (let i2 = 0; i2 < a.length; i2++)
+      if (!a[i2].compare(b[i2]))
+        return false;
+    return true;
+  }
+  var lineNumberMarkers = /* @__PURE__ */ Facet.define();
+  var lineNumberWidgetMarker = /* @__PURE__ */ Facet.define();
+  var lineNumberConfig = /* @__PURE__ */ Facet.define({
+    combine(values2) {
+      return combineConfig(values2, { formatNumber: String, domEventHandlers: {} }, {
+        domEventHandlers(a, b) {
+          let result = Object.assign({}, a);
+          for (let event in b) {
+            let exists = result[event], add = b[event];
+            result[event] = exists ? (view2, line, event2) => exists(view2, line, event2) || add(view2, line, event2) : add;
+          }
+          return result;
+        }
+      });
+    }
+  });
+  var NumberMarker = class extends GutterMarker {
+    constructor(number2) {
+      super();
+      this.number = number2;
+    }
+    eq(other) {
+      return this.number == other.number;
+    }
+    toDOM() {
+      return document.createTextNode(this.number);
+    }
+  };
+  function formatNumber(view2, number2) {
+    return view2.state.facet(lineNumberConfig).formatNumber(number2, view2.state);
+  }
+  var lineNumberGutter = /* @__PURE__ */ activeGutters.compute([lineNumberConfig], (state) => ({
+    class: "cm-lineNumbers",
+    renderEmptyElements: false,
+    markers(view2) {
+      return view2.state.facet(lineNumberMarkers);
+    },
+    lineMarker(view2, line, others) {
+      if (others.some((m) => m.toDOM))
+        return null;
+      return new NumberMarker(formatNumber(view2, view2.state.doc.lineAt(line.from).number));
+    },
+    widgetMarker: (view2, widget, block) => {
+      for (let m of view2.state.facet(lineNumberWidgetMarker)) {
+        let result = m(view2, widget, block);
+        if (result)
+          return result;
+      }
+      return null;
+    },
+    lineMarkerChange: (update) => update.startState.facet(lineNumberConfig) != update.state.facet(lineNumberConfig),
+    initialSpacer(view2) {
+      return new NumberMarker(formatNumber(view2, maxLineNumber(view2.state.doc.lines)));
+    },
+    updateSpacer(spacer, update) {
+      let max = formatNumber(update.view, maxLineNumber(update.view.state.doc.lines));
+      return max == spacer.number ? spacer : new NumberMarker(max);
+    },
+    domEventHandlers: state.facet(lineNumberConfig).domEventHandlers,
+    side: "before"
+  }));
+  function lineNumbers(config = {}) {
+    return [
+      lineNumberConfig.of(config),
+      gutters(),
+      lineNumberGutter
+    ];
+  }
+  function maxLineNumber(lines) {
+    let last = 9;
+    while (last < lines)
+      last = last * 10 + 9;
+    return last;
+  }
 
   // node_modules/@lezer/common/dist/index.js
   var DefaultBufferLength = 1024;
@@ -23231,6 +23663,15 @@
     eq() {
       return false;
     }
+    getTableFrom() {
+      return this.table.from;
+    }
+    getSourceLineNumbers() {
+      return [
+        this.table.header.lineIndex + 1,
+        ...this.table.body.map((row) => row.lineIndex + 1)
+      ];
+    }
     toDOM(view2) {
       const wrapper = document.createElement("section");
       wrapper.className = "mm-live-v4-table-widget";
@@ -23483,9 +23924,41 @@
           },
           ".cm-scroller": {
             overflow: "auto !important",
+            height: "100%",
             fontFamily: "var(--vscode-editor-font-family, monospace)",
             fontSize: "var(--vscode-editor-font-size, 13px)",
             lineHeight: "1.5"
+          },
+          ".cm-gutters": {
+            backgroundColor: "var(--vscode-editor-background, #1e1e1e)",
+            color: "var(--vscode-editorLineNumber-foreground, #858585)",
+            borderRight: "1px solid var(--vscode-editorGutter-border, transparent)"
+          },
+          ".cm-activeLineGutter": {
+            backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)",
+            color: "var(--vscode-editorLineNumber-activeForeground, #c6c6c6)"
+          },
+          ".cm-lineNumbers .mm-live-v4-table-gutter-lines": {
+            boxSizing: "border-box",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "stretch",
+            minWidth: "100%",
+            paddingTop: "0.35rem",
+            paddingBottom: "0.35rem",
+            color: "var(--vscode-editorLineNumber-foreground, #858585)",
+            fontVariantNumeric: "tabular-nums",
+            userSelect: "none"
+          },
+          ".cm-lineNumbers .mm-live-v4-table-gutter-line": {
+            boxSizing: "border-box",
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "flex-start",
+            minHeight: "1.5em",
+            paddingRight: "2px",
+            paddingTop: "0.25rem",
+            whiteSpace: "nowrap"
           },
           ".cm-content": {
             minHeight: "100%",
@@ -23495,6 +23968,16 @@
           ".cm-line": {
             color: "var(--vscode-editor-foreground, #d4d4d4)"
           }
+        }),
+        lineNumbers(),
+        lineNumberWidgetMarker.of((_view, widget) => {
+          if (!(widget instanceof RenderedTableWidget)) {
+            return null;
+          }
+          return new TableRowLineNumberMarker(
+            widget.getTableFrom(),
+            widget.getSourceLineNumbers()
+          );
         }),
         markdown(),
         EditorView.lineWrapping,
@@ -23508,6 +23991,81 @@
         })
       ]
     };
+  }
+  var TableRowLineNumberMarker = class _TableRowLineNumberMarker extends GutterMarker {
+    constructor(tableFrom, lineNumbers2) {
+      super();
+      this.tableFrom = tableFrom;
+      this.lineNumbers = lineNumbers2;
+    }
+    tableFrom;
+    lineNumbers;
+    eq(other) {
+      return other instanceof _TableRowLineNumberMarker && other.tableFrom === this.tableFrom && other.lineNumbers.length === this.lineNumbers.length && other.lineNumbers.every(
+        (lineNumber, index) => lineNumber === this.lineNumbers[index]
+      );
+    }
+    toDOM(view2) {
+      const wrapper = view2.dom.ownerDocument.createElement("div");
+      wrapper.className = "mm-live-v4-table-gutter-lines";
+      wrapper.dataset.tableFrom = String(this.tableFrom);
+      this.lineNumbers.forEach((lineNumber) => {
+        const line = view2.dom.ownerDocument.createElement("div");
+        line.className = "mm-live-v4-table-gutter-line";
+        line.textContent = String(lineNumber);
+        wrapper.append(line);
+      });
+      scheduleTableGutterSync(view2, wrapper, this.tableFrom);
+      return wrapper;
+    }
+    destroy(dom) {
+      if (dom instanceof HTMLElement) {
+        const observer = tableGutterObservers.get(dom);
+        observer?.disconnect();
+        tableGutterObservers.delete(dom);
+      }
+    }
+  };
+  var tableGutterObservers = /* @__PURE__ */ new WeakMap();
+  function scheduleTableGutterSync(view2, gutter2, tableFrom) {
+    const win = view2.dom.ownerDocument.defaultView ?? window;
+    win.requestAnimationFrame(() => {
+      syncTableGutterRows(view2, gutter2, tableFrom);
+    });
+  }
+  function syncTableGutterRows(view2, gutter2, tableFrom) {
+    const table = view2.dom.ownerDocument.querySelector(
+      `.mm-live-v4-table-widget[data-src-from="${tableFrom}"] .mm-live-v4-table`
+    );
+    if (!table) {
+      return;
+    }
+    const tableRows = Array.from(
+      table.querySelectorAll("thead tr, tbody tr")
+    );
+    const gutterRows = Array.from(
+      gutter2.querySelectorAll(".mm-live-v4-table-gutter-line")
+    );
+    tableRows.forEach((tableRow, index) => {
+      const gutterRow = gutterRows[index];
+      if (!gutterRow) {
+        return;
+      }
+      gutterRow.style.height = `${tableRow.getBoundingClientRect().height}px`;
+    });
+    if (typeof ResizeObserver === "undefined" || tableGutterObservers.has(gutter2)) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      tableRows.forEach((tableRow, index) => {
+        const gutterRow = gutterRows[index];
+        if (gutterRow) {
+          gutterRow.style.height = `${tableRow.getBoundingClientRect().height}px`;
+        }
+      });
+    });
+    observer.observe(table);
+    tableGutterObservers.set(gutter2, observer);
   }
 
   // src/webview/liveEditor.ts
@@ -23528,18 +24086,10 @@
     app.className = "mm-live-v4-shell";
     const toolbar = document.createElement("div");
     toolbar.className = "mm-live-v4-toolbar";
-    const sourceButton = document.createElement("button");
-    sourceButton.type = "button";
-    sourceButton.className = "mm-live-v4-toolbar-button";
-    sourceButton.textContent = "Source";
-    sourceButton.title = "Open normal VS Code markdown source";
-    sourceButton.addEventListener("click", () => {
-      vscode.postMessage({ type: "openSource" });
-    });
     statusElement = document.createElement("div");
     statusElement.className = "mm-live-v4-status";
     statusElement.textContent = "Loading markdown...";
-    toolbar.append(sourceButton, statusElement);
+    toolbar.append(statusElement);
     const editorMount = document.createElement("div");
     editorMount.className = "mm-live-v4-editor-mount";
     app.append(toolbar, editorMount);
