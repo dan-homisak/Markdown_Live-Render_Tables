@@ -171,7 +171,7 @@ ${sharedCss}
   </style>
 </head>
 <body>
-  <div id="app"><div class="mm-live-v4-loading">Loading Markdown live editor...</div></div>
+  <div id="app"></div>
   <script>
     window.__MLRT_MESSAGES__ = [];
     window.acquireVsCodeApi = function acquireVsCodeApi() {

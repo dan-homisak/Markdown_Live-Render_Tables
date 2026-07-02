@@ -205,6 +205,31 @@ try {
   }
 
   assertPixelParity(stockMetrics, liveMetrics);
+
+  await key({
+    type: "keyDown",
+    modifiers: 4 | 2,
+    key: "M",
+    code: "KeyM",
+    windowsVirtualKeyCode: 77,
+  });
+  await key({
+    type: "keyUp",
+    modifiers: 4 | 2,
+    key: "M",
+    code: "KeyM",
+    windowsVirtualKeyCode: 77,
+  });
+  await sleep(2500);
+  const shortcutSourceMetrics = await evaluateJson(wb, stockMetricsExpression());
+  if (!shortcutSourceMetrics?.hasMonaco) {
+    throw new Error(
+      "Shortcut toggle check failed: Cmd+Ctrl+M did not return to the Monaco source editor.",
+    );
+  }
+  console.log("SHORTCUT TOGGLE CHECK:", {
+    hasMonaco: shortcutSourceMetrics.hasMonaco,
+  });
   wb.ws.close();
 } finally {
   await sleep(500);

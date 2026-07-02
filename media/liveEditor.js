@@ -24255,7 +24255,7 @@
     view = new EditorView({
       parent: editorMount,
       state: EditorState.create({
-        doc: "",
+        doc: initialDocument,
         extensions: [
           ...runtime.extensions,
           EditorView.updateListener.of((update) => {
@@ -24278,7 +24278,7 @@
         ]
       })
     });
-    setEditorDocument(initialDocument, "embedded");
+    updateStatus(initialDocument, "embedded");
     installCursorDebugListeners(app);
   } catch (error) {
     app.replaceChildren(renderStartupError(error));

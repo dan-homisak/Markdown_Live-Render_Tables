@@ -2,7 +2,7 @@
   "name": "markdown-live-render-tables",
   "displayName": "Markdown Live Editor",
   "description": "A VS Code extension for editing markdown in a live rendered editor.",
-  "version": "0.1.16",
+  "version": "0.1.18",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -36,8 +36,7 @@
       {
         "command": "markdownLiveRenderTables.toggleEditor",
         "key": "ctrl+alt+m",
-        "mac": "cmd+ctrl+m",
-        "when": "resourceExtname == .md || resourceExtname == .markdown"
+        "mac": "cmd+ctrl+m"
       }
     ],
     "configuration": {

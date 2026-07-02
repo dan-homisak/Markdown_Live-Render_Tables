@@ -142,6 +142,7 @@ const packageJson = JSON.parse(
 ) as {
   contributes?: {
     commands?: Array<{ command?: string }>;
+    keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
     menus?: { "editor/title"?: Array<{ command?: string; when?: string }> };
     customEditors?: Array<{
       viewType?: string;
@@ -183,6 +184,15 @@ assert.ok(
   ),
 );
 assert.ok(
+  packageJson.contributes?.keybindings?.some(
+    (item) =>
+      item.command === "markdownLiveRenderTables.toggleEditor" &&
+      item.key === "ctrl+alt+m" &&
+      item.mac === "cmd+ctrl+m" &&
+      item.when === undefined,
+  ),
+);
+assert.ok(
   packageJson.contributes?.menus?.["editor/title"]?.some(
     (item) =>
       item.command === "markdownLiveRenderTables.toggleEditor" &&
@@ -198,6 +208,8 @@ assert.equal(
 );
 assert.match(extensionSource, /reopenActiveEditorWith/);
 assert.match(extensionSource, /const DEFAULT_EDITOR_ID = "default"/);
+assert.match(liveEditorSource, /doc: initialDocument/);
+assert.doesNotMatch(extensionSource, /Loading Markdown live editor/);
 assert.doesNotMatch(
   liveEditorSource,
   /toggleMode|toggleRenderedMode|renderedMode|renderModeCompartment/,

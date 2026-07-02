@@ -23158,11 +23158,12 @@
   var hostRevision = 0;
   var view;
   try {
+    const initialDocument = readInitialDocument();
     app.replaceChildren();
     view = new EditorView({
       parent: app,
       state: EditorState.create({
-        doc: "",
+        doc: initialDocument,
         extensions: [
           markdown(),
           EditorView.lineWrapping,
@@ -23203,6 +23204,9 @@
     applyingFromHost = false;
   });
   vscode.postMessage({ type: "ready" });
+  function readInitialDocument() {
+    return typeof window.__MLRT_INITIAL_DOCUMENT__ === "string" ? window.__MLRT_INITIAL_DOCUMENT__ : "";
+  }
   function renderStartupError(error) {
     const wrapper = document.createElement("pre");
     wrapper.style.padding = "1rem";

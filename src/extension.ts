@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as vscode from "vscode";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
@@ -61,6 +62,7 @@ export function deactivate(): void {}
 
 class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly panelsByDocument = new Map<string, vscode.WebviewPanel>();
+  private readonly mediaTextByFileName = new Map<string, string>();
   private activeLiveDocumentUri: vscode.Uri | undefined;
 
   public constructor(private readonly context: vscode.ExtensionContext) {}
@@ -82,12 +84,8 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       webviewPanel.viewType === LEGACY_TABLE_EDITOR_VIEW_TYPE
         ? "tableEditor.js"
         : "liveEditor.js";
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, "media", scriptFileName),
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, "media", "liveEditor.css"),
-    );
+    const scriptText = this.readMediaText(scriptFileName);
+    const styleText = this.readMediaText("liveEditor.css");
     const documentKey = document.uri.toString();
 
     this.panelsByDocument.set(documentKey, webviewPanel);
@@ -200,8 +198,8 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
 
     webview.html = getEditorHtml(
       webview,
-      scriptUri,
-      styleUri,
+      scriptText,
+      styleText,
       document.getText(),
       document.uri,
     );
@@ -215,6 +213,22 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       }
       vscode.Disposable.from(...disposables).dispose();
     });
+  }
+
+  private readMediaText(fileName: string): string {
+    const cached = this.mediaTextByFileName.get(fileName);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const fileUri = vscode.Uri.joinPath(
+      this.context.extensionUri,
+      "media",
+      fileName,
+    );
+    const text = fs.readFileSync(fileUri.fsPath, "utf8");
+    this.mediaTextByFileName.set(fileName, text);
+    return text;
   }
 }
 
@@ -470,8 +484,8 @@ async function reopenActiveEditorWith(editorId: string): Promise<void> {
 
 function getEditorHtml(
   webview: vscode.Webview,
-  scriptUri: vscode.Uri,
-  styleUri: vscode.Uri,
+  scriptText: string,
+  styleText: string,
   initialText: string,
   documentUri: vscode.Uri,
 ): string {
@@ -482,6 +496,7 @@ function getEditorHtml(
   );
   const editorMetricsCss = getEditorMetricsCss(documentUri);
   const editorOptionsScript = JSON.stringify(getEditorOptions(documentUri));
+  const inlineScript = scriptText.replace(/<\/script/gi, "<\\/script");
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -495,17 +510,19 @@ function getEditorHtml(
     :root {
 ${editorMetricsCss}
     }
+${styleText}
   </style>
-  <link rel="stylesheet" href="${styleUri}">
   <title>Markdown Live Editor</title>
 </head>
 <body>
-  <div id="app"><div class="mm-live-v4-loading">Loading Markdown live editor...</div></div>
+  <div id="app"></div>
   <script nonce="${nonce}">
     window.__MLRT_INITIAL_DOCUMENT__ = ${initialDocumentScript};
     window.__MLRT_EDITOR_OPTIONS__ = ${editorOptionsScript};
   </script>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script nonce="${nonce}">
+${inlineScript}
+  </script>
 </body>
 </html>`;
 }

@@ -20,6 +20,12 @@ declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
 };
 
+declare global {
+  interface Window {
+    __MLRT_INITIAL_DOCUMENT__?: unknown;
+  }
+}
+
 interface HostSetDocumentMessage {
   type: "setDocument";
   text: string;
@@ -44,11 +50,12 @@ let hostRevision = 0;
 let view: EditorView;
 
 try {
+  const initialDocument = readInitialDocument();
   app.replaceChildren();
   view = new EditorView({
     parent: app,
     state: EditorState.create({
-      doc: "",
+      doc: initialDocument,
       extensions: [
         markdown(),
         EditorView.lineWrapping,
@@ -93,6 +100,12 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 });
 
 vscode.postMessage({ type: "ready" });
+
+function readInitialDocument(): string {
+  return typeof window.__MLRT_INITIAL_DOCUMENT__ === "string"
+    ? window.__MLRT_INITIAL_DOCUMENT__
+    : "";
+}
 
 function renderStartupError(error: unknown): HTMLElement {
   const wrapper = document.createElement("pre");
