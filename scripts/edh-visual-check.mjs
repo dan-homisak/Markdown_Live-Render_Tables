@@ -187,6 +187,7 @@ try {
   );
 
   let liveMetrics = null;
+  let liveClient = null;
   for (const wv of webviewTargets) {
     try {
       const c = connect(wv.webSocketDebuggerUrl);
@@ -195,16 +196,42 @@ try {
       const metrics = await evaluateJson(c, liveMetricsExpression());
       if (metrics) {
         liveMetrics = metrics;
+        liveClient = c;
         console.log("LIVE METRICS:", liveMetrics);
-      }
-      c.ws.close();
-      if (liveMetrics) {
         break;
       }
+      c.ws.close();
     } catch {}
   }
 
   assertPixelParity(stockMetrics, liveMetrics);
+  if (!liveClient) {
+    throw new Error("Enter exit check failed: live webview client was not found.");
+  }
+  const focusState = await evaluateJson(
+    liveClient,
+    tableCellFocusExpression(),
+  );
+  assertTableCellFocus(focusState);
+  console.log("TABLE CELL FOCUS CHECK:", focusState);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-cell-focus.png"),
+  );
+  const sourceProtection = await evaluateJson(
+    liveClient,
+    tableSourceProtectionExpression(),
+  );
+  assertTableSourceProtection(sourceProtection);
+  console.log("TABLE SOURCE PROTECTION CHECK:", sourceProtection);
+  const enterExit = await evaluateJson(liveClient, tableEnterExitExpression());
+  assertTableEnterExit(enterExit);
+  console.log("TABLE ENTER EXIT CHECK:", enterExit);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-enter-after-table.png"),
+  );
+  liveClient.ws.close();
 
   await key({
     type: "keyDown",
@@ -397,6 +424,211 @@ function liveMetricsExpression() {
     }
     return null;
   })()`;
+}
+
+function tableCellFocusExpression() {
+  return `(() => {
+    function findLiveRoot() {
+      const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+        try {
+          return frame.contentDocument;
+        } catch {
+          return null;
+        }
+      }).filter(Boolean)];
+      return roots.find((candidate) => candidate.querySelector('.mm-live-v4-table'));
+    }
+
+    return new Promise((resolve) => {
+      const root = findLiveRoot();
+      if (!root) {
+        resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+        return;
+      }
+      const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+      const editor = root.querySelector('.cm-editor');
+      const activeLine = root.querySelector('.cm-activeLine');
+      if (!cell || !editor || !activeLine) {
+        resolve(JSON.stringify({ ok: false, reason: 'missing focus targets' }));
+        return;
+      }
+      const range = root.createRange();
+      cell.focus();
+      range.selectNodeContents(cell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      setTimeout(() => {
+        resolve(JSON.stringify({
+          activeElementClass: root.activeElement?.className ?? null,
+          editorHasTableFocusClass: editor.classList.contains('mm-live-v4-table-cell-focused'),
+          activeLineBackground: root.defaultView.getComputedStyle(activeLine).backgroundColor,
+        }));
+      }, 100);
+    });
+  })()`;
+}
+
+function tableSourceProtectionExpression() {
+  return `(() => {
+    function findLiveRoot() {
+      const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+        try {
+          return frame.contentDocument;
+        } catch {
+          return null;
+        }
+      }).filter(Boolean)];
+      return roots.find((candidate) => candidate.querySelector('.mm-live-v4-table'));
+    }
+
+    return new Promise((resolve) => {
+      const root = findLiveRoot();
+      if (!root) {
+        resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+        return;
+      }
+      const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+      const widget = root.querySelector('.mm-live-v4-table-widget');
+      if (!view || !widget) {
+        resolve(JSON.stringify({
+          ok: false,
+          reason: 'missing CodeMirror view or table widget',
+          hasView: Boolean(view),
+          hasWidget: Boolean(widget),
+        }));
+        return;
+      }
+      const from = Number(widget.getAttribute('data-src-from'));
+      const to = Number(widget.getAttribute('data-src-to'));
+      const before = view.state.doc.toString();
+      view.focus();
+      view.dispatch({ selection: { anchor: from } });
+      view.dispatch({
+        changes: { from, insert: 'BAD_TABLE_SOURCE_WRITE' },
+        userEvent: 'input.type',
+      });
+      setTimeout(() => {
+        const after = view.state.doc.toString();
+        const selection = view.state.selection.main;
+        resolve(JSON.stringify({
+          ok: true,
+          docChanged: after !== before,
+          containsBadWrite: after.includes('BAD_TABLE_SOURCE_WRITE'),
+          selectionFrom: selection.from,
+          selectionTo: selection.to,
+          selectionInsideTable:
+            selection.from >= from && selection.to <= to,
+          tableFrom: from,
+          tableTo: to,
+        }));
+      }, 100);
+    });
+  })()`;
+}
+
+function tableEnterExitExpression() {
+  return `new Promise((resolve) => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]'));
+    if (!root) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing table cell' }));
+      return;
+    }
+    const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const range = root.createRange();
+    cell.focus();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    }));
+    setTimeout(() => {
+      const activeLineGutter = root.querySelector('.cm-activeLineGutter');
+      const activeLine = root.querySelector('.cm-activeLine');
+      const cursor = root.querySelector('.cm-cursor');
+      const box = (element) => {
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        return {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+        };
+      };
+      const lastEditorUpdate = [...(root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])]
+        .reverse()
+        .find((event) => event.event === 'editor-update' && event.details?.selectionSet);
+      resolve(JSON.stringify({
+        activeElementClass: root.activeElement?.className ?? null,
+        activeLineGutterText: activeLineGutter?.textContent ?? null,
+        activeLine: box(activeLine),
+        cursor: box(cursor),
+        editorSelection: lastEditorUpdate?.details?.editorSelection ?? null,
+      }));
+    }, 100);
+  })`;
+}
+
+function assertTableCellFocus(result) {
+  if (
+    !result?.editorHasTableFocusClass ||
+    result.activeLineBackground !== "rgba(0, 0, 0, 0)"
+  ) {
+    throw new Error(
+      `Table cell focus check failed: expected hidden active line, got ${JSON.stringify(
+        result,
+      )}`,
+    );
+  }
+}
+
+function assertTableSourceProtection(result) {
+  if (
+    !result?.ok ||
+    result?.docChanged ||
+    result?.containsBadWrite ||
+    result?.selectionInsideTable
+  ) {
+    throw new Error(
+      `Table source protection check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableEnterExit(result) {
+  if (result?.activeLineGutterText !== "15") {
+    throw new Error(
+      `Enter exit check failed: expected active gutter line 15, got ${JSON.stringify(
+        result,
+      )}`,
+    );
+  }
+
+  const selection = result.editorSelection?.ranges?.[0];
+  if (!selection?.empty) {
+    throw new Error(
+      `Enter exit check failed: expected collapsed editor selection, got ${JSON.stringify(
+        result,
+      )}`,
+    );
+  }
 }
 
 function assertPixelParity(stock, live) {

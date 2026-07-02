@@ -1,6 +1,7 @@
 import { ChangeSet, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createLiveRuntime } from "../live-v4/LiveRuntime";
+import { allowTableSourceChange } from "../shared/tableSourceProtection";
 
 declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
@@ -12,6 +13,7 @@ declare global {
     __MLRT_EDITOR_OPTIONS__?: unknown;
     __MLRT_DEBUG__?: unknown;
     __MLRT_DEBUG_EVENTS__?: DebugEvent[];
+    __MLRT_EDITOR_VIEW__?: EditorView;
   }
 }
 
@@ -84,6 +86,7 @@ try {
       ],
     }),
   });
+  window.__MLRT_EDITOR_VIEW__ = view;
   updateStatus(initialDocument, "embedded");
   installCursorDebugListeners(app);
 } catch (error) {
@@ -118,6 +121,7 @@ function setEditorDocument(text: string, source: string): void {
       to: currentText.length,
       insert: text,
     },
+    annotations: allowTableSourceChange.of(true),
   });
   applyingFromHost = false;
 }

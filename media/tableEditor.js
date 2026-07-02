@@ -23148,6 +23148,133 @@
     return slashCount % 2 === 1;
   }
 
+  // src/shared/tableSourceProtection.ts
+  var allowTableSourceChange = Annotation.define();
+  function createTableSourceChangeFilter() {
+    return EditorState.changeFilter.of((transaction) => {
+      if (!transaction.docChanged || transaction.annotation(allowTableSourceChange) || isUndoRedo(transaction)) {
+        return true;
+      }
+      const tables = parseMarkdownTables(transaction.startState.doc.toString());
+      if (tables.length === 0 || !selectionTouchesTableSource(transaction.startState.selection, tables)) {
+        return true;
+      }
+      let changeTouchesTable = false;
+      transaction.changes.iterChangedRanges((from, to) => {
+        if (tables.some((table) => changeTouchesTableSource(from, to, table))) {
+          changeTouchesTable = true;
+        }
+      });
+      return !changeTouchesTable;
+    });
+  }
+  function createTableSourceSelectionGuard(options) {
+    return ViewPlugin.fromClass(
+      class {
+        scheduled = false;
+        constructor(view2) {
+          this.scheduleIfNeeded(view2);
+        }
+        update(update) {
+          if (update.selectionSet || update.docChanged || update.focusChanged) {
+            this.scheduleIfNeeded(update.view, update.startState.selection.main.head);
+          }
+        }
+        scheduleIfNeeded(view2, previousHead = void 0) {
+          if (this.scheduled || isTableCellFocused(view2, options.tableCellSelector)) {
+            return;
+          }
+          const target = findSafeSelectionAnchor(view2.state, previousHead);
+          if (target === void 0) {
+            return;
+          }
+          this.scheduled = true;
+          queueMicrotask(() => {
+            this.scheduled = false;
+            if (isTableCellFocused(view2, options.tableCellSelector)) {
+              return;
+            }
+            const refreshedTarget = findSafeSelectionAnchor(view2.state, previousHead);
+            if (refreshedTarget === void 0) {
+              return;
+            }
+            view2.dispatch({
+              selection: EditorSelection.cursor(refreshedTarget),
+              scrollIntoView: true
+            });
+          });
+        }
+      }
+    );
+  }
+  function isUndoRedo(transaction) {
+    return transaction.isUserEvent("undo") || transaction.isUserEvent("redo");
+  }
+  function selectionTouchesTableSource(selection, tables) {
+    return selection.ranges.some(
+      (range) => tables.some((table) => rangeTouchesTableSource(range, table))
+    );
+  }
+  function findSafeSelectionAnchor(state, previousHead) {
+    const tables = parseMarkdownTables(state.doc.toString());
+    const range = state.selection.main;
+    const table = tables.find(
+      (candidate) => rangeTouchesTableSource(range, candidate)
+    );
+    if (!table) {
+      return void 0;
+    }
+    return resolveOutsideTableSource(state, table, range.head, previousHead);
+  }
+  function rangeTouchesTableSource(range, table) {
+    if (range.empty) {
+      return isPositionInTableSource(range.head, table);
+    }
+    return range.from < table.to && range.to > table.from;
+  }
+  function changeTouchesTableSource(from, to, table) {
+    if (from === to) {
+      return isPositionInTableSource(from, table);
+    }
+    return from < table.to && to > table.from;
+  }
+  function isPositionInTableSource(position, table) {
+    return position >= table.from && position <= table.to;
+  }
+  function resolveOutsideTableSource(state, table, position, previousHead) {
+    const before = getPositionBeforeTable(table);
+    const after = getPositionAfterTable(state, table);
+    const hasBefore = before < table.from;
+    const hasAfter = after > table.to;
+    if (previousHead !== void 0 && previousHead < table.from && hasAfter) {
+      return after;
+    }
+    if (previousHead !== void 0 && previousHead > table.to && hasBefore) {
+      return before;
+    }
+    const midpoint = table.from + (table.to - table.from) / 2;
+    if (position <= midpoint && hasBefore) {
+      return before;
+    }
+    if (hasAfter) {
+      return after;
+    }
+    if (hasBefore) {
+      return before;
+    }
+    return Math.min(state.doc.length, Math.max(0, table.to));
+  }
+  function getPositionBeforeTable(table) {
+    return Math.max(0, table.from - 1);
+  }
+  function getPositionAfterTable(state, table) {
+    return table.to < state.doc.length && state.doc.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
+  }
+  function isTableCellFocused(view2, tableCellSelector) {
+    const activeElement = view2.dom.ownerDocument.activeElement;
+    return activeElement instanceof HTMLElement && Boolean(activeElement.closest(tableCellSelector));
+  }
+
   // src/webview/tableEditor.ts
   var vscode = acquireVsCodeApi();
   var app = document.getElementById("app");
@@ -23167,6 +23294,10 @@
         extensions: [
           markdown(),
           EditorView.lineWrapping,
+          createTableSourceChangeFilter(),
+          createTableSourceSelectionGuard({
+            tableCellSelector: ".mlrt-cell"
+          }),
           tableRenderer(),
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !applyingFromHost) {
@@ -23199,7 +23330,8 @@
         from: 0,
         to: currentText.length,
         insert: message.text
-      }
+      },
+      annotations: allowTableSourceChange.of(true)
     });
     applyingFromHost = false;
   });
@@ -23353,7 +23485,9 @@ ${String(error)}`;
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        commitCellEdit(view2, table, cell);
+        commitCellEdit(view2, table, cell, {
+          selectionAnchor: getPositionAfterTable2(view2, table)
+        });
         cell.blur();
         view2.focus();
         return;
@@ -23392,16 +23526,18 @@ ${String(error)}`;
       }
     }, 0);
   }
-  function commitCellEdit(view2, table, cell) {
+  function commitCellEdit(view2, table, cell, options = {}) {
     const rowKind = cell.dataset.rowKind;
     const rowIndex = Number(cell.dataset.rowIndex ?? "0");
     const column = Number(cell.dataset.column ?? "0");
     const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
     if (!sourceRow || !Number.isInteger(column) || column < 0) {
+      dispatchSelection(view2, options.selectionAnchor);
       return;
     }
     const value = cell.innerText.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
     if (value === cell.dataset.original) {
+      dispatchSelection(view2, options.selectionAnchor);
       return;
     }
     const edit = formatTableCellSourceEdit(
@@ -23424,13 +23560,42 @@ ${String(error)}`;
         }
       })
     );
+    const selectionAnchor = options.selectionAnchor === void 0 ? void 0 : mapPositionThroughCellEdit(options.selectionAnchor, edit);
     view2.dispatch({
       changes: {
         from: edit.from,
         to: edit.to,
         insert: edit.insert
-      }
+      },
+      selection: selectionAnchor === void 0 ? void 0 : { anchor: selectionAnchor },
+      annotations: allowTableSourceChange.of(true),
+      scrollIntoView: true
     });
+  }
+  function dispatchSelection(view2, selectionAnchor) {
+    if (selectionAnchor === void 0) {
+      return;
+    }
+    view2.dispatch({
+      selection: { anchor: selectionAnchor },
+      scrollIntoView: true
+    });
+  }
+  function getPositionAfterTable2(view2, table) {
+    const doc2 = view2.state.doc;
+    if (table.to < doc2.length && doc2.sliceString(table.to, table.to + 1) === "\n") {
+      return table.to + 1;
+    }
+    return table.to;
+  }
+  function mapPositionThroughCellEdit(position, edit) {
+    if (position <= edit.from) {
+      return position;
+    }
+    if (position <= edit.to) {
+      return edit.from + edit.insert.length;
+    }
+    return position + edit.insert.length - (edit.to - edit.from);
   }
   function findCell(target) {
     if (!(target instanceof HTMLElement)) {

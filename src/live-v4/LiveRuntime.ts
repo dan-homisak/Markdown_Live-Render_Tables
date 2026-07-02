@@ -16,6 +16,10 @@ import {
   ViewUpdate,
 } from "@codemirror/view";
 import { parseMarkdownTables } from "../shared/tableModel";
+import {
+  createTableSourceChangeFilter,
+  createTableSourceSelectionGuard,
+} from "../shared/tableSourceProtection";
 import { createLiveStateField } from "./LiveStateField";
 import { createPointerController } from "./PointerController";
 import { createTableFirstParser } from "./parser/TableFirstParser";
@@ -120,12 +124,22 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
           borderLeftColor: "var(--vscode-editorCursor-foreground, #aeafad)",
           borderLeftWidth: "var(--mlrt-editor-cursor-width, 1px)",
         },
+        "&.mm-live-v4-table-cell-focused .cm-activeLine": {
+          backgroundColor: "transparent",
+        },
+        "&.mm-live-v4-table-cell-focused .cm-cursor": {
+          display: "none",
+        },
       }),
       highlightActiveLine(),
       highlightActiveLineGutter(),
       lineNumbers(),
       createTableLineNumberSuppressions(),
       createEditorGeometrySync(),
+      createTableSourceChangeFilter(),
+      createTableSourceSelectionGuard({
+        tableCellSelector: ".mm-live-v4-table-cell",
+      }),
       markdown(),
       ...(options.lineWrapping ? [EditorView.lineWrapping] : []),
       liveStateField,

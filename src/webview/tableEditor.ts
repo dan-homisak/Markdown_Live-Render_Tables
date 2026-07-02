@@ -15,6 +15,11 @@ import {
   ParsedTable,
   rowToDisplayValues,
 } from "../shared/tableModel";
+import {
+  allowTableSourceChange,
+  createTableSourceChangeFilter,
+  createTableSourceSelectionGuard,
+} from "../shared/tableSourceProtection";
 
 declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
@@ -59,6 +64,10 @@ try {
       extensions: [
         markdown(),
         EditorView.lineWrapping,
+        createTableSourceChangeFilter(),
+        createTableSourceSelectionGuard({
+          tableCellSelector: ".mlrt-cell",
+        }),
         tableRenderer(),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !applyingFromHost) {
@@ -95,6 +104,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       to: currentText.length,
       insert: message.text,
     },
+    annotations: allowTableSourceChange.of(true),
   });
   applyingFromHost = false;
 });
@@ -282,7 +292,9 @@ function bindTableEditing(
 
     if (event.key === "Enter") {
       event.preventDefault();
-      commitCellEdit(view, table, cell);
+      commitCellEdit(view, table, cell, {
+        selectionAnchor: getPositionAfterTable(view, table),
+      });
       cell.blur();
       view.focus();
       return;
@@ -337,6 +349,7 @@ function commitCellEdit(
   view: EditorView,
   table: ParsedTable,
   cell: HTMLElement,
+  options: { selectionAnchor?: number } = {},
 ): void {
   const rowKind = cell.dataset.rowKind;
   const rowIndex = Number(cell.dataset.rowIndex ?? "0");
@@ -344,11 +357,13 @@ function commitCellEdit(
   const sourceRow =
     rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
   if (!sourceRow || !Number.isInteger(column) || column < 0) {
+    dispatchSelection(view, options.selectionAnchor);
     return;
   }
 
   const value = cell.innerText.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
   if (value === cell.dataset.original) {
+    dispatchSelection(view, options.selectionAnchor);
     return;
   }
 
@@ -372,13 +387,58 @@ function commitCellEdit(
       },
     }),
   );
+  const selectionAnchor =
+    options.selectionAnchor === undefined
+      ? undefined
+      : mapPositionThroughCellEdit(options.selectionAnchor, edit);
   view.dispatch({
     changes: {
       from: edit.from,
       to: edit.to,
       insert: edit.insert,
     },
+    selection:
+      selectionAnchor === undefined ? undefined : { anchor: selectionAnchor },
+    annotations: allowTableSourceChange.of(true),
+    scrollIntoView: true,
   });
+}
+
+function dispatchSelection(
+  view: EditorView,
+  selectionAnchor: number | undefined,
+): void {
+  if (selectionAnchor === undefined) {
+    return;
+  }
+
+  view.dispatch({
+    selection: { anchor: selectionAnchor },
+    scrollIntoView: true,
+  });
+}
+
+function getPositionAfterTable(view: EditorView, table: ParsedTable): number {
+  const doc = view.state.doc;
+  if (table.to < doc.length && doc.sliceString(table.to, table.to + 1) === "\n") {
+    return table.to + 1;
+  }
+
+  return table.to;
+}
+
+function mapPositionThroughCellEdit(
+  position: number,
+  edit: { from: number; to: number; insert: string },
+): number {
+  if (position <= edit.from) {
+    return position;
+  }
+  if (position <= edit.to) {
+    return edit.from + edit.insert.length;
+  }
+
+  return position + edit.insert.length - (edit.to - edit.from);
 }
 
 function findCell(target: EventTarget | null): HTMLElement | null {
