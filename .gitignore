@@ -8,3 +8,4 @@ yarn-debug.log*
 yarn-error.log*
 qa/live-editor-harness.html
 qa/live-editor-harness.png
+qa/edh-live.png

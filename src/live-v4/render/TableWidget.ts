@@ -88,6 +88,8 @@ interface CellTarget {
 }
 
 function appendCells(options: AppendCellsOptions): void {
+  appendSourceLineCell(options);
+
   const values = rowToDisplayValues(options.sourceRow, options.table.columnCount);
   values.forEach((value, column) => {
     const cell = document.createElement(options.tagName);
@@ -100,12 +102,19 @@ function appendCells(options: AppendCellsOptions): void {
     cell.dataset.rowIndex = String(options.rowIndex);
     cell.dataset.column = String(column);
     cell.dataset.original = value;
-    if (column === 0) {
-      cell.dataset.sourceLine = String(options.sourceLineNumber);
-    }
     cell.style.textAlign = options.table.alignments[column] ?? "left";
     options.tableRow.append(cell);
   });
+}
+
+function appendSourceLineCell(options: AppendCellsOptions): void {
+  const cell = document.createElement(options.tagName);
+  cell.className = "mm-live-v4-table-source-line";
+  cell.contentEditable = "false";
+  cell.dataset.sourceLine = String(options.sourceLineNumber);
+  cell.textContent = String(options.sourceLineNumber);
+  cell.setAttribute("aria-hidden", "true");
+  options.tableRow.append(cell);
 }
 
 function appendColumnSizing(
@@ -113,6 +122,11 @@ function appendColumnSizing(
   table: ParsedTable,
 ): void {
   const colgroup = document.createElement("colgroup");
+
+  const lineNumberCol = document.createElement("col");
+  lineNumberCol.className = "mm-live-v4-table-source-line-col";
+  colgroup.append(lineNumberCol);
+
   const widthPercentages = measureColumnWidthPercentages(table);
   for (let column = 0; column < table.columnCount; column++) {
     const col = document.createElement("col");

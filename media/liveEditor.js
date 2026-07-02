@@ -23778,6 +23778,7 @@
     }
   };
   function appendCells(options) {
+    appendSourceLineCell(options);
     const values2 = rowToDisplayValues(options.sourceRow, options.table.columnCount);
     values2.forEach((value, column) => {
       const cell = document.createElement(options.tagName);
@@ -23790,15 +23791,24 @@
       cell.dataset.rowIndex = String(options.rowIndex);
       cell.dataset.column = String(column);
       cell.dataset.original = value;
-      if (column === 0) {
-        cell.dataset.sourceLine = String(options.sourceLineNumber);
-      }
       cell.style.textAlign = options.table.alignments[column] ?? "left";
       options.tableRow.append(cell);
     });
   }
+  function appendSourceLineCell(options) {
+    const cell = document.createElement(options.tagName);
+    cell.className = "mm-live-v4-table-source-line";
+    cell.contentEditable = "false";
+    cell.dataset.sourceLine = String(options.sourceLineNumber);
+    cell.textContent = String(options.sourceLineNumber);
+    cell.setAttribute("aria-hidden", "true");
+    options.tableRow.append(cell);
+  }
   function appendColumnSizing(tableElement, table) {
     const colgroup = document.createElement("colgroup");
+    const lineNumberCol = document.createElement("col");
+    lineNumberCol.className = "mm-live-v4-table-source-line-col";
+    colgroup.append(lineNumberCol);
     const widthPercentages = measureColumnWidthPercentages(table);
     for (let column = 0; column < table.columnCount; column++) {
       const col = document.createElement("col");
@@ -24105,31 +24115,43 @@
   function createEditorGeometrySync() {
     return ViewPlugin.fromClass(
       class {
-        lastContentWidth = -1;
+        measureKey = {};
         lastGutterWidth = -1;
+        resizeObserver;
+        observedTableWidgets = /* @__PURE__ */ new Set();
         constructor(view2) {
+          const ResizeObserverCtor = view2.dom.ownerDocument.defaultView?.ResizeObserver;
+          if (ResizeObserverCtor) {
+            this.resizeObserver = new ResizeObserverCtor(() => {
+              this.schedule(view2, true);
+            });
+            this.resizeObserver.observe(view2.dom);
+            this.resizeObserver.observe(view2.scrollDOM);
+          }
           this.schedule(view2);
         }
         update(update) {
+          this.syncObservedTableWidgets(update.view);
           if (update.geometryChanged || update.viewportChanged || update.docChanged) {
             this.schedule(update.view);
           }
         }
-        schedule(view2) {
+        destroy() {
+          this.resizeObserver?.disconnect();
+          this.observedTableWidgets.clear();
+        }
+        schedule(view2, forceContentRemeasure = false) {
+          if (forceContentRemeasure) {
+            forceCodeMirrorContentRemeasure(view2);
+          }
           view2.requestMeasure({
+            key: this.measureKey,
             read: (measuredView) => ({
-              contentWidth: measuredView.scrollDOM.clientWidth,
               gutterWidth: measuredView.dom.querySelector(".cm-gutters")?.offsetWidth ?? 0
             }),
             write: (metrics, measuredView) => {
+              this.syncObservedTableWidgets(measuredView);
               const scrollerStyle = measuredView.scrollDOM.style;
-              if (metrics.contentWidth !== this.lastContentWidth) {
-                this.lastContentWidth = metrics.contentWidth;
-                scrollerStyle.setProperty(
-                  "--mlrt-live-content-width",
-                  `${metrics.contentWidth}px`
-                );
-              }
               if (metrics.gutterWidth > 0 && metrics.gutterWidth !== this.lastGutterWidth) {
                 this.lastGutterWidth = metrics.gutterWidth;
                 scrollerStyle.setProperty(
@@ -24140,8 +24162,36 @@
             }
           });
         }
+        syncObservedTableWidgets(view2) {
+          if (!this.resizeObserver) {
+            return;
+          }
+          const widgets = new Set(
+            Array.from(view2.dom.querySelectorAll(".mm-live-v4-table-widget"))
+          );
+          for (const widget of widgets) {
+            if (!this.observedTableWidgets.has(widget)) {
+              this.resizeObserver.observe(widget);
+            }
+          }
+          for (const widget of this.observedTableWidgets) {
+            if (!widgets.has(widget)) {
+              this.resizeObserver.unobserve(widget);
+            }
+          }
+          this.observedTableWidgets.clear();
+          for (const widget of widgets) {
+            this.observedTableWidgets.add(widget);
+          }
+        }
       }
     );
+  }
+  function forceCodeMirrorContentRemeasure(view2) {
+    const viewState = view2.viewState;
+    if (viewState) {
+      viewState.mustMeasureContent = "refresh";
+    }
   }
   function createTableLineNumberSuppressions() {
     const tableLineNumberSuppressions = StateField.define(

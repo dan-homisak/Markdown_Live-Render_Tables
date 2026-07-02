@@ -130,29 +130,41 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
 }
 
 /**
- * Publishes live editor geometry (the usable content width and the real
- * line-number gutter width) as CSS custom properties on the scroller.
+ * Publishes the real line-number gutter width as a CSS custom property on the
+ * scroller.
  *
- * The rendered table is a block widget living inside `.cm-content`. When line
- * wrapping is disabled the content box is sized to `max-content`, so a table
- * with `width: 100%` resolves against a shrink-to-fit container and never
- * wraps. Exposing the measured viewport width lets the table adopt a definite
- * width (viewport minus gutter) regardless of the editor's word-wrap setting.
+ * The rendered table uses CSS viewport units for its wrapping width so it
+ * responds to workbench and window resizes in the same frame as the browser
+ * layout pass.
  *
  * Measuring the actual gutter width keeps the table's per-row line numbers
  * aligned with the native gutter even when the line-number digit count grows.
+ * Observing the editor and table widgets makes CodeMirror remeasure replaced
+ * block heights when sidebar-driven width changes wrap table cell text.
  */
 function createEditorGeometrySync(): Extension {
   return ViewPlugin.fromClass(
     class {
-      private lastContentWidth = -1;
+      private readonly measureKey = {};
       private lastGutterWidth = -1;
+      private resizeObserver: ResizeObserver | undefined;
+      private readonly observedTableWidgets = new Set<Element>();
 
       public constructor(view: EditorView) {
+        const ResizeObserverCtor =
+          view.dom.ownerDocument.defaultView?.ResizeObserver;
+        if (ResizeObserverCtor) {
+          this.resizeObserver = new ResizeObserverCtor(() => {
+            this.schedule(view, true);
+          });
+          this.resizeObserver.observe(view.dom);
+          this.resizeObserver.observe(view.scrollDOM);
+        }
         this.schedule(view);
       }
 
       public update(update: ViewUpdate): void {
+        this.syncObservedTableWidgets(update.view);
         if (
           update.geometryChanged ||
           update.viewportChanged ||
@@ -162,23 +174,26 @@ function createEditorGeometrySync(): Extension {
         }
       }
 
-      private schedule(view: EditorView): void {
+      public destroy(): void {
+        this.resizeObserver?.disconnect();
+        this.observedTableWidgets.clear();
+      }
+
+      private schedule(view: EditorView, forceContentRemeasure = false): void {
+        if (forceContentRemeasure) {
+          forceCodeMirrorContentRemeasure(view);
+        }
+
         view.requestMeasure({
+          key: this.measureKey,
           read: (measuredView) => ({
-            contentWidth: measuredView.scrollDOM.clientWidth,
             gutterWidth:
               measuredView.dom.querySelector<HTMLElement>(".cm-gutters")
                 ?.offsetWidth ?? 0,
           }),
           write: (metrics, measuredView) => {
+            this.syncObservedTableWidgets(measuredView);
             const scrollerStyle = measuredView.scrollDOM.style;
-            if (metrics.contentWidth !== this.lastContentWidth) {
-              this.lastContentWidth = metrics.contentWidth;
-              scrollerStyle.setProperty(
-                "--mlrt-live-content-width",
-                `${metrics.contentWidth}px`,
-              );
-            }
             if (
               metrics.gutterWidth > 0 &&
               metrics.gutterWidth !== this.lastGutterWidth
@@ -192,8 +207,43 @@ function createEditorGeometrySync(): Extension {
           },
         });
       }
+
+      private syncObservedTableWidgets(view: EditorView): void {
+        if (!this.resizeObserver) {
+          return;
+        }
+
+        const widgets = new Set(
+          Array.from(view.dom.querySelectorAll(".mm-live-v4-table-widget")),
+        );
+        for (const widget of widgets) {
+          if (!this.observedTableWidgets.has(widget)) {
+            this.resizeObserver.observe(widget);
+          }
+        }
+        for (const widget of this.observedTableWidgets) {
+          if (!widgets.has(widget)) {
+            this.resizeObserver.unobserve(widget);
+          }
+        }
+        this.observedTableWidgets.clear();
+        for (const widget of widgets) {
+          this.observedTableWidgets.add(widget);
+        }
+      }
     },
   );
+}
+
+function forceCodeMirrorContentRemeasure(view: EditorView): void {
+  const viewState = (
+    view as unknown as {
+      viewState?: { mustMeasureContent?: boolean | "refresh" };
+    }
+  ).viewState;
+  if (viewState) {
+    viewState.mustMeasureContent = "refresh";
+  }
 }
 
 function createTableLineNumberSuppressions(): Extension {

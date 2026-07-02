@@ -204,6 +204,7 @@ assert.doesNotMatch(
 );
 assert.match(liveRuntimeSource, /lineNumberMarkers/);
 assert.match(liveRuntimeSource, /hiddenLineNumberMarker/);
+assert.match(liveRuntimeSource, /ResizeObserver/);
 assert.match(tableWidgetSource, /dataset\.sourceLine/);
 assert.match(tableWidgetSource, /measureColumnWidthPercentages/);
 assert.doesNotMatch(tableWidgetSource, /appendLineNumberCell/);

@@ -123,7 +123,7 @@ if ! grep -q "table-layout: fixed" "$INSTALLED_DIR/media/liveEditor.css"; then
   echo "Installed webview stylesheet does not contain the fixed table-layout marker."
   exit 1
 fi
-if ! grep -q "data-source-line" "$INSTALLED_DIR/media/liveEditor.css"; then
+if ! grep -q "mm-live-v4-table-source-line" "$INSTALLED_DIR/media/liveEditor.css"; then
   echo "Installed webview stylesheet does not contain the table row line-number marker."
   exit 1
 fi
