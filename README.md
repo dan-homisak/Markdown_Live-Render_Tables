@@ -6,9 +6,11 @@ editable grids, while the rest of the document remains editable markdown source.
 
 ## Usage
 
-Open a markdown file and use the preview button in the editor title bar to open
-the live editor for that document. In the live editor, use the code button in the
-editor title bar to return to the normal VS Code markdown source editor.
+Open a markdown file and use the eye button in the editor title bar to toggle
+the live editor for that document. You can also toggle with `Cmd+Ctrl+M` on
+macOS or `Ctrl+Alt+M` on Windows/Linux. To change that shortcut later, open VS
+Code Keyboard Shortcuts and search for `Markdown Live Editor: Toggle Markdown
+Live Editor`.
 
 In V1, tables support:
 
@@ -52,6 +54,21 @@ Capture that harness with headless Chrome when visual layout needs checking:
 ```sh
 npm run qa:screenshot
 ```
+
+Run the Extension Development Host pixel-parity check for VS Code editor layout
+work:
+
+```sh
+npm run compile
+node scripts/edh-visual-check.mjs
+```
+
+This check captures `qa/edh-stock.png` and `qa/edh-live.png` in the same
+isolated VS Code workbench, then compares Monaco and live-editor metrics for
+gutter width, content x-position, first glyph x-position, line-number glyph
+position, font size, line height, table content x-position, and active gutter
+highlighting. Use this for pixel-perfect rendered-vs-source parity work; the
+standalone harness is not enough for that class of regression.
 
 Package the extension:
 

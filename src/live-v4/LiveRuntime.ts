@@ -85,13 +85,18 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
             "var(--mlrt-editor-font-variation-settings, normal)",
         },
         ".cm-activeLineGutter": {
-          backgroundColor:
-            "var(--vscode-editor-lineHighlightBackground, transparent)",
+          backgroundColor: "transparent",
           color: "var(--vscode-editorLineNumber-activeForeground, #c6c6c6)",
         },
         ".cm-lineNumbers .cm-gutterElement": {
+          boxSizing: "border-box",
+          width:
+            "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
           minHeight: "var(--mlrt-editor-line-height, 1.5em)",
-          minWidth: "var(--mlrt-editor-line-number-width, 22px)",
+          minWidth:
+            "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
+          maxWidth:
+            "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
           padding: "0 var(--mlrt-editor-gutter-right-padding, 26px) 0 0",
         },
         '.cm-lineNumbers .cm-gutterElement[style*="visibility: hidden"]': {
@@ -105,6 +110,7 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
         },
         ".cm-line": {
           color: "var(--vscode-editor-foreground, #d4d4d4)",
+          padding: "0",
         },
         ".cm-activeLine": {
           backgroundColor:
