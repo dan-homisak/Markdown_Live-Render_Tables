@@ -23861,9 +23861,11 @@
   var CELL_HORIZONTAL_PADDING_CH = 2;
   var CELL_COMFORT_CH = 1;
   var MIN_COLUMN_WIDTH_CH = 3;
+  var READABLE_NARROW_COLUMN_WIDTH_CH = 6;
   var MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
   var MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
-  function measureTableColumnSizing(table) {
+  var WIDTH_STEP_CH = 0.5;
+  function measureTableColumnSizing(table, availableDataWidthCh) {
     const rows = [table.header, ...table.body];
     const columns = Array.from(
       { length: table.columnCount },
@@ -23873,27 +23875,41 @@
       (total, column) => total + column.preferredWidthCh,
       0
     );
+    const totalMinWidth = columns.reduce(
+      (total, column) => total + column.minWidthCh,
+      0
+    );
     const safeTotalWidth = totalPreferredWidth > 0 ? totalPreferredWidth : table.columnCount;
+    const targetWidth = availableDataWidthCh === void 0 || availableDataWidthCh <= 0 ? safeTotalWidth : Math.min(safeTotalWidth, availableDataWidthCh);
+    const allocatedColumns = targetWidth >= totalMinWidth ? allocateColumnWidths(columns, targetWidth) : scaleColumnWidths(columns, Math.max(targetWidth, table.columnCount));
+    const dataWidthCh = allocatedColumns.reduce(
+      (total, column) => total + column.widthCh,
+      0
+    );
+    const safeDataWidth = dataWidthCh > 0 ? dataWidthCh : table.columnCount;
     return {
-      columns,
-      dataWidthCh: safeTotalWidth,
-      widthPercentages: columns.map(
-        (column) => column.preferredWidthCh / safeTotalWidth * 100
+      columns: allocatedColumns,
+      dataWidthCh: safeDataWidth,
+      widthPercentages: allocatedColumns.map(
+        (column) => column.widthCh / safeDataWidth * 100
       )
     };
   }
   function measureColumn(rows, columnCount, column) {
     let longestLine = 0;
     let longestToken = 0;
+    const cellLineLengths = [];
     for (const row of rows) {
       const value = rowToDisplayValues(row, columnCount)[column] ?? "";
       for (const line of splitDisplayLines(value)) {
+        cellLineLengths.push(line.length);
         longestLine = Math.max(longestLine, line.length);
         longestToken = Math.max(longestToken, measureLongestToken(line));
       }
     }
+    const readableMinWidthCh = longestToken <= 3 ? READABLE_NARROW_COLUMN_WIDTH_CH : MIN_COLUMN_WIDTH_CH;
     const minWidthCh = clamp(
-      longestToken + CELL_HORIZONTAL_PADDING_CH,
+      Math.max(longestToken + CELL_HORIZONTAL_PADDING_CH, readableMinWidthCh),
       MIN_COLUMN_WIDTH_CH,
       MAX_UNBROKEN_TOKEN_WIDTH_CH
     );
@@ -23903,9 +23919,69 @@
       MAX_PREFERRED_COLUMN_WIDTH_CH
     );
     return {
+      cellLineLengths,
       minWidthCh,
-      preferredWidthCh
+      preferredWidthCh,
+      widthCh: preferredWidthCh
     };
+  }
+  function allocateColumnWidths(columns, targetWidthCh) {
+    const allocated = columns.map((column) => ({
+      ...column,
+      widthCh: column.minWidthCh
+    }));
+    let remainingSteps = Math.round(
+      (targetWidthCh - allocated.reduce((total, column) => total + column.widthCh, 0)) / WIDTH_STEP_CH
+    );
+    while (remainingSteps > 0) {
+      let bestColumnIndex = -1;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (let index = 0; index < allocated.length; index++) {
+        const column2 = allocated[index];
+        if (column2.widthCh >= column2.preferredWidthCh) {
+          continue;
+        }
+        const nextWidth = Math.min(
+          column2.preferredWidthCh,
+          column2.widthCh + WIDTH_STEP_CH
+        );
+        const wrapReduction = measureWrapCost(column2, column2.widthCh) - measureWrapCost(column2, nextWidth);
+        const remainingNeed = column2.preferredWidthCh - column2.widthCh;
+        const score = wrapReduction * 1e3 + remainingNeed;
+        if (score > bestScore) {
+          bestScore = score;
+          bestColumnIndex = index;
+        }
+      }
+      if (bestColumnIndex === -1) {
+        break;
+      }
+      const column = allocated[bestColumnIndex];
+      column.widthCh = Math.min(
+        column.preferredWidthCh,
+        column.widthCh + WIDTH_STEP_CH
+      );
+      remainingSteps--;
+    }
+    return allocated;
+  }
+  function scaleColumnWidths(columns, targetWidthCh) {
+    const totalMinWidth = columns.reduce(
+      (total, column) => total + column.minWidthCh,
+      0
+    );
+    const scale = totalMinWidth > 0 ? targetWidthCh / totalMinWidth : 1;
+    return columns.map((column) => ({
+      ...column,
+      widthCh: Math.max(1, column.minWidthCh * scale)
+    }));
+  }
+  function measureWrapCost(column, widthCh) {
+    const contentWidthCh = Math.max(1, widthCh - CELL_HORIZONTAL_PADDING_CH);
+    return column.cellLineLengths.reduce(
+      (total, lineLength) => total + Math.max(1, Math.ceil(lineLength / contentWidthCh)),
+      0
+    );
   }
   function splitDisplayLines(value) {
     const lines = value.split(/\r\n?|\n/);
@@ -23939,10 +24015,7 @@
       wrapper.dataset.srcTo = String(getPositionAfterTable2(view2, this.table));
       wrapper.contentEditable = "false";
       const columnSizing = measureTableColumnSizing(this.table);
-      wrapper.style.setProperty(
-        "--mlrt-table-data-width",
-        `${columnSizing.dataWidthCh.toFixed(4)}ch`
-      );
+      applyColumnSizing(wrapper, columnSizing);
       const tableElement = document.createElement("table");
       tableElement.className = "mm-live-v4-table";
       appendColumnSizing(tableElement, this.table, columnSizing);
@@ -23975,7 +24048,7 @@
       });
       tableElement.append(tbody);
       wrapper.append(tableElement);
-      bindTableBlockHeight(wrapper, tableElement);
+      bindTableLayout(wrapper, tableElement, this.table);
       bindTableEditing(wrapper, view2, this.table);
       return wrapper;
     }
@@ -24021,13 +24094,17 @@
     for (let column = 0; column < table.columnCount; column++) {
       const col = document.createElement("col");
       col.className = "mm-live-v4-table-sized-col";
-      col.style.width = `${columnSizing.widthPercentages[column].toFixed(4)}%`;
+      col.style.width = `${columnSizing.columns[column].widthCh.toFixed(4)}ch`;
       colgroup.append(col);
     }
     tableElement.append(colgroup);
   }
-  function bindTableBlockHeight(wrapper, tableElement) {
+  function bindTableLayout(wrapper, tableElement, table) {
     const sync = () => {
+      applyColumnSizing(
+        wrapper,
+        measureTableColumnSizing(table, measureAvailableDataWidthCh(wrapper))
+      );
       const styles = getComputedStyle(tableElement);
       const lineHeight = parseFloat(styles.lineHeight);
       const tableHeight = tableElement.getBoundingClientRect().height;
@@ -24040,6 +24117,63 @@
     setTableWidgetCleanup(wrapper, () => {
       resizeObserver?.disconnect();
     });
+  }
+  function applyColumnSizing(wrapper, columnSizing) {
+    wrapper.style.setProperty(
+      "--mlrt-table-data-width",
+      `${columnSizing.dataWidthCh.toFixed(4)}ch`
+    );
+    wrapper.querySelectorAll(".mm-live-v4-table-sized-col").forEach((col, column) => {
+      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(4)}ch`;
+    });
+  }
+  function measureAvailableDataWidthCh(wrapper) {
+    const scroller = wrapper.closest(".cm-scroller");
+    if (!scroller) {
+      return void 0;
+    }
+    const styles = getComputedStyle(scroller);
+    const gutterWidth = resolveCssLengthPx(
+      scroller,
+      styles.getPropertyValue("--mlrt-live-gutter-width")
+    );
+    const rightPadding = resolveCssLengthPx(
+      scroller,
+      styles.getPropertyValue("--mlrt-editor-right-padding")
+    );
+    const chWidth = measureChWidth(wrapper);
+    const availablePx = Math.max(
+      0,
+      scroller.clientWidth - gutterWidth - rightPadding
+    );
+    return chWidth > 0 ? availablePx / chWidth : void 0;
+  }
+  function measureChWidth(element) {
+    const probe = element.ownerDocument.createElement("span");
+    probe.textContent = "0";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.whiteSpace = "pre";
+    element.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    return width;
+  }
+  function resolveCssLengthPx(element, value) {
+    const direct = Number.parseFloat(value);
+    if (Number.isFinite(direct) && value.trim().endsWith("px")) {
+      return direct;
+    }
+    const probe = element.ownerDocument.createElement("span");
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.width = value.trim() || "0px";
+    element.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    return Number.isFinite(width) ? width : 0;
   }
   function setTableWidgetCleanup(wrapper, cleanup) {
     wrapper.__mlrtTableWidgetCleanup = cleanup;

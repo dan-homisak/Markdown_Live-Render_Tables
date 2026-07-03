@@ -95,10 +95,7 @@ body,
 .mm-live-v4-table {
   position: relative;
   top: calc(-1 * var(--mlrt-editor-line-height, 0px));
-  width: min(
-    var(--mlrt-live-content-width),
-    calc(var(--mlrt-live-gutter-width) + var(--mlrt-table-data-width, 100%))
-  );
+  width: calc(var(--mlrt-live-gutter-width) + 100%);
   max-width: var(--mlrt-live-content-width);
   margin-left: calc(-1 * var(--mlrt-live-gutter-width));
   box-sizing: border-box;

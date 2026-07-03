@@ -143,8 +143,8 @@ if ! grep -q "measureTableColumnSizing" "$INSTALLED_DIR/media/liveEditor.js"; th
   echo "Installed webview bundle does not contain the proportional table column sizing marker."
   exit 1
 fi
-if ! grep -q "col.style.width =.*%" "$INSTALLED_DIR/media/liveEditor.js"; then
-  echo "Installed webview bundle does not contain percentage table column widths."
+if ! grep -q "measureAvailableDataWidthCh" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain dynamic table column width measurement."
   exit 1
 fi
 echo "Verified installed payload markers."

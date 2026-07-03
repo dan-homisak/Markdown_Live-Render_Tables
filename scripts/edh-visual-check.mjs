@@ -422,6 +422,7 @@ function liveMetricsExpression() {
         sourceLineText: textBox(root, sourceLine),
         tableCell: box(tableCell),
         tableCellText: textBox(root, tableCell),
+        tableSourceLineNumber: Number(sourceLine?.getAttribute('data-source-line') ?? 0),
         lineFontFamily: lineStyle?.fontFamily ?? null,
         lineFontSize: lineStyle?.fontSize ?? null,
         lineLineHeight: lineStyle?.lineHeight ?? null,
@@ -560,6 +561,12 @@ function tableEnterExitExpression() {
       return;
     }
     const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const wrapper = root.querySelector('.mm-live-v4-table-widget');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const expectedActiveLineGutterText =
+      wrapper && view
+        ? String(view.state.doc.lineAt(Number(wrapper.getAttribute('data-src-to'))).number)
+        : null;
     const range = root.createRange();
     cell.focus();
     range.selectNodeContents(cell);
@@ -596,6 +603,7 @@ function tableEnterExitExpression() {
       resolve(JSON.stringify({
         activeElementClass: root.activeElement?.className ?? null,
         activeLineGutterText: activeLineGutter?.textContent ?? null,
+        expectedActiveLineGutterText,
         activeLine: box(activeLine),
         table: box(table),
         lineHeight: parseFloat(root.defaultView.getComputedStyle(root.querySelector('.cm-line')).lineHeight),
@@ -664,16 +672,23 @@ function tableArrowNavigationExpression() {
       selection.addRange(range);
     };
     const before = view.state.doc.toString();
+    const wrapper = root.querySelector('.mm-live-v4-table-widget');
+    const firstSourceLine = root.querySelector('.mm-live-v4-table-source-line');
+    const tableHeaderLineNumber = Number(firstSourceLine?.getAttribute('data-source-line') ?? 0);
+    const beforeTableLineNumber = Math.max(1, tableHeaderLineNumber - 1);
+    const afterTableLineNumber = wrapper
+      ? view.state.doc.lineAt(Number(wrapper.getAttribute('data-src-to'))).number
+      : tableHeaderLineNumber + 3;
     view.focus();
-    view.dispatch({ selection: { anchor: view.state.doc.line(11).from } });
+    view.dispatch({ selection: { anchor: view.state.doc.line(beforeTableLineNumber).from } });
     key(view.contentDOM, 'ArrowDown');
     setTimeout(() => {
-      const fromLine11 = activeCellDetails();
+      const fromBeforeTableLine = activeCellDetails();
       view.focus();
-      view.dispatch({ selection: { anchor: view.state.doc.line(15).from } });
+      view.dispatch({ selection: { anchor: view.state.doc.line(afterTableLineNumber).from } });
       key(view.contentDOM, 'ArrowUp');
       setTimeout(() => {
-        const fromLine15 = activeCellDetails();
+        const fromAfterTableLine = activeCellDetails();
         const activeCell = root.activeElement;
         setCellSelection(activeCell, false);
         const insideDownAllowed = key(activeCell, 'ArrowDown');
@@ -684,16 +699,17 @@ function tableArrowNavigationExpression() {
           const activeLineGutter = root.querySelector('.cm-activeLineGutter');
           const after = view.state.doc.toString();
           const afterDownSelection = view.state.selection.main;
-          const afterDownLine = view.state.doc.line(15);
+          const afterDownLine = view.state.doc.line(afterTableLineNumber);
           resolve(JSON.stringify({
             ok: true,
-            fromLine11,
-            fromLine15,
+            fromBeforeTableLine,
+            fromAfterTableLine,
             insideDownAllowed,
             stayedInCellAfterInsideDown,
             exitDownPrevented: !exitDownAllowed,
             afterDownActiveClass: root.activeElement?.className ?? null,
             afterDownGutterText: activeLineGutter?.textContent ?? null,
+            expectedAfterDownGutterText: String(afterTableLineNumber),
             afterDownSelectionHead: afterDownSelection.head,
             afterDownLineEnd: afterDownLine.to,
             docChanged: after !== before,
@@ -735,16 +751,16 @@ function assertTableSourceProtection(result) {
 function assertTableArrowNavigation(result) {
   if (
     !result?.ok ||
-    result.fromLine11?.rowKind !== "header" ||
-    result.fromLine11?.column !== "0" ||
-    !result.fromLine11?.selectionAtEnd ||
-    result.fromLine15?.rowKind !== "body" ||
-    result.fromLine15?.column !== "1" ||
-    !result.fromLine15?.selectionAtEnd ||
+    result.fromBeforeTableLine?.rowKind !== "header" ||
+    result.fromBeforeTableLine?.column !== "0" ||
+    !result.fromBeforeTableLine?.selectionAtEnd ||
+    result.fromAfterTableLine?.rowKind !== "body" ||
+    result.fromAfterTableLine?.column !== "1" ||
+    !result.fromAfterTableLine?.selectionAtEnd ||
     !result.insideDownAllowed ||
     !result.stayedInCellAfterInsideDown ||
     !result.exitDownPrevented ||
-    result.afterDownGutterText !== "15" ||
+    result.afterDownGutterText !== result.expectedAfterDownGutterText ||
     result.afterDownSelectionHead !== result.afterDownLineEnd ||
     result.docChanged
   ) {
@@ -755,9 +771,9 @@ function assertTableArrowNavigation(result) {
 }
 
 function assertTableEnterExit(result) {
-  if (result?.activeLineGutterText !== "15") {
+  if (result?.activeLineGutterText !== result?.expectedActiveLineGutterText) {
     throw new Error(
-      `Enter exit check failed: expected active gutter line 15, got ${JSON.stringify(
+      `Enter exit check failed: expected active gutter line ${result?.expectedActiveLineGutterText}, got ${JSON.stringify(
         result,
       )}`,
     );
@@ -811,6 +827,10 @@ function assertPixelParity(stock, live) {
   const liveScroller = screen(live.scroller);
   const rightPadding = stock.content.left - stock.firstLineNumberText?.right;
   const liveLineHeight = parseFloat(live.lineLineHeight);
+  const expectedTableTop =
+    live.tableSourceLineNumber > 0
+      ? liveLineHeight * (live.tableSourceLineNumber - 1)
+      : liveLineHeight * 11;
 
   const checks = [
     compare("gutter width", stock.margin.width, live.gutter?.width),
@@ -829,7 +849,7 @@ function assertPixelParity(stock, live) {
       liveLineHeight,
     ),
     compare("right padding", rightPadding, liveScroller?.right - liveLine?.right),
-    compare("table top rhythm", liveLineHeight * 11, live.table?.top),
+    compare("table top rhythm", expectedTableTop, live.table?.top),
   ];
   const failures = checks.filter((check) => !check.pass);
   const tableRightLimit = liveScroller?.right - rightPadding;

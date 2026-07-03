@@ -139,11 +139,15 @@ assert.equal(model.blocks[0].lineFrom, 3);
 assert.equal(model.blocks[0].lineTo, 6);
 
 const compactSizing = measureTableColumnSizing(
-  parseMarkdownTables("| Key | Value |\n| --- | --- |\n| A | B |")[0],
+  parseMarkdownTables("| # | Value |\n| --- | --- |\n| 10 | B |")[0],
 );
 assert.ok(
   compactSizing.dataWidthCh < 24,
   `expected compact tables to fit content, got ${compactSizing.dataWidthCh}ch`,
+);
+assert.ok(
+  compactSizing.columns[0].widthCh >= 6,
+  `expected numeric ID column to preserve two-digit values, got ${compactSizing.columns[0].widthCh}ch`,
 );
 
 const mixedSizing = measureTableColumnSizing(
@@ -170,6 +174,39 @@ assert.ok(
 assert.ok(
   mixedSizing.widthPercentages[1] > 92,
   `expected long notes percentage, got ${mixedSizing.widthPercentages[1]}%`,
+);
+
+const featureSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| # | Feature | Markdown In Table Cell |",
+      "| ---: | --- | --- |",
+      "| 9 | Relative link | [README](./README.md) |",
+      "| 10 | Fragment link | [Headings](#headings) |",
+      "| 11 | Autolink URL | <https://example.com> |",
+      "| 12 | Autolink email | <test@example.com> |",
+    ].join("\n"),
+  )[0],
+  84,
+);
+assert.ok(
+  featureSizing.columns[0].widthCh >= 6,
+  `expected screenshot-style # column to stay readable, got ${featureSizing.columns[0].widthCh}ch`,
+);
+
+const constrainedSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| First long column | Second long column |",
+      "| --- | --- |",
+      "| alpha beta gamma delta epsilon zeta eta theta iota kappa lambda | alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma |",
+    ].join("\n"),
+  )[0],
+  60,
+);
+assert.ok(
+  constrainedSizing.columns[1].widthCh > constrainedSizing.columns[0].widthCh,
+  `expected constrained layout to give more width to the column with higher wrap reduction, got ${constrainedSizing.columns.map((column) => column.widthCh).join(", ")}`,
 );
 
 const packageJson = JSON.parse(

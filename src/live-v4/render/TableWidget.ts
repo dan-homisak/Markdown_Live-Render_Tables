@@ -34,10 +34,7 @@ export class RenderedTableWidget extends WidgetType {
     wrapper.contentEditable = "false";
 
     const columnSizing = measureTableColumnSizing(this.table);
-    wrapper.style.setProperty(
-      "--mlrt-table-data-width",
-      `${columnSizing.dataWidthCh.toFixed(4)}ch`,
-    );
+    applyColumnSizing(wrapper, columnSizing);
 
     const tableElement = document.createElement("table");
     tableElement.className = "mm-live-v4-table";
@@ -74,7 +71,7 @@ export class RenderedTableWidget extends WidgetType {
     tableElement.append(tbody);
 
     wrapper.append(tableElement);
-    bindTableBlockHeight(wrapper, tableElement);
+    bindTableLayout(wrapper, tableElement, this.table);
     bindTableEditing(wrapper, view, this.table);
     return wrapper;
   }
@@ -154,18 +151,23 @@ function appendColumnSizing(
   for (let column = 0; column < table.columnCount; column++) {
     const col = document.createElement("col");
     col.className = "mm-live-v4-table-sized-col";
-    col.style.width = `${columnSizing.widthPercentages[column].toFixed(4)}%`;
+    col.style.width = `${columnSizing.columns[column].widthCh.toFixed(4)}ch`;
     colgroup.append(col);
   }
 
   tableElement.append(colgroup);
 }
 
-function bindTableBlockHeight(
+function bindTableLayout(
   wrapper: HTMLElement,
   tableElement: HTMLTableElement,
+  table: ParsedTable,
 ): void {
   const sync = () => {
+    applyColumnSizing(
+      wrapper,
+      measureTableColumnSizing(table, measureAvailableDataWidthCh(wrapper)),
+    );
     const styles = getComputedStyle(tableElement);
     const lineHeight = parseFloat(styles.lineHeight);
     const tableHeight = tableElement.getBoundingClientRect().height;
@@ -182,6 +184,76 @@ function bindTableBlockHeight(
   setTableWidgetCleanup(wrapper, () => {
     resizeObserver?.disconnect();
   });
+}
+
+function applyColumnSizing(
+  wrapper: HTMLElement,
+  columnSizing: TableColumnSizing,
+): void {
+  wrapper.style.setProperty(
+    "--mlrt-table-data-width",
+    `${columnSizing.dataWidthCh.toFixed(4)}ch`,
+  );
+  wrapper
+    .querySelectorAll<HTMLTableColElement>(".mm-live-v4-table-sized-col")
+    .forEach((col, column) => {
+      col.style.width = `${(
+        columnSizing.columns[column]?.widthCh ?? 1
+      ).toFixed(4)}ch`;
+    });
+}
+
+function measureAvailableDataWidthCh(wrapper: HTMLElement): number | undefined {
+  const scroller = wrapper.closest<HTMLElement>(".cm-scroller");
+  if (!scroller) {
+    return undefined;
+  }
+
+  const styles = getComputedStyle(scroller);
+  const gutterWidth = resolveCssLengthPx(
+    scroller,
+    styles.getPropertyValue("--mlrt-live-gutter-width"),
+  );
+  const rightPadding = resolveCssLengthPx(
+    scroller,
+    styles.getPropertyValue("--mlrt-editor-right-padding"),
+  );
+  const chWidth = measureChWidth(wrapper);
+  const availablePx = Math.max(
+    0,
+    scroller.clientWidth - gutterWidth - rightPadding,
+  );
+  return chWidth > 0 ? availablePx / chWidth : undefined;
+}
+
+function measureChWidth(element: HTMLElement): number {
+  const probe = element.ownerDocument.createElement("span");
+  probe.textContent = "0";
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.pointerEvents = "none";
+  probe.style.whiteSpace = "pre";
+  element.append(probe);
+  const width = probe.getBoundingClientRect().width;
+  probe.remove();
+  return width;
+}
+
+function resolveCssLengthPx(element: HTMLElement, value: string): number {
+  const direct = Number.parseFloat(value);
+  if (Number.isFinite(direct) && value.trim().endsWith("px")) {
+    return direct;
+  }
+
+  const probe = element.ownerDocument.createElement("span");
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.pointerEvents = "none";
+  probe.style.width = value.trim() || "0px";
+  element.append(probe);
+  const width = probe.getBoundingClientRect().width;
+  probe.remove();
+  return Number.isFinite(width) ? width : 0;
 }
 
 function setTableWidgetCleanup(
