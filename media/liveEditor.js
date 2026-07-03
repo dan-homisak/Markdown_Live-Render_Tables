@@ -23634,12 +23634,18 @@
         return true;
       }
       const tables = parseMarkdownTables(transaction.startState.doc.toString());
-      if (tables.length === 0 || !selectionTouchesTableSource(transaction.startState.selection, tables)) {
+      if (tables.length === 0 || !selectionTouchesTableSource(
+        transaction.startState,
+        transaction.startState.selection,
+        tables
+      )) {
         return true;
       }
       let changeTouchesTable = false;
       transaction.changes.iterChangedRanges((from, to) => {
-        if (tables.some((table) => changeTouchesTableSource(from, to, table))) {
+        if (tables.some(
+          (table) => changeTouchesTableSource(transaction.startState, from, to, table)
+        )) {
           changeTouchesTable = true;
         }
       });
@@ -23677,7 +23683,7 @@
               return;
             }
             view2.dispatch({
-              selection: EditorSelection.cursor(refreshedTarget),
+              selection: EditorSelection.cursor(refreshedTarget, 1),
               scrollIntoView: true
             });
           });
@@ -23688,47 +23694,50 @@
   function isUndoRedo(transaction) {
     return transaction.isUserEvent("undo") || transaction.isUserEvent("redo");
   }
-  function selectionTouchesTableSource(selection, tables) {
+  function selectionTouchesTableSource(state, selection, tables) {
     return selection.ranges.some(
-      (range) => tables.some((table) => rangeTouchesTableSource(range, table))
+      (range) => tables.some((table) => rangeTouchesTableSource(state, range, table))
     );
   }
   function findSafeSelectionAnchor(state, previousHead) {
     const tables = parseMarkdownTables(state.doc.toString());
     const range = state.selection.main;
     const table = tables.find(
-      (candidate) => rangeTouchesTableSource(range, candidate)
+      (candidate) => rangeTouchesTableSource(state, range, candidate)
     );
     if (!table) {
       return void 0;
     }
     return resolveOutsideTableSource(state, table, range.head, previousHead);
   }
-  function rangeTouchesTableSource(range, table) {
+  function rangeTouchesTableSource(state, range, table) {
     if (range.empty) {
-      return isPositionInTableSource(range.head, table);
+      return isPositionInTableSource(state, range.head, table);
     }
-    return range.from < table.to && range.to > table.from;
+    return range.from < getTableReplacementTo(state, table) && range.to > table.from;
   }
-  function changeTouchesTableSource(from, to, table) {
+  function changeTouchesTableSource(state, from, to, table) {
     if (from === to) {
-      return isPositionInTableSource(from, table);
+      return isPositionInTableSource(state, from, table);
     }
-    return from < table.to && to > table.from;
+    return from < getTableReplacementTo(state, table) && to > table.from;
   }
-  function isPositionInTableSource(position, table) {
-    return position >= table.from && position <= table.to;
+  function isPositionInTableSource(state, position, table) {
+    return position >= table.from && position < getTableReplacementTo(state, table);
   }
   function resolveOutsideTableSource(state, table, position, previousHead) {
     const before = getPositionBeforeTable(table);
     const after = getPositionAfterTable(state, table);
     const hasBefore = before < table.from;
-    const hasAfter = after > table.to;
+    const hasAfter = after >= table.to && after <= state.doc.length;
     if (previousHead !== void 0 && previousHead < table.from && hasAfter) {
       return after;
     }
-    if (previousHead !== void 0 && previousHead > table.to && hasBefore) {
+    if (previousHead !== void 0 && previousHead >= after && hasBefore) {
       return before;
+    }
+    if (position >= table.to && hasAfter) {
+      return after;
     }
     const midpoint = table.from + (table.to - table.from) / 2;
     if (position <= midpoint && hasBefore) {
@@ -23747,6 +23756,9 @@
   }
   function getPositionAfterTable(state, table) {
     return table.to < state.doc.length && state.doc.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
+  }
+  function getTableReplacementTo(_state, table) {
+    return table.to;
   }
   function isTableCellFocused(view2, tableCellSelector) {
     const activeElement = view2.dom.ownerDocument.activeElement;
@@ -23863,7 +23875,7 @@
       wrapper.className = "mm-live-v4-table-widget";
       wrapper.dataset.blockId = this.table.id;
       wrapper.dataset.srcFrom = String(this.table.from);
-      wrapper.dataset.srcTo = String(this.table.to);
+      wrapper.dataset.srcTo = String(getPositionAfterTable2(view2, this.table));
       wrapper.contentEditable = "false";
       const tableElement = document.createElement("table");
       tableElement.className = "mm-live-v4-table";
@@ -23897,8 +23909,12 @@
       });
       tableElement.append(tbody);
       wrapper.append(tableElement);
+      bindTableBlockHeight(wrapper, tableElement);
       bindTableEditing(wrapper, view2, this.table);
       return wrapper;
+    }
+    destroy(dom) {
+      getTableWidgetCleanup(dom)?.();
     }
     ignoreEvent() {
       return true;
@@ -23944,6 +23960,27 @@
       colgroup.append(col);
     }
     tableElement.append(colgroup);
+  }
+  function bindTableBlockHeight(wrapper, tableElement) {
+    const sync = () => {
+      const styles = getComputedStyle(tableElement);
+      const lineHeight = parseFloat(styles.lineHeight);
+      const tableHeight = tableElement.getBoundingClientRect().height;
+      wrapper.style.height = `${Math.max(0, tableHeight - lineHeight * 2)}px`;
+    };
+    const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(sync) : void 0;
+    resizeObserver?.observe(tableElement);
+    requestAnimationFrame(sync);
+    setTableWidgetCleanup(wrapper, () => {
+      resizeObserver?.disconnect();
+    });
+  }
+  function setTableWidgetCleanup(wrapper, cleanup) {
+    wrapper.__mlrtTableWidgetCleanup = cleanup;
+  }
+  function getTableWidgetCleanup(wrapper) {
+    return wrapper.__mlrtTableWidgetCleanup;
   }
   function measureColumnWidthPercentages(table) {
     const rows = [table.header, ...table.body];
@@ -24048,7 +24085,7 @@
         to: edit.to,
         insert: edit.insert
       },
-      selection: selectionAnchor === void 0 ? void 0 : { anchor: selectionAnchor },
+      selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
       annotations: allowTableSourceChange.of(true),
       scrollIntoView: true,
       userEvent: "input"
@@ -24059,7 +24096,7 @@
       return;
     }
     view2.dispatch({
-      selection: { anchor: selectionAnchor },
+      selection: EditorSelection.cursor(selectionAnchor, 1),
       scrollIntoView: true
     });
   }
@@ -24255,7 +24292,8 @@
           },
           ".cm-content": {
             minHeight: "100%",
-            padding: "var(--mlrt-editor-top-padding, 0px) 0 var(--mlrt-editor-bottom-padding, 0px) 0",
+            boxSizing: "border-box",
+            padding: "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
             caretColor: "var(--vscode-editorCursor-foreground, #aeafad)"
           },
           ".cm-line": {
@@ -24281,6 +24319,7 @@
         lineNumbers(),
         createTableLineNumberSuppressions(),
         createEditorGeometrySync(),
+        createTableCellFocusClassSync(),
         createTableSourceChangeFilter(),
         createTableSourceSelectionGuard({
           tableCellSelector: ".mm-live-v4-table-cell"
@@ -24298,6 +24337,7 @@
       class {
         measureKey = {};
         lastGutterWidth = -1;
+        lastContentWidth = -1;
         resizeObserver;
         observedTableWidgets = /* @__PURE__ */ new Set();
         constructor(view2) {
@@ -24328,7 +24368,8 @@
           view2.requestMeasure({
             key: this.measureKey,
             read: (measuredView) => ({
-              gutterWidth: measuredView.dom.querySelector(".cm-gutters")?.offsetWidth ?? 0
+              gutterWidth: measuredView.dom.querySelector(".cm-gutters")?.offsetWidth ?? 0,
+              contentWidth: measuredView.scrollDOM.clientWidth
             }),
             write: (metrics, measuredView) => {
               this.syncObservedTableWidgets(measuredView);
@@ -24338,6 +24379,13 @@
                 scrollerStyle.setProperty(
                   "--mlrt-live-gutter-width",
                   `${metrics.gutterWidth}px`
+                );
+              }
+              if (metrics.contentWidth > 0 && metrics.contentWidth !== this.lastContentWidth) {
+                this.lastContentWidth = metrics.contentWidth;
+                scrollerStyle.setProperty(
+                  "--mlrt-live-content-width",
+                  `calc(${metrics.contentWidth}px - var(--mlrt-editor-right-padding, 26px))`
                 );
               }
             }
@@ -24373,6 +24421,42 @@
     if (viewState) {
       viewState.mustMeasureContent = "refresh";
     }
+  }
+  function createTableCellFocusClassSync() {
+    return ViewPlugin.fromClass(
+      class {
+        constructor(view2) {
+          this.view = view2;
+          this.syncFocusClass = () => this.sync();
+          const doc2 = view2.dom.ownerDocument;
+          doc2.addEventListener("focusin", this.syncFocusClass, true);
+          doc2.addEventListener("focusout", this.syncFocusClass, true);
+          this.sync();
+        }
+        view;
+        syncFocusClass;
+        update(update) {
+          if (update.focusChanged || update.selectionSet || update.docChanged) {
+            this.sync();
+          }
+        }
+        destroy() {
+          const doc2 = this.view.dom.ownerDocument;
+          doc2.removeEventListener("focusin", this.syncFocusClass, true);
+          doc2.removeEventListener("focusout", this.syncFocusClass, true);
+        }
+        sync() {
+          queueMicrotask(() => {
+            const activeElement = this.view.dom.ownerDocument.activeElement;
+            const hasTableCellFocus = activeElement instanceof HTMLElement && Boolean(activeElement.closest(".mm-live-v4-table-cell"));
+            this.view.dom.classList.toggle(
+              "mm-live-v4-table-cell-focused",
+              hasTableCellFocus
+            );
+          });
+        }
+      }
+    );
   }
   function createTableLineNumberSuppressions() {
     const tableLineNumberSuppressions = StateField.define(

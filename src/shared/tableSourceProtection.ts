@@ -28,14 +28,22 @@ export function createTableSourceChangeFilter(): Extension {
     const tables = parseMarkdownTables(transaction.startState.doc.toString());
     if (
       tables.length === 0 ||
-      !selectionTouchesTableSource(transaction.startState.selection, tables)
+      !selectionTouchesTableSource(
+        transaction.startState,
+        transaction.startState.selection,
+        tables,
+      )
     ) {
       return true;
     }
 
     let changeTouchesTable = false;
     transaction.changes.iterChangedRanges((from, to) => {
-      if (tables.some((table) => changeTouchesTableSource(from, to, table))) {
+      if (
+        tables.some((table) =>
+          changeTouchesTableSource(transaction.startState, from, to, table),
+        )
+      ) {
         changeTouchesTable = true;
       }
     });
@@ -90,7 +98,7 @@ export function createTableSourceSelectionGuard(
           }
 
           view.dispatch({
-            selection: EditorSelection.cursor(refreshedTarget),
+            selection: EditorSelection.cursor(refreshedTarget, 1),
             scrollIntoView: true,
           });
         });
@@ -104,11 +112,12 @@ function isUndoRedo(transaction: Transaction): boolean {
 }
 
 function selectionTouchesTableSource(
+  state: EditorState,
   selection: EditorSelection,
   tables: ParsedTable[],
 ): boolean {
   return selection.ranges.some((range) =>
-    tables.some((table) => rangeTouchesTableSource(range, table)),
+    tables.some((table) => rangeTouchesTableSource(state, range, table)),
   );
 }
 
@@ -119,7 +128,7 @@ function findSafeSelectionAnchor(
   const tables = parseMarkdownTables(state.doc.toString());
   const range = state.selection.main;
   const table = tables.find((candidate) =>
-    rangeTouchesTableSource(range, candidate),
+    rangeTouchesTableSource(state, range, candidate),
   );
   if (!table) {
     return undefined;
@@ -129,30 +138,38 @@ function findSafeSelectionAnchor(
 }
 
 function rangeTouchesTableSource(
+  state: EditorState,
   range: SelectionRange,
   table: ParsedTable,
 ): boolean {
   if (range.empty) {
-    return isPositionInTableSource(range.head, table);
+    return isPositionInTableSource(state, range.head, table);
   }
 
-  return range.from < table.to && range.to > table.from;
+  return range.from < getTableReplacementTo(state, table) &&
+    range.to > table.from;
 }
 
 function changeTouchesTableSource(
+  state: EditorState,
   from: number,
   to: number,
   table: ParsedTable,
 ): boolean {
   if (from === to) {
-    return isPositionInTableSource(from, table);
+    return isPositionInTableSource(state, from, table);
   }
 
-  return from < table.to && to > table.from;
+  return from < getTableReplacementTo(state, table) &&
+    to > table.from;
 }
 
-function isPositionInTableSource(position: number, table: ParsedTable): boolean {
-  return position >= table.from && position <= table.to;
+function isPositionInTableSource(
+  state: EditorState,
+  position: number,
+  table: ParsedTable,
+): boolean {
+  return position >= table.from && position < getTableReplacementTo(state, table);
 }
 
 function resolveOutsideTableSource(
@@ -164,13 +181,16 @@ function resolveOutsideTableSource(
   const before = getPositionBeforeTable(table);
   const after = getPositionAfterTable(state, table);
   const hasBefore = before < table.from;
-  const hasAfter = after > table.to;
+  const hasAfter = after >= table.to && after <= state.doc.length;
 
   if (previousHead !== undefined && previousHead < table.from && hasAfter) {
     return after;
   }
-  if (previousHead !== undefined && previousHead > table.to && hasBefore) {
+  if (previousHead !== undefined && previousHead >= after && hasBefore) {
     return before;
+  }
+  if (position >= table.to && hasAfter) {
+    return after;
   }
 
   const midpoint = table.from + (table.to - table.from) / 2;
@@ -199,6 +219,13 @@ function getPositionAfterTable(
     state.doc.sliceString(table.to, table.to + 1) === "\n"
     ? table.to + 1
     : table.to;
+}
+
+function getTableReplacementTo(
+  _state: EditorState,
+  table: ParsedTable,
+): number {
+  return table.to;
 }
 
 function isTableCellFocused(

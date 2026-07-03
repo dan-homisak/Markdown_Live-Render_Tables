@@ -108,8 +108,9 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
         },
         ".cm-content": {
           minHeight: "100%",
+          boxSizing: "border-box",
           padding:
-            "var(--mlrt-editor-top-padding, 0px) 0 var(--mlrt-editor-bottom-padding, 0px) 0",
+            "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
           caretColor: "var(--vscode-editorCursor-foreground, #aeafad)",
         },
         ".cm-line": {
@@ -136,6 +137,7 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
       lineNumbers(),
       createTableLineNumberSuppressions(),
       createEditorGeometrySync(),
+      createTableCellFocusClassSync(),
       createTableSourceChangeFilter(),
       createTableSourceSelectionGuard({
         tableCellSelector: ".mm-live-v4-table-cell",
@@ -167,6 +169,7 @@ function createEditorGeometrySync(): Extension {
     class {
       private readonly measureKey = {};
       private lastGutterWidth = -1;
+      private lastContentWidth = -1;
       private resizeObserver: ResizeObserver | undefined;
       private readonly observedTableWidgets = new Set<Element>();
 
@@ -210,6 +213,7 @@ function createEditorGeometrySync(): Extension {
             gutterWidth:
               measuredView.dom.querySelector<HTMLElement>(".cm-gutters")
                 ?.offsetWidth ?? 0,
+            contentWidth: measuredView.scrollDOM.clientWidth,
           }),
           write: (metrics, measuredView) => {
             this.syncObservedTableWidgets(measuredView);
@@ -222,6 +226,16 @@ function createEditorGeometrySync(): Extension {
               scrollerStyle.setProperty(
                 "--mlrt-live-gutter-width",
                 `${metrics.gutterWidth}px`,
+              );
+            }
+            if (
+              metrics.contentWidth > 0 &&
+              metrics.contentWidth !== this.lastContentWidth
+            ) {
+              this.lastContentWidth = metrics.contentWidth;
+              scrollerStyle.setProperty(
+                "--mlrt-live-content-width",
+                `calc(${metrics.contentWidth}px - var(--mlrt-editor-right-padding, 26px))`,
               );
             }
           },
@@ -264,6 +278,47 @@ function forceCodeMirrorContentRemeasure(view: EditorView): void {
   if (viewState) {
     viewState.mustMeasureContent = "refresh";
   }
+}
+
+function createTableCellFocusClassSync(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      private readonly syncFocusClass: () => void;
+
+      public constructor(private readonly view: EditorView) {
+        this.syncFocusClass = () => this.sync();
+        const doc = view.dom.ownerDocument;
+        doc.addEventListener("focusin", this.syncFocusClass, true);
+        doc.addEventListener("focusout", this.syncFocusClass, true);
+        this.sync();
+      }
+
+      public update(update: ViewUpdate): void {
+        if (update.focusChanged || update.selectionSet || update.docChanged) {
+          this.sync();
+        }
+      }
+
+      public destroy(): void {
+        const doc = this.view.dom.ownerDocument;
+        doc.removeEventListener("focusin", this.syncFocusClass, true);
+        doc.removeEventListener("focusout", this.syncFocusClass, true);
+      }
+
+      private sync(): void {
+        queueMicrotask(() => {
+          const activeElement = this.view.dom.ownerDocument.activeElement;
+          const hasTableCellFocus =
+            activeElement instanceof HTMLElement &&
+            Boolean(activeElement.closest(".mm-live-v4-table-cell"));
+          this.view.dom.classList.toggle(
+            "mm-live-v4-table-cell-focused",
+            hasTableCellFocus,
+          );
+        });
+      }
+    },
+  );
 }
 
 function createTableLineNumberSuppressions(): Extension {

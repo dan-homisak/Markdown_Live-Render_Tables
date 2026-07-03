@@ -23156,12 +23156,18 @@
         return true;
       }
       const tables = parseMarkdownTables(transaction.startState.doc.toString());
-      if (tables.length === 0 || !selectionTouchesTableSource(transaction.startState.selection, tables)) {
+      if (tables.length === 0 || !selectionTouchesTableSource(
+        transaction.startState,
+        transaction.startState.selection,
+        tables
+      )) {
         return true;
       }
       let changeTouchesTable = false;
       transaction.changes.iterChangedRanges((from, to) => {
-        if (tables.some((table) => changeTouchesTableSource(from, to, table))) {
+        if (tables.some(
+          (table) => changeTouchesTableSource(transaction.startState, from, to, table)
+        )) {
           changeTouchesTable = true;
         }
       });
@@ -23199,7 +23205,7 @@
               return;
             }
             view2.dispatch({
-              selection: EditorSelection.cursor(refreshedTarget),
+              selection: EditorSelection.cursor(refreshedTarget, 1),
               scrollIntoView: true
             });
           });
@@ -23210,47 +23216,50 @@
   function isUndoRedo(transaction) {
     return transaction.isUserEvent("undo") || transaction.isUserEvent("redo");
   }
-  function selectionTouchesTableSource(selection, tables) {
+  function selectionTouchesTableSource(state, selection, tables) {
     return selection.ranges.some(
-      (range) => tables.some((table) => rangeTouchesTableSource(range, table))
+      (range) => tables.some((table) => rangeTouchesTableSource(state, range, table))
     );
   }
   function findSafeSelectionAnchor(state, previousHead) {
     const tables = parseMarkdownTables(state.doc.toString());
     const range = state.selection.main;
     const table = tables.find(
-      (candidate) => rangeTouchesTableSource(range, candidate)
+      (candidate) => rangeTouchesTableSource(state, range, candidate)
     );
     if (!table) {
       return void 0;
     }
     return resolveOutsideTableSource(state, table, range.head, previousHead);
   }
-  function rangeTouchesTableSource(range, table) {
+  function rangeTouchesTableSource(state, range, table) {
     if (range.empty) {
-      return isPositionInTableSource(range.head, table);
+      return isPositionInTableSource(state, range.head, table);
     }
-    return range.from < table.to && range.to > table.from;
+    return range.from < getTableReplacementTo(state, table) && range.to > table.from;
   }
-  function changeTouchesTableSource(from, to, table) {
+  function changeTouchesTableSource(state, from, to, table) {
     if (from === to) {
-      return isPositionInTableSource(from, table);
+      return isPositionInTableSource(state, from, table);
     }
-    return from < table.to && to > table.from;
+    return from < getTableReplacementTo(state, table) && to > table.from;
   }
-  function isPositionInTableSource(position, table) {
-    return position >= table.from && position <= table.to;
+  function isPositionInTableSource(state, position, table) {
+    return position >= table.from && position < getTableReplacementTo(state, table);
   }
   function resolveOutsideTableSource(state, table, position, previousHead) {
     const before = getPositionBeforeTable(table);
     const after = getPositionAfterTable(state, table);
     const hasBefore = before < table.from;
-    const hasAfter = after > table.to;
+    const hasAfter = after >= table.to && after <= state.doc.length;
     if (previousHead !== void 0 && previousHead < table.from && hasAfter) {
       return after;
     }
-    if (previousHead !== void 0 && previousHead > table.to && hasBefore) {
+    if (previousHead !== void 0 && previousHead >= after && hasBefore) {
       return before;
+    }
+    if (position >= table.to && hasAfter) {
+      return after;
     }
     const midpoint = table.from + (table.to - table.from) / 2;
     if (position <= midpoint && hasBefore) {
@@ -23269,6 +23278,9 @@
   }
   function getPositionAfterTable(state, table) {
     return table.to < state.doc.length && state.doc.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
+  }
+  function getTableReplacementTo(_state, table) {
+    return table.to;
   }
   function isTableCellFocused(view2, tableCellSelector) {
     const activeElement = view2.dom.ownerDocument.activeElement;
@@ -23567,7 +23579,7 @@ ${String(error)}`;
         to: edit.to,
         insert: edit.insert
       },
-      selection: selectionAnchor === void 0 ? void 0 : { anchor: selectionAnchor },
+      selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
       annotations: allowTableSourceChange.of(true),
       scrollIntoView: true
     });
@@ -23577,7 +23589,7 @@ ${String(error)}`;
       return;
     }
     view2.dispatch({
-      selection: { anchor: selectionAnchor },
+      selection: EditorSelection.cursor(selectionAnchor, 1),
       scrollIntoView: true
     });
   }

@@ -582,17 +582,16 @@ function getEditorMetricsCss(documentUri: vscode.Uri): string {
     `      --mlrt-editor-gutter-left-padding: 18px;`,
     `      --mlrt-editor-line-number-width: 22px;`,
     `      --mlrt-editor-gutter-right-padding: 26px;`,
+    `      --mlrt-editor-right-padding: var(--mlrt-editor-gutter-right-padding);`,
     `      --mlrt-editor-gutter-width: calc(var(--mlrt-editor-gutter-left-padding) + var(--mlrt-editor-line-number-width) + var(--mlrt-editor-gutter-right-padding));`,
-    `      --mlrt-live-content-width: 100vw;`,
+    `      --mlrt-live-content-width: calc(100vw - var(--mlrt-editor-right-padding));`,
     `      --mlrt-live-gutter-width: var(--mlrt-editor-gutter-width);`,
   ].join("\n");
 }
 
-function getEditorOptions(documentUri: vscode.Uri): { lineWrapping: boolean } {
-  const editorConfig = vscode.workspace.getConfiguration("editor", documentUri);
-  const wordWrap = editorConfig.get<string>("wordWrap", "off");
+function getEditorOptions(_documentUri: vscode.Uri): { lineWrapping: boolean } {
   return {
-    lineWrapping: wordWrap !== "off",
+    lineWrapping: true,
   };
 }
 

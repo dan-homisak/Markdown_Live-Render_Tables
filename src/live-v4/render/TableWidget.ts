@@ -1,3 +1,4 @@
+import { EditorSelection } from "@codemirror/state";
 import { EditorView, WidgetType } from "@codemirror/view";
 import {
   formatTableCellSourceEdit,
@@ -25,7 +26,7 @@ export class RenderedTableWidget extends WidgetType {
     wrapper.className = "mm-live-v4-table-widget";
     wrapper.dataset.blockId = this.table.id;
     wrapper.dataset.srcFrom = String(this.table.from);
-    wrapper.dataset.srcTo = String(this.table.to);
+    wrapper.dataset.srcTo = String(getPositionAfterTable(view, this.table));
     wrapper.contentEditable = "false";
 
     const tableElement = document.createElement("table");
@@ -63,13 +64,22 @@ export class RenderedTableWidget extends WidgetType {
     tableElement.append(tbody);
 
     wrapper.append(tableElement);
+    bindTableBlockHeight(wrapper, tableElement);
     bindTableEditing(wrapper, view, this.table);
     return wrapper;
+  }
+
+  public destroy(dom: HTMLElement): void {
+    getTableWidgetCleanup(dom)?.();
   }
 
   public ignoreEvent(): boolean {
     return true;
   }
+}
+
+interface TableWidgetElement extends HTMLElement {
+  __mlrtTableWidgetCleanup?: () => void;
 }
 
 interface AppendCellsOptions {
@@ -137,6 +147,40 @@ function appendColumnSizing(
   }
 
   tableElement.append(colgroup);
+}
+
+function bindTableBlockHeight(
+  wrapper: HTMLElement,
+  tableElement: HTMLTableElement,
+): void {
+  const sync = () => {
+    const styles = getComputedStyle(tableElement);
+    const lineHeight = parseFloat(styles.lineHeight);
+    const tableHeight = tableElement.getBoundingClientRect().height;
+    wrapper.style.height = `${Math.max(0, tableHeight - lineHeight * 2)}px`;
+  };
+
+  const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
+  const resizeObserver = ResizeObserverCtor
+    ? new ResizeObserverCtor(sync)
+    : undefined;
+  resizeObserver?.observe(tableElement);
+
+  requestAnimationFrame(sync);
+  setTableWidgetCleanup(wrapper, () => {
+    resizeObserver?.disconnect();
+  });
+}
+
+function setTableWidgetCleanup(
+  wrapper: HTMLElement,
+  cleanup: () => void,
+): void {
+  (wrapper as TableWidgetElement).__mlrtTableWidgetCleanup = cleanup;
+}
+
+function getTableWidgetCleanup(wrapper: HTMLElement): (() => void) | undefined {
+  return (wrapper as TableWidgetElement).__mlrtTableWidgetCleanup;
 }
 
 function measureColumnWidthPercentages(table: ParsedTable): number[] {
@@ -267,7 +311,9 @@ function commitCellEdit(
       insert: edit.insert,
     },
     selection:
-      selectionAnchor === undefined ? undefined : { anchor: selectionAnchor },
+      selectionAnchor === undefined
+        ? undefined
+        : EditorSelection.cursor(selectionAnchor, 1),
     annotations: allowTableSourceChange.of(true),
     scrollIntoView: true,
     userEvent: "input",
@@ -283,7 +329,7 @@ function dispatchSelection(
   }
 
   view.dispatch({
-    selection: { anchor: selectionAnchor },
+    selection: EditorSelection.cursor(selectionAnchor, 1),
     scrollIntoView: true,
   });
 }

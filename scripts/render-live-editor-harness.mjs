@@ -148,8 +148,9 @@ function renderHarnessHtml({
       --mlrt-editor-gutter-left-padding: 18px;
       --mlrt-editor-line-number-width: 22px;
       --mlrt-editor-gutter-right-padding: 26px;
+      --mlrt-editor-right-padding: var(--mlrt-editor-gutter-right-padding);
       --mlrt-editor-gutter-width: calc(var(--mlrt-editor-gutter-left-padding) + var(--mlrt-editor-line-number-width) + var(--mlrt-editor-gutter-right-padding));
-      --mlrt-live-content-width: 100vw;
+      --mlrt-live-content-width: calc(100vw - var(--mlrt-editor-right-padding));
       --mlrt-live-gutter-width: var(--mlrt-editor-gutter-width);
       --vscode-editorCursor-foreground: #aeafad;
       --vscode-editor-lineHighlightBackground: #2a2d2e;

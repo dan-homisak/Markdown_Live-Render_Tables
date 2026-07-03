@@ -519,7 +519,7 @@ function tableSourceProtectionExpression() {
           selectionFrom: selection.from,
           selectionTo: selection.to,
           selectionInsideTable:
-            selection.from >= from && selection.to <= to,
+            selection.from >= from && selection.to < to,
           tableFrom: from,
           tableTo: to,
         }));
@@ -562,6 +562,7 @@ function tableEnterExitExpression() {
       const activeLineGutter = root.querySelector('.cm-activeLineGutter');
       const activeLine = root.querySelector('.cm-activeLine');
       const cursor = root.querySelector('.cm-cursor');
+      const table = root.querySelector('.mm-live-v4-table');
       const box = (element) => {
         if (!element) return null;
         const rect = element.getBoundingClientRect();
@@ -579,6 +580,8 @@ function tableEnterExitExpression() {
         activeElementClass: root.activeElement?.className ?? null,
         activeLineGutterText: activeLineGutter?.textContent ?? null,
         activeLine: box(activeLine),
+        table: box(table),
+        lineHeight: parseFloat(root.defaultView.getComputedStyle(root.querySelector('.cm-line')).lineHeight),
         cursor: box(cursor),
         editorSelection: lastEditorUpdate?.details?.editorSelection ?? null,
       }));
@@ -629,6 +632,19 @@ function assertTableEnterExit(result) {
       )}`,
     );
   }
+
+  const tableBottom =
+    result.table === undefined
+      ? undefined
+      : result.table.top + result.table.height;
+  const bottomGap = result.activeLine?.top - tableBottom;
+  if (Math.abs(bottomGap) > pixelTolerance) {
+    throw new Error(
+      `Enter exit check failed: expected line directly below table, got ${JSON.stringify(
+        result,
+      )}`,
+    );
+  }
 }
 
 function assertPixelParity(stock, live) {
@@ -652,6 +668,10 @@ function assertPixelParity(stock, live) {
   const liveLineText = screen(live.lineText);
   const liveLineNumberText = screen(live.lineNumberText);
   const liveTableCell = screen(live.tableCell);
+  const liveTable = screen(live.table);
+  const liveScroller = screen(live.scroller);
+  const rightPadding = stock.content.left - stock.firstLineNumberText?.right;
+  const liveLineHeight = parseFloat(live.lineLineHeight);
 
   const checks = [
     compare("gutter width", stock.margin.width, live.gutter?.width),
@@ -667,10 +687,23 @@ function assertPixelParity(stock, live) {
     compare(
       "line height",
       parseFloat(stock.firstLineLineHeight),
-      parseFloat(live.lineLineHeight),
+      liveLineHeight,
     ),
+    compare("right padding", rightPadding, liveScroller?.right - liveLine?.right),
+    compare("table right padding", rightPadding, liveScroller?.right - liveTable?.right),
+    compare("table top rhythm", liveLineHeight * 11, live.table?.top),
   ];
   const failures = checks.filter((check) => !check.pass);
+
+  if (live.overflow) {
+    failures.push({
+      name: "horizontal overflow",
+      expected: false,
+      actual: true,
+      delta: Number.NaN,
+      pass: false,
+    });
+  }
 
   if (live.activeLineGutterBackground !== "rgba(0, 0, 0, 0)") {
     failures.push({

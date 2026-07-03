@@ -60,6 +60,11 @@ body,
 }
 
 .cm-content {
+  box-sizing: border-box;
+  padding-right: var(
+    --mlrt-editor-right-padding,
+    var(--mlrt-editor-gutter-right-padding, 26px)
+  );
   caret-color: var(--vscode-editorCursor-foreground);
 }
 
@@ -82,6 +87,8 @@ body,
 }
 
 .mm-live-v4-table {
+  position: relative;
+  top: calc(-1 * var(--mlrt-editor-line-height, 0px));
   width: var(--mlrt-live-content-width);
   max-width: none;
   margin-left: calc(-1 * var(--mlrt-live-gutter-width));
@@ -125,6 +132,9 @@ body,
 
 .mm-live-v4-table-source-line {
   box-sizing: border-box;
+  position: sticky;
+  left: 0;
+  z-index: 3;
   width: var(--mlrt-live-gutter-width);
   min-width: var(--mlrt-live-gutter-width);
   max-width: var(--mlrt-live-gutter-width);

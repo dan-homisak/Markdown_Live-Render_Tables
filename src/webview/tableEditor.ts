@@ -1,5 +1,5 @@
 import { markdown } from "@codemirror/lang-markdown";
-import { ChangeSet, EditorState } from "@codemirror/state";
+import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -398,7 +398,9 @@ function commitCellEdit(
       insert: edit.insert,
     },
     selection:
-      selectionAnchor === undefined ? undefined : { anchor: selectionAnchor },
+      selectionAnchor === undefined
+        ? undefined
+        : EditorSelection.cursor(selectionAnchor, 1),
     annotations: allowTableSourceChange.of(true),
     scrollIntoView: true,
   });
@@ -413,7 +415,7 @@ function dispatchSelection(
   }
 
   view.dispatch({
-    selection: { anchor: selectionAnchor },
+    selection: EditorSelection.cursor(selectionAnchor, 1),
     scrollIntoView: true,
   });
 }
