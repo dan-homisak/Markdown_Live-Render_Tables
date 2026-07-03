@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createTableFirstParser } from "../live-v4/parser/TableFirstParser";
+import { measureTableColumnSizing } from "../shared/tableColumnSizing";
 import {
   formatMarkdownCell,
   formatMarkdownRow,
@@ -137,6 +138,40 @@ assert.equal(model.blocks[0].from, standard.indexOf("| Name |"));
 assert.equal(model.blocks[0].lineFrom, 3);
 assert.equal(model.blocks[0].lineTo, 6);
 
+const compactSizing = measureTableColumnSizing(
+  parseMarkdownTables("| Key | Value |\n| --- | --- |\n| A | B |")[0],
+);
+assert.ok(
+  compactSizing.dataWidthCh < 24,
+  `expected compact tables to fit content, got ${compactSizing.dataWidthCh}ch`,
+);
+
+const mixedSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| ID | Notes |",
+      "| --- | --- |",
+      "| A1 | This long notes column should receive most available width so short ID text does not force extra wrapping. |",
+    ].join("\n"),
+  )[0],
+);
+assert.ok(
+  mixedSizing.columns[0].preferredWidthCh < 8,
+  `expected narrow ID column, got ${mixedSizing.columns[0].preferredWidthCh}ch`,
+);
+assert.ok(
+  mixedSizing.columns[1].preferredWidthCh > 80,
+  `expected long notes column to receive wrapping priority, got ${mixedSizing.columns[1].preferredWidthCh}ch`,
+);
+assert.ok(
+  mixedSizing.widthPercentages[0] < 8,
+  `expected narrow ID percentage, got ${mixedSizing.widthPercentages[0]}%`,
+);
+assert.ok(
+  mixedSizing.widthPercentages[1] > 92,
+  `expected long notes percentage, got ${mixedSizing.widthPercentages[1]}%`,
+);
+
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
 ) as {
@@ -218,7 +253,7 @@ assert.match(liveRuntimeSource, /lineNumberMarkers/);
 assert.match(liveRuntimeSource, /hiddenLineNumberMarker/);
 assert.match(liveRuntimeSource, /ResizeObserver/);
 assert.match(tableWidgetSource, /dataset\.sourceLine/);
-assert.match(tableWidgetSource, /measureColumnWidthPercentages/);
+assert.match(tableWidgetSource, /measureTableColumnSizing/);
 assert.doesNotMatch(tableWidgetSource, /appendLineNumberCell/);
 assert.doesNotMatch(liveRuntimeSource, /class TableRowLineNumberMarker/);
 assert.doesNotMatch(liveRuntimeSource, /lineNumberWidgetMarker/);

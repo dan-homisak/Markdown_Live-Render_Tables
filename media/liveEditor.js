@@ -23857,6 +23857,67 @@
     };
   }
 
+  // src/shared/tableColumnSizing.ts
+  var CELL_HORIZONTAL_PADDING_CH = 2;
+  var CELL_COMFORT_CH = 1;
+  var MIN_COLUMN_WIDTH_CH = 3;
+  var MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
+  var MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
+  function measureTableColumnSizing(table) {
+    const rows = [table.header, ...table.body];
+    const columns = Array.from(
+      { length: table.columnCount },
+      (_value, column) => measureColumn(rows, table.columnCount, column)
+    );
+    const totalPreferredWidth = columns.reduce(
+      (total, column) => total + column.preferredWidthCh,
+      0
+    );
+    const safeTotalWidth = totalPreferredWidth > 0 ? totalPreferredWidth : table.columnCount;
+    return {
+      columns,
+      dataWidthCh: safeTotalWidth,
+      widthPercentages: columns.map(
+        (column) => column.preferredWidthCh / safeTotalWidth * 100
+      )
+    };
+  }
+  function measureColumn(rows, columnCount, column) {
+    let longestLine = 0;
+    let longestToken = 0;
+    for (const row of rows) {
+      const value = rowToDisplayValues(row, columnCount)[column] ?? "";
+      for (const line of splitDisplayLines(value)) {
+        longestLine = Math.max(longestLine, line.length);
+        longestToken = Math.max(longestToken, measureLongestToken(line));
+      }
+    }
+    const minWidthCh = clamp(
+      longestToken + CELL_HORIZONTAL_PADDING_CH,
+      MIN_COLUMN_WIDTH_CH,
+      MAX_UNBROKEN_TOKEN_WIDTH_CH
+    );
+    const preferredWidthCh = clamp(
+      longestLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
+      minWidthCh,
+      MAX_PREFERRED_COLUMN_WIDTH_CH
+    );
+    return {
+      minWidthCh,
+      preferredWidthCh
+    };
+  }
+  function splitDisplayLines(value) {
+    const lines = value.split(/\r\n?|\n/);
+    return lines.length > 0 ? lines : [""];
+  }
+  function measureLongestToken(value) {
+    return value.trim().split(/\s+/).reduce((longest, token) => Math.max(longest, token.length), 0);
+  }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(value, max));
+  }
+
   // src/live-v4/render/TableWidget.ts
   var RenderedTableWidget = class extends WidgetType {
     constructor(table) {
@@ -23877,9 +23938,14 @@
       wrapper.dataset.srcFrom = String(this.table.from);
       wrapper.dataset.srcTo = String(getPositionAfterTable2(view2, this.table));
       wrapper.contentEditable = "false";
+      const columnSizing = measureTableColumnSizing(this.table);
+      wrapper.style.setProperty(
+        "--mlrt-table-data-width",
+        `${columnSizing.dataWidthCh.toFixed(4)}ch`
+      );
       const tableElement = document.createElement("table");
       tableElement.className = "mm-live-v4-table";
-      appendColumnSizing(tableElement, this.table);
+      appendColumnSizing(tableElement, this.table, columnSizing);
       const thead = document.createElement("thead");
       const headerRow = document.createElement("tr");
       appendCells({
@@ -23947,16 +24013,15 @@
     cell.setAttribute("aria-hidden", "true");
     options.tableRow.append(cell);
   }
-  function appendColumnSizing(tableElement, table) {
+  function appendColumnSizing(tableElement, table, columnSizing) {
     const colgroup = document.createElement("colgroup");
     const lineNumberCol = document.createElement("col");
     lineNumberCol.className = "mm-live-v4-table-source-line-col";
     colgroup.append(lineNumberCol);
-    const widthPercentages = measureColumnWidthPercentages(table);
     for (let column = 0; column < table.columnCount; column++) {
       const col = document.createElement("col");
       col.className = "mm-live-v4-table-sized-col";
-      col.style.width = `${widthPercentages[column].toFixed(4)}%`;
+      col.style.width = `${columnSizing.widthPercentages[column].toFixed(4)}%`;
       colgroup.append(col);
     }
     tableElement.append(colgroup);
@@ -23981,21 +24046,6 @@
   }
   function getTableWidgetCleanup(wrapper) {
     return wrapper.__mlrtTableWidgetCleanup;
-  }
-  function measureColumnWidthPercentages(table) {
-    const rows = [table.header, ...table.body];
-    const weights = Array.from({ length: table.columnCount }, (_value, column) => {
-      const longestValue = rows.reduce((longest, row) => {
-        const value = rowToDisplayValues(row, table.columnCount)[column] ?? "";
-        return Math.max(longest, value.length);
-      }, 0);
-      return Math.max(8, Math.min(longestValue + 4, 28));
-    });
-    const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-    if (totalWeight <= 0) {
-      return weights.map(() => 100 / Math.max(1, table.columnCount));
-    }
-    return weights.map((weight) => weight / totalWeight * 100);
   }
   function bindTableEditing(wrapper, view2, table) {
     wrapper.addEventListener("focusin", (event) => {

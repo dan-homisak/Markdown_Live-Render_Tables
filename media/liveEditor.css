@@ -72,13 +72,19 @@ body,
   display: block;
   position: relative;
   z-index: 250;
-  width: max(
-    0px,
-    calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+  width: min(
+    var(--mlrt-table-data-width, 100%),
+    max(
+      0px,
+      calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+    )
   );
-  max-width: max(
-    0px,
-    calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+  max-width: min(
+    var(--mlrt-table-data-width, 100%),
+    max(
+      0px,
+      calc(var(--mlrt-live-content-width) - var(--mlrt-live-gutter-width))
+    )
   );
   margin: 0;
   padding: 0;
@@ -89,8 +95,11 @@ body,
 .mm-live-v4-table {
   position: relative;
   top: calc(-1 * var(--mlrt-editor-line-height, 0px));
-  width: var(--mlrt-live-content-width);
-  max-width: none;
+  width: min(
+    var(--mlrt-live-content-width),
+    calc(var(--mlrt-live-gutter-width) + var(--mlrt-table-data-width, 100%))
+  );
+  max-width: var(--mlrt-live-content-width);
   margin-left: calc(-1 * var(--mlrt-live-gutter-width));
   box-sizing: border-box;
   border-collapse: collapse;

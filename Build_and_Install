@@ -139,7 +139,7 @@ if ! grep -q "appendColumnSizing" "$INSTALLED_DIR/media/liveEditor.js"; then
   echo "Installed webview bundle does not contain the table column sizing marker."
   exit 1
 fi
-if ! grep -q "measureColumnWidthPercentages" "$INSTALLED_DIR/media/liveEditor.js"; then
+if ! grep -q "measureTableColumnSizing" "$INSTALLED_DIR/media/liveEditor.js"; then
   echo "Installed webview bundle does not contain the proportional table column sizing marker."
   exit 1
 fi

@@ -829,10 +829,19 @@ function assertPixelParity(stock, live) {
       liveLineHeight,
     ),
     compare("right padding", rightPadding, liveScroller?.right - liveLine?.right),
-    compare("table right padding", rightPadding, liveScroller?.right - liveTable?.right),
     compare("table top rhythm", liveLineHeight * 11, live.table?.top),
   ];
   const failures = checks.filter((check) => !check.pass);
+  const tableRightLimit = liveScroller?.right - rightPadding;
+  if (liveTable?.right > tableRightLimit + pixelTolerance) {
+    failures.push({
+      name: "table right edge",
+      expected: `<= ${tableRightLimit}`,
+      actual: liveTable.right,
+      delta: liveTable.right - tableRightLimit,
+      pass: false,
+    });
+  }
 
   if (live.overflow) {
     failures.push({

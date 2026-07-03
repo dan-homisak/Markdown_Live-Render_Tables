@@ -6,6 +6,10 @@ import {
   ParsedTable,
   rowToDisplayValues,
 } from "../../shared/tableModel";
+import {
+  measureTableColumnSizing,
+  TableColumnSizing,
+} from "../../shared/tableColumnSizing";
 import { allowTableSourceChange } from "../../shared/tableSourceProtection";
 
 export class RenderedTableWidget extends WidgetType {
@@ -29,9 +33,15 @@ export class RenderedTableWidget extends WidgetType {
     wrapper.dataset.srcTo = String(getPositionAfterTable(view, this.table));
     wrapper.contentEditable = "false";
 
+    const columnSizing = measureTableColumnSizing(this.table);
+    wrapper.style.setProperty(
+      "--mlrt-table-data-width",
+      `${columnSizing.dataWidthCh.toFixed(4)}ch`,
+    );
+
     const tableElement = document.createElement("table");
     tableElement.className = "mm-live-v4-table";
-    appendColumnSizing(tableElement, this.table);
+    appendColumnSizing(tableElement, this.table, columnSizing);
 
     const thead = document.createElement("thead");
     const headerRow = document.createElement("tr");
@@ -133,6 +143,7 @@ function appendSourceLineCell(options: AppendCellsOptions): void {
 function appendColumnSizing(
   tableElement: HTMLTableElement,
   table: ParsedTable,
+  columnSizing: TableColumnSizing,
 ): void {
   const colgroup = document.createElement("colgroup");
 
@@ -140,11 +151,10 @@ function appendColumnSizing(
   lineNumberCol.className = "mm-live-v4-table-source-line-col";
   colgroup.append(lineNumberCol);
 
-  const widthPercentages = measureColumnWidthPercentages(table);
   for (let column = 0; column < table.columnCount; column++) {
     const col = document.createElement("col");
     col.className = "mm-live-v4-table-sized-col";
-    col.style.width = `${widthPercentages[column].toFixed(4)}%`;
+    col.style.width = `${columnSizing.widthPercentages[column].toFixed(4)}%`;
     colgroup.append(col);
   }
 
@@ -183,23 +193,6 @@ function setTableWidgetCleanup(
 
 function getTableWidgetCleanup(wrapper: HTMLElement): (() => void) | undefined {
   return (wrapper as TableWidgetElement).__mlrtTableWidgetCleanup;
-}
-
-function measureColumnWidthPercentages(table: ParsedTable): number[] {
-  const rows = [table.header, ...table.body];
-  const weights = Array.from({ length: table.columnCount }, (_value, column) => {
-    const longestValue = rows.reduce((longest, row) => {
-      const value = rowToDisplayValues(row, table.columnCount)[column] ?? "";
-      return Math.max(longest, value.length);
-    }, 0);
-    return Math.max(8, Math.min(longestValue + 4, 28));
-  });
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  if (totalWeight <= 0) {
-    return weights.map(() => 100 / Math.max(1, table.columnCount));
-  }
-
-  return weights.map((weight) => (weight / totalWeight) * 100);
 }
 
 function bindTableEditing(
