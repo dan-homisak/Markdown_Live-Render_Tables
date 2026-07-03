@@ -10,12 +10,13 @@ import {
   GutterMarker,
   highlightActiveLine,
   highlightActiveLineGutter,
+  keymap,
   lineNumbers,
   lineNumberMarkers,
   ViewPlugin,
   ViewUpdate,
 } from "@codemirror/view";
-import { parseMarkdownTables } from "../shared/tableModel";
+import { ParsedTable, parseMarkdownTables } from "../shared/tableModel";
 import {
   createTableSourceChangeFilter,
   createTableSourceSelectionGuard,
@@ -132,6 +133,7 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
           display: "none",
         },
       }),
+      createTableBoundaryArrowNavigation(),
       highlightActiveLine(),
       highlightActiveLineGutter(),
       lineNumbers(),
@@ -149,6 +151,103 @@ export function createLiveRuntime(options: LiveRuntimeOptions): LiveRuntime {
       livePointerHandlers,
     ],
   };
+}
+
+function createTableBoundaryArrowNavigation(): Extension {
+  return keymap.of([
+    {
+      key: "ArrowDown",
+      run: (view) => focusTableAcrossBoundary(view, "down"),
+    },
+    {
+      key: "ArrowUp",
+      run: (view) => focusTableAcrossBoundary(view, "up"),
+    },
+  ]);
+}
+
+function focusTableAcrossBoundary(
+  view: EditorView,
+  direction: "up" | "down",
+): boolean {
+  if (!view.state.selection.main.empty || isRenderedTableCellFocused(view)) {
+    return false;
+  }
+
+  const head = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(head);
+  const tables = parseMarkdownTables(view.state.doc.toString());
+  for (const table of tables) {
+    const afterTable = getPositionAfterTable(view, table);
+    if (direction === "down" && line.number === table.startLine) {
+      return focusRenderedTableCell(view, table, "first");
+    }
+    if (
+      direction === "up" &&
+      line.from === afterTable &&
+      head >= afterTable
+    ) {
+      return focusRenderedTableCell(view, table, "last");
+    }
+    if (head >= table.from && head <= table.to) {
+      return focusRenderedTableCell(
+        view,
+        table,
+        direction === "down" ? "first" : "last",
+      );
+    }
+  }
+
+  return false;
+}
+
+function focusRenderedTableCell(
+  view: EditorView,
+  table: ParsedTable,
+  target: "first" | "last",
+): boolean {
+  const wrapper = view.dom.querySelector<HTMLElement>(
+    `.mm-live-v4-table-widget[data-src-from="${table.from}"]`,
+  );
+  const cells = Array.from(
+    wrapper?.querySelectorAll<HTMLElement>(".mm-live-v4-table-cell") ?? [],
+  );
+  const cell = target === "first" ? cells[0] : cells[cells.length - 1];
+  if (!cell) {
+    return false;
+  }
+
+  focusElementAtEnd(cell);
+  return true;
+}
+
+function focusElementAtEnd(element: HTMLElement): void {
+  element.focus();
+  const selection = element.ownerDocument.defaultView?.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = element.ownerDocument.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function isRenderedTableCellFocused(view: EditorView): boolean {
+  const activeElement = view.dom.ownerDocument.activeElement;
+  return (
+    activeElement instanceof HTMLElement &&
+    Boolean(activeElement.closest(".mm-live-v4-table-cell"))
+  );
+}
+
+function getPositionAfterTable(view: EditorView, table: ParsedTable): number {
+  const doc = view.state.doc;
+  return table.to < doc.length && doc.sliceString(table.to, table.to + 1) === "\n"
+    ? table.to + 1
+    : table.to;
 }
 
 /**

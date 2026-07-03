@@ -98,6 +98,8 @@ interface CellTarget {
   column: string;
 }
 
+type VerticalCellTarget = CellTarget | "before-table" | "after-table";
+
 function appendCells(options: AppendCellsOptions): void {
   appendSourceLineCell(options);
 
@@ -249,6 +251,42 @@ function bindTableEditing(
       return;
     }
 
+    if (
+      (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey
+    ) {
+      const rowDelta = event.key === "ArrowUp" ? -1 : 1;
+      if (!isCaretAtVerticalBoundary(cell, rowDelta)) {
+        return;
+      }
+
+      const target = resolveVerticalCell(cell, rowDelta);
+      event.preventDefault();
+      if (target === "before-table") {
+        commitCellEdit(view, table, cell, {
+          selectionAnchor: getPositionBeforeTable(table),
+        });
+        cell.blur();
+        view.focus();
+        return;
+      }
+      if (target === "after-table") {
+        commitCellEdit(view, table, cell, {
+          selectionAnchor: getPositionAfterTable(view, table),
+        });
+        cell.blur();
+        view.focus();
+        return;
+      }
+
+      commitCellEdit(view, table, cell);
+      focusCellAfterRender(table.from, target);
+      return;
+    }
+
     if (event.key === "Tab") {
       event.preventDefault();
       const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
@@ -343,6 +381,10 @@ function getPositionAfterTable(view: EditorView, table: ParsedTable): number {
   return table.to;
 }
 
+function getPositionBeforeTable(table: ParsedTable): number {
+  return Math.max(0, table.from - 1);
+}
+
 function mapPositionThroughCellEdit(
   position: number,
   edit: { from: number; to: number; insert: string },
@@ -372,6 +414,31 @@ function resolveRelativeCell(cell: HTMLElement, delta: number): CellTarget {
   };
 }
 
+function resolveVerticalCell(
+  cell: HTMLElement,
+  rowDelta: -1 | 1,
+): VerticalCellTarget {
+  const column = cell.dataset.column ?? "0";
+  const columnCells = Array.from(
+    cell
+      .closest(".mm-live-v4-table")
+      ?.querySelectorAll<HTMLElement>(
+        `.mm-live-v4-table-cell[data-column="${column}"]`,
+      ) ?? [],
+  );
+  const index = columnCells.indexOf(cell);
+  const next = columnCells[index + rowDelta];
+  if (!next) {
+    return rowDelta < 0 ? "before-table" : "after-table";
+  }
+
+  return {
+    rowKind: next.dataset.rowKind ?? "body",
+    rowIndex: next.dataset.rowIndex ?? "0",
+    column: next.dataset.column ?? "0",
+  };
+}
+
 function focusCellAfterRender(tableFrom: number, target: CellTarget): void {
   setTimeout(() => {
     const selector = [
@@ -380,7 +447,10 @@ function focusCellAfterRender(tableFrom: number, target: CellTarget): void {
       `[data-row-index="${target.rowIndex}"]`,
       `[data-column="${target.column}"]`,
     ].join("");
-    document.querySelector<HTMLElement>(selector)?.focus();
+    const cell = document.querySelector<HTMLElement>(selector);
+    if (cell) {
+      focusCellAtEnd(cell);
+    }
   }, 0);
 }
 
@@ -403,6 +473,131 @@ function insertTextAtSelection(text: string): void {
   range.insertNode(node);
   range.setStartAfter(node);
   range.setEndAfter(node);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function isCaretAtVerticalBoundary(
+  cell: HTMLElement,
+  rowDelta: -1 | 1,
+): boolean {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  if (
+    !selection ||
+    selection.rangeCount === 0 ||
+    !selection.isCollapsed ||
+    !isNodeInside(selection.anchorNode, cell)
+  ) {
+    return false;
+  }
+
+  const caretRect = getCaretRect(selection.getRangeAt(0));
+  const lineBounds = getCellLineBounds(cell);
+  if (!caretRect || !lineBounds) {
+    return true;
+  }
+
+  const styles = getComputedStyle(cell);
+  const parsedLineHeight = parseFloat(styles.lineHeight);
+  const tolerance = Number.isFinite(parsedLineHeight)
+    ? Math.max(2, parsedLineHeight * 0.25)
+    : 3;
+
+  return rowDelta < 0
+    ? caretRect.top <= lineBounds.firstTop + tolerance
+    : caretRect.bottom >= lineBounds.lastBottom - tolerance;
+}
+
+function isNodeInside(node: Node | null, element: HTMLElement): boolean {
+  return node === element || (node !== null && element.contains(node));
+}
+
+function getCaretRect(range: Range): DOMRect | null {
+  const directRect = firstUsefulRect(range.getClientRects());
+  if (directRect) {
+    return directRect;
+  }
+
+  const doc = getNodeDocument(range.startContainer);
+  if (!doc) {
+    return null;
+  }
+
+  const marker = doc.createElement("span");
+  marker.textContent = "\u200b";
+  marker.style.display = "inline-block";
+  marker.style.width = "0";
+  marker.style.height = "1em";
+  marker.style.overflow = "hidden";
+  marker.style.padding = "0";
+  marker.style.margin = "0";
+  marker.style.border = "0";
+
+  const restoreRange = range.cloneRange();
+  const markerRange = range.cloneRange();
+  markerRange.insertNode(marker);
+  const markerRect = marker.getBoundingClientRect();
+  marker.remove();
+
+  const selection = doc.defaultView?.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(restoreRange);
+
+  return markerRect.height > 0 ? markerRect : null;
+}
+
+function getNodeDocument(node: Node): Document | null {
+  return node.nodeType === Node.DOCUMENT_NODE
+    ? (node as Document)
+    : node.ownerDocument;
+}
+
+function getCellLineBounds(
+  cell: HTMLElement,
+): { firstTop: number; lastBottom: number } | null {
+  const range = cell.ownerDocument.createRange();
+  range.selectNodeContents(cell);
+  const rects = Array.from(range.getClientRects()).filter(
+    (rect) => rect.height > 0 && rect.width >= 0,
+  );
+  range.detach();
+  if (rects.length === 0) {
+    const cellRect = cell.getBoundingClientRect();
+    return cellRect.height > 0
+      ? { firstTop: cellRect.top, lastBottom: cellRect.bottom }
+      : null;
+  }
+
+  return rects.reduce(
+    (bounds, rect) => ({
+      firstTop: Math.min(bounds.firstTop, rect.top),
+      lastBottom: Math.max(bounds.lastBottom, rect.bottom),
+    }),
+    { firstTop: Number.POSITIVE_INFINITY, lastBottom: Number.NEGATIVE_INFINITY },
+  );
+}
+
+function firstUsefulRect(rects: DOMRectList): DOMRect | null {
+  for (let index = 0; index < rects.length; index++) {
+    const rect = rects.item(index);
+    if (rect && rect.height > 0) {
+      return rect;
+    }
+  }
+
+  return null;
+}
+
+function focusCellAtEnd(cell: HTMLElement): void {
+  cell.focus();
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(cell);
+  range.collapse(false);
   selection.removeAllRanges();
   selection.addRange(range);
 }

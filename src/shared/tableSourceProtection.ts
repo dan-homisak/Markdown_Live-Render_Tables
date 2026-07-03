@@ -183,14 +183,14 @@ function resolveOutsideTableSource(
   const hasBefore = before < table.from;
   const hasAfter = after >= table.to && after <= state.doc.length;
 
+  if (position >= table.to && hasAfter) {
+    return after;
+  }
   if (previousHead !== undefined && previousHead < table.from && hasAfter) {
     return after;
   }
   if (previousHead !== undefined && previousHead >= after && hasBefore) {
     return before;
-  }
-  if (position >= table.to && hasAfter) {
-    return after;
   }
 
   const midpoint = table.from + (table.to - table.from) / 2;
@@ -222,10 +222,10 @@ function getPositionAfterTable(
 }
 
 function getTableReplacementTo(
-  _state: EditorState,
+  state: EditorState,
   table: ParsedTable,
 ): number {
-  return table.to;
+  return getPositionAfterTable(state, table);
 }
 
 function isTableCellFocused(

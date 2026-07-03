@@ -23730,14 +23730,14 @@
     const after = getPositionAfterTable(state, table);
     const hasBefore = before < table.from;
     const hasAfter = after >= table.to && after <= state.doc.length;
+    if (position >= table.to && hasAfter) {
+      return after;
+    }
     if (previousHead !== void 0 && previousHead < table.from && hasAfter) {
       return after;
     }
     if (previousHead !== void 0 && previousHead >= after && hasBefore) {
       return before;
-    }
-    if (position >= table.to && hasAfter) {
-      return after;
     }
     const midpoint = table.from + (table.to - table.from) / 2;
     if (position <= midpoint && hasBefore) {
@@ -23757,8 +23757,8 @@
   function getPositionAfterTable(state, table) {
     return table.to < state.doc.length && state.doc.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
   }
-  function getTableReplacementTo(_state, table) {
-    return table.to;
+  function getTableReplacementTo(state, table) {
+    return getPositionAfterTable(state, table);
   }
   function isTableCellFocused(view2, tableCellSelector) {
     const activeElement = view2.dom.ownerDocument.activeElement;
@@ -24036,6 +24036,33 @@
         view2.focus();
         return;
       }
+      if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        const rowDelta = event.key === "ArrowUp" ? -1 : 1;
+        if (!isCaretAtVerticalBoundary(cell, rowDelta)) {
+          return;
+        }
+        const target = resolveVerticalCell(cell, rowDelta);
+        event.preventDefault();
+        if (target === "before-table") {
+          commitCellEdit(view2, table, cell, {
+            selectionAnchor: getPositionBeforeTable2(table)
+          });
+          cell.blur();
+          view2.focus();
+          return;
+        }
+        if (target === "after-table") {
+          commitCellEdit(view2, table, cell, {
+            selectionAnchor: getPositionAfterTable2(view2, table)
+          });
+          cell.blur();
+          view2.focus();
+          return;
+        }
+        commitCellEdit(view2, table, cell);
+        focusCellAfterRender(table.from, target);
+        return;
+      }
       if (event.key === "Tab") {
         event.preventDefault();
         const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
@@ -24107,6 +24134,9 @@
     }
     return table.to;
   }
+  function getPositionBeforeTable2(table) {
+    return Math.max(0, table.from - 1);
+  }
   function mapPositionThroughCellEdit(position, edit) {
     if (position <= edit.from) {
       return position;
@@ -24128,6 +24158,24 @@
       column: next.dataset.column ?? "0"
     };
   }
+  function resolveVerticalCell(cell, rowDelta) {
+    const column = cell.dataset.column ?? "0";
+    const columnCells = Array.from(
+      cell.closest(".mm-live-v4-table")?.querySelectorAll(
+        `.mm-live-v4-table-cell[data-column="${column}"]`
+      ) ?? []
+    );
+    const index = columnCells.indexOf(cell);
+    const next = columnCells[index + rowDelta];
+    if (!next) {
+      return rowDelta < 0 ? "before-table" : "after-table";
+    }
+    return {
+      rowKind: next.dataset.rowKind ?? "body",
+      rowIndex: next.dataset.rowIndex ?? "0",
+      column: next.dataset.column ?? "0"
+    };
+  }
   function focusCellAfterRender(tableFrom, target) {
     setTimeout(() => {
       const selector = [
@@ -24136,7 +24184,10 @@
         `[data-row-index="${target.rowIndex}"]`,
         `[data-column="${target.column}"]`
       ].join("");
-      document.querySelector(selector)?.focus();
+      const cell = document.querySelector(selector);
+      if (cell) {
+        focusCellAtEnd(cell);
+      }
     }, 0);
   }
   function findCell(target) {
@@ -24156,6 +24207,95 @@
     range.insertNode(node);
     range.setStartAfter(node);
     range.setEndAfter(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  function isCaretAtVerticalBoundary(cell, rowDelta) {
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection || selection.rangeCount === 0 || !selection.isCollapsed || !isNodeInside(selection.anchorNode, cell)) {
+      return false;
+    }
+    const caretRect = getCaretRect(selection.getRangeAt(0));
+    const lineBounds = getCellLineBounds(cell);
+    if (!caretRect || !lineBounds) {
+      return true;
+    }
+    const styles = getComputedStyle(cell);
+    const parsedLineHeight = parseFloat(styles.lineHeight);
+    const tolerance = Number.isFinite(parsedLineHeight) ? Math.max(2, parsedLineHeight * 0.25) : 3;
+    return rowDelta < 0 ? caretRect.top <= lineBounds.firstTop + tolerance : caretRect.bottom >= lineBounds.lastBottom - tolerance;
+  }
+  function isNodeInside(node, element) {
+    return node === element || node !== null && element.contains(node);
+  }
+  function getCaretRect(range) {
+    const directRect = firstUsefulRect(range.getClientRects());
+    if (directRect) {
+      return directRect;
+    }
+    const doc2 = getNodeDocument(range.startContainer);
+    if (!doc2) {
+      return null;
+    }
+    const marker = doc2.createElement("span");
+    marker.textContent = "\u200B";
+    marker.style.display = "inline-block";
+    marker.style.width = "0";
+    marker.style.height = "1em";
+    marker.style.overflow = "hidden";
+    marker.style.padding = "0";
+    marker.style.margin = "0";
+    marker.style.border = "0";
+    const restoreRange = range.cloneRange();
+    const markerRange = range.cloneRange();
+    markerRange.insertNode(marker);
+    const markerRect = marker.getBoundingClientRect();
+    marker.remove();
+    const selection = doc2.defaultView?.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(restoreRange);
+    return markerRect.height > 0 ? markerRect : null;
+  }
+  function getNodeDocument(node) {
+    return node.nodeType === Node.DOCUMENT_NODE ? node : node.ownerDocument;
+  }
+  function getCellLineBounds(cell) {
+    const range = cell.ownerDocument.createRange();
+    range.selectNodeContents(cell);
+    const rects = Array.from(range.getClientRects()).filter(
+      (rect) => rect.height > 0 && rect.width >= 0
+    );
+    range.detach();
+    if (rects.length === 0) {
+      const cellRect = cell.getBoundingClientRect();
+      return cellRect.height > 0 ? { firstTop: cellRect.top, lastBottom: cellRect.bottom } : null;
+    }
+    return rects.reduce(
+      (bounds, rect) => ({
+        firstTop: Math.min(bounds.firstTop, rect.top),
+        lastBottom: Math.max(bounds.lastBottom, rect.bottom)
+      }),
+      { firstTop: Number.POSITIVE_INFINITY, lastBottom: Number.NEGATIVE_INFINITY }
+    );
+  }
+  function firstUsefulRect(rects) {
+    for (let index = 0; index < rects.length; index++) {
+      const rect = rects.item(index);
+      if (rect && rect.height > 0) {
+        return rect;
+      }
+    }
+    return null;
+  }
+  function focusCellAtEnd(cell) {
+    cell.focus();
+    const selection = window.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
     selection.removeAllRanges();
     selection.addRange(range);
   }
@@ -24314,6 +24454,7 @@
             display: "none"
           }
         }),
+        createTableBoundaryArrowNavigation(),
         highlightActiveLine(),
         highlightActiveLineGutter(),
         lineNumbers(),
@@ -24331,6 +24472,77 @@
         livePointerHandlers
       ]
     };
+  }
+  function createTableBoundaryArrowNavigation() {
+    return keymap.of([
+      {
+        key: "ArrowDown",
+        run: (view2) => focusTableAcrossBoundary(view2, "down")
+      },
+      {
+        key: "ArrowUp",
+        run: (view2) => focusTableAcrossBoundary(view2, "up")
+      }
+    ]);
+  }
+  function focusTableAcrossBoundary(view2, direction) {
+    if (!view2.state.selection.main.empty || isRenderedTableCellFocused(view2)) {
+      return false;
+    }
+    const head = view2.state.selection.main.head;
+    const line = view2.state.doc.lineAt(head);
+    const tables = parseMarkdownTables(view2.state.doc.toString());
+    for (const table of tables) {
+      const afterTable = getPositionAfterTable3(view2, table);
+      if (direction === "down" && line.number === table.startLine) {
+        return focusRenderedTableCell(view2, table, "first");
+      }
+      if (direction === "up" && line.from === afterTable && head >= afterTable) {
+        return focusRenderedTableCell(view2, table, "last");
+      }
+      if (head >= table.from && head <= table.to) {
+        return focusRenderedTableCell(
+          view2,
+          table,
+          direction === "down" ? "first" : "last"
+        );
+      }
+    }
+    return false;
+  }
+  function focusRenderedTableCell(view2, table, target) {
+    const wrapper = view2.dom.querySelector(
+      `.mm-live-v4-table-widget[data-src-from="${table.from}"]`
+    );
+    const cells = Array.from(
+      wrapper?.querySelectorAll(".mm-live-v4-table-cell") ?? []
+    );
+    const cell = target === "first" ? cells[0] : cells[cells.length - 1];
+    if (!cell) {
+      return false;
+    }
+    focusElementAtEnd(cell);
+    return true;
+  }
+  function focusElementAtEnd(element) {
+    element.focus();
+    const selection = element.ownerDocument.defaultView?.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  function isRenderedTableCellFocused(view2) {
+    const activeElement = view2.dom.ownerDocument.activeElement;
+    return activeElement instanceof HTMLElement && Boolean(activeElement.closest(".mm-live-v4-table-cell"));
+  }
+  function getPositionAfterTable3(view2, table) {
+    const doc2 = view2.state.doc;
+    return table.to < doc2.length && doc2.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
   }
   function createEditorGeometrySync() {
     return ViewPlugin.fromClass(

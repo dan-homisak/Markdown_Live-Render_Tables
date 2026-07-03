@@ -23252,14 +23252,14 @@
     const after = getPositionAfterTable(state, table);
     const hasBefore = before < table.from;
     const hasAfter = after >= table.to && after <= state.doc.length;
+    if (position >= table.to && hasAfter) {
+      return after;
+    }
     if (previousHead !== void 0 && previousHead < table.from && hasAfter) {
       return after;
     }
     if (previousHead !== void 0 && previousHead >= after && hasBefore) {
       return before;
-    }
-    if (position >= table.to && hasAfter) {
-      return after;
     }
     const midpoint = table.from + (table.to - table.from) / 2;
     if (position <= midpoint && hasBefore) {
@@ -23279,8 +23279,8 @@
   function getPositionAfterTable(state, table) {
     return table.to < state.doc.length && state.doc.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
   }
-  function getTableReplacementTo(_state, table) {
-    return table.to;
+  function getTableReplacementTo(state, table) {
+    return getPositionAfterTable(state, table);
   }
   function isTableCellFocused(view2, tableCellSelector) {
     const activeElement = view2.dom.ownerDocument.activeElement;

@@ -227,6 +227,12 @@ try {
   const enterExit = await evaluateJson(liveClient, tableEnterExitExpression());
   assertTableEnterExit(enterExit);
   console.log("TABLE ENTER EXIT CHECK:", enterExit);
+  const arrowNavigation = await evaluateJson(
+    liveClient,
+    tableArrowNavigationExpression(),
+  );
+  assertTableArrowNavigation(arrowNavigation);
+  console.log("TABLE ARROW NAVIGATION CHECK:", arrowNavigation);
   await captureWorkbenchScreenshot(
     wb,
     path.join(qaDir, "edh-enter-after-table.png"),
@@ -510,12 +516,22 @@ function tableSourceProtectionExpression() {
         userEvent: 'input.type',
       });
       setTimeout(() => {
+        const afterFirstAttempt = view.state.doc.toString();
+        const rowEnd = to - 1;
+        view.dispatch({ selection: { anchor: rowEnd } });
+        view.dispatch({
+          changes: { from: rowEnd, insert: 'BAD_TABLE_ROW_END_WRITE' },
+          userEvent: 'input.type',
+        });
+        setTimeout(() => {
         const after = view.state.doc.toString();
         const selection = view.state.selection.main;
         resolve(JSON.stringify({
           ok: true,
-          docChanged: after !== before,
+          docChanged: afterFirstAttempt !== before,
           containsBadWrite: after.includes('BAD_TABLE_SOURCE_WRITE'),
+          edgeDocChanged: after !== afterFirstAttempt,
+          edgeContainsBadWrite: after.includes('BAD_TABLE_ROW_END_WRITE'),
           selectionFrom: selection.from,
           selectionTo: selection.to,
           selectionInsideTable:
@@ -523,6 +539,7 @@ function tableSourceProtectionExpression() {
           tableFrom: from,
           tableTo: to,
         }));
+        }, 100);
       }, 100);
     });
   })()`;
@@ -589,6 +606,100 @@ function tableEnterExitExpression() {
   })`;
 }
 
+function tableArrowNavigationExpression() {
+  return `new Promise((resolve) => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table'));
+    if (!root) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+      return;
+    }
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!view) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing CodeMirror view' }));
+      return;
+    }
+    const key = (target, keyName) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: keyName,
+      code: keyName,
+      bubbles: true,
+      cancelable: true,
+    }));
+    const isSelectionAtEnd = (cell) => {
+      const selection = root.defaultView.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+        return false;
+      }
+      const range = selection.getRangeAt(0);
+      const expected = root.createRange();
+      expected.selectNodeContents(cell);
+      expected.collapse(false);
+      return range.compareBoundaryPoints(root.defaultView.Range.START_TO_START, expected) === 0;
+    };
+    const activeCellDetails = () => {
+      const active = root.activeElement;
+      if (!(active instanceof root.defaultView.HTMLElement) || !active.classList.contains('mm-live-v4-table-cell')) {
+        return null;
+      }
+      return {
+        rowKind: active.getAttribute('data-row-kind'),
+        rowIndex: active.getAttribute('data-row-index'),
+        column: active.getAttribute('data-column'),
+        text: active.textContent,
+        selectionAtEnd: isSelectionAtEnd(active),
+      };
+    };
+    const setCellSelection = (cell, atEnd) => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      range.collapse(!atEnd);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const before = view.state.doc.toString();
+    view.focus();
+    view.dispatch({ selection: { anchor: view.state.doc.line(11).from } });
+    key(view.contentDOM, 'ArrowDown');
+    setTimeout(() => {
+      const fromLine11 = activeCellDetails();
+      view.focus();
+      view.dispatch({ selection: { anchor: view.state.doc.line(15).from } });
+      key(view.contentDOM, 'ArrowUp');
+      setTimeout(() => {
+        const fromLine15 = activeCellDetails();
+        const activeCell = root.activeElement;
+        setCellSelection(activeCell, false);
+        const insideDownAllowed = key(activeCell, 'ArrowDown');
+        const stayedInCellAfterInsideDown = root.activeElement === activeCell;
+        setCellSelection(activeCell, true);
+        const exitDownAllowed = key(activeCell, 'ArrowDown');
+        setTimeout(() => {
+          const activeLineGutter = root.querySelector('.cm-activeLineGutter');
+          const after = view.state.doc.toString();
+          resolve(JSON.stringify({
+            ok: true,
+            fromLine11,
+            fromLine15,
+            insideDownAllowed,
+            stayedInCellAfterInsideDown,
+            exitDownPrevented: !exitDownAllowed,
+            afterDownActiveClass: root.activeElement?.className ?? null,
+            afterDownGutterText: activeLineGutter?.textContent ?? null,
+            docChanged: after !== before,
+          }));
+        }, 100);
+      }, 100);
+    }, 100);
+  })`;
+}
+
 function assertTableCellFocus(result) {
   if (
     !result?.editorHasTableFocusClass ||
@@ -607,10 +718,33 @@ function assertTableSourceProtection(result) {
     !result?.ok ||
     result?.docChanged ||
     result?.containsBadWrite ||
+    result?.edgeDocChanged ||
+    result?.edgeContainsBadWrite ||
     result?.selectionInsideTable
   ) {
     throw new Error(
       `Table source protection check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableArrowNavigation(result) {
+  if (
+    !result?.ok ||
+    result.fromLine11?.rowKind !== "header" ||
+    result.fromLine11?.column !== "0" ||
+    !result.fromLine11?.selectionAtEnd ||
+    result.fromLine15?.rowKind !== "body" ||
+    result.fromLine15?.column !== "1" ||
+    !result.fromLine15?.selectionAtEnd ||
+    !result.insideDownAllowed ||
+    !result.stayedInCellAfterInsideDown ||
+    !result.exitDownPrevented ||
+    result.afterDownGutterText !== "15" ||
+    result.docChanged
+  ) {
+    throw new Error(
+      `Table arrow navigation check failed: ${JSON.stringify(result)}`,
     );
   }
 }
