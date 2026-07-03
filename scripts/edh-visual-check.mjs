@@ -683,6 +683,8 @@ function tableArrowNavigationExpression() {
         setTimeout(() => {
           const activeLineGutter = root.querySelector('.cm-activeLineGutter');
           const after = view.state.doc.toString();
+          const afterDownSelection = view.state.selection.main;
+          const afterDownLine = view.state.doc.line(15);
           resolve(JSON.stringify({
             ok: true,
             fromLine11,
@@ -692,6 +694,8 @@ function tableArrowNavigationExpression() {
             exitDownPrevented: !exitDownAllowed,
             afterDownActiveClass: root.activeElement?.className ?? null,
             afterDownGutterText: activeLineGutter?.textContent ?? null,
+            afterDownSelectionHead: afterDownSelection.head,
+            afterDownLineEnd: afterDownLine.to,
             docChanged: after !== before,
           }));
         }, 100);
@@ -741,6 +745,7 @@ function assertTableArrowNavigation(result) {
     !result.stayedInCellAfterInsideDown ||
     !result.exitDownPrevented ||
     result.afterDownGutterText !== "15" ||
+    result.afterDownSelectionHead !== result.afterDownLineEnd ||
     result.docChanged
   ) {
     throw new Error(

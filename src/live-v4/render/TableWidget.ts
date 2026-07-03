@@ -275,7 +275,7 @@ function bindTableEditing(
       }
       if (target === "after-table") {
         commitCellEdit(view, table, cell, {
-          selectionAnchor: getPositionAfterTable(view, table),
+          selectionAnchor: getEndOfLineAfterTable(view, table),
         });
         cell.blur();
         view.focus();
@@ -379,6 +379,10 @@ function getPositionAfterTable(view: EditorView, table: ParsedTable): number {
   }
 
   return table.to;
+}
+
+function getEndOfLineAfterTable(view: EditorView, table: ParsedTable): number {
+  return view.state.doc.lineAt(getPositionAfterTable(view, table)).to;
 }
 
 function getPositionBeforeTable(table: ParsedTable): number {

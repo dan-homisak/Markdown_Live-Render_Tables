@@ -24053,7 +24053,7 @@
         }
         if (target === "after-table") {
           commitCellEdit(view2, table, cell, {
-            selectionAnchor: getPositionAfterTable2(view2, table)
+            selectionAnchor: getEndOfLineAfterTable(view2, table)
           });
           cell.blur();
           view2.focus();
@@ -24133,6 +24133,9 @@
       return table.to + 1;
     }
     return table.to;
+  }
+  function getEndOfLineAfterTable(view2, table) {
+    return view2.state.doc.lineAt(getPositionAfterTable2(view2, table)).to;
   }
   function getPositionBeforeTable2(table) {
     return Math.max(0, table.from - 1);
