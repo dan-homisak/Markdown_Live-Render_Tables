@@ -70,8 +70,25 @@ export class RenderedTableWidget extends WidgetType {
     });
     tableElement.append(tbody);
 
-    wrapper.append(tableElement);
-    bindTableLayout(wrapper, tableElement, this.table);
+    const tableScroll = document.createElement("div");
+    tableScroll.className = "mm-live-v4-table-scroll";
+    tableScroll.append(tableElement);
+
+    const scrollbar = document.createElement("div");
+    scrollbar.className = "mm-live-v4-table-scrollbar";
+    const scrollbarThumb = document.createElement("div");
+    scrollbarThumb.className = "mm-live-v4-table-scrollbar-thumb";
+    scrollbar.append(scrollbarThumb);
+
+    wrapper.append(tableScroll, scrollbar);
+    bindTableLayout(
+      wrapper,
+      tableScroll,
+      tableElement,
+      scrollbar,
+      scrollbarThumb,
+      this.table,
+    );
     bindTableEditing(wrapper, view, this.table);
     return wrapper;
   }
@@ -160,10 +177,15 @@ function appendColumnSizing(
 
 function bindTableLayout(
   wrapper: HTMLElement,
+  tableScroll: HTMLElement,
   tableElement: HTMLTableElement,
+  scrollbar: HTMLElement,
+  scrollbarThumb: HTMLElement,
   table: ParsedTable,
 ): void {
-  const sync = () => {
+  const syncScrollbar = () =>
+    syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
+  const syncLayout = () => {
     applyColumnSizing(
       wrapper,
       measureTableColumnSizing(table, measureAvailableDataWidthCh(wrapper)),
@@ -171,19 +193,56 @@ function bindTableLayout(
     const styles = getComputedStyle(tableElement);
     const lineHeight = parseFloat(styles.lineHeight);
     const tableHeight = tableElement.getBoundingClientRect().height;
-    wrapper.style.height = `${Math.max(0, tableHeight - lineHeight * 2)}px`;
+    syncScrollbar();
+    const scrollbarHeight = scrollbar.hidden
+      ? 0
+      : scrollbar.getBoundingClientRect().height;
+    wrapper.style.height = `${Math.max(
+      0,
+      tableHeight + scrollbarHeight - lineHeight * 2,
+    )}px`;
   };
 
   const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
   const resizeObserver = ResizeObserverCtor
-    ? new ResizeObserverCtor(sync)
+    ? new ResizeObserverCtor(syncLayout)
     : undefined;
   resizeObserver?.observe(tableElement);
+  resizeObserver?.observe(tableScroll);
+  tableScroll.addEventListener("scroll", syncScrollbar);
 
-  requestAnimationFrame(sync);
+  requestAnimationFrame(syncLayout);
   setTableWidgetCleanup(wrapper, () => {
     resizeObserver?.disconnect();
+    tableScroll.removeEventListener("scroll", syncScrollbar);
   });
+}
+
+function syncTableScrollbar(
+  tableScroll: HTMLElement,
+  scrollbar: HTMLElement,
+  scrollbarThumb: HTMLElement,
+): void {
+  const maxScrollLeft = Math.max(0, tableScroll.scrollWidth - tableScroll.clientWidth);
+  const hasOverflow = maxScrollLeft > 1;
+  scrollbar.hidden = !hasOverflow;
+  if (!hasOverflow) {
+    scrollbarThumb.style.width = "0px";
+    scrollbarThumb.style.transform = "translateX(0px)";
+    return;
+  }
+
+  const trackWidth = Math.max(0, scrollbar.clientWidth);
+  const thumbWidth = Math.max(
+    24,
+    (tableScroll.clientWidth / tableScroll.scrollWidth) * trackWidth,
+  );
+  const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
+  const thumbLeft = maxScrollLeft > 0
+    ? (tableScroll.scrollLeft / maxScrollLeft) * maxThumbLeft
+    : 0;
+  scrollbarThumb.style.width = `${thumbWidth}px`;
+  scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
 }
 
 function applyColumnSizing(

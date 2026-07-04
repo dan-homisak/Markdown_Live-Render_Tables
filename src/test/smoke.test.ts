@@ -142,12 +142,12 @@ const compactSizing = measureTableColumnSizing(
   parseMarkdownTables("| # | Value |\n| --- | --- |\n| 10 | B |")[0],
 );
 assert.ok(
-  compactSizing.dataWidthCh < 24,
+  compactSizing.dataWidthCh <= 24,
   `expected compact tables to fit content, got ${compactSizing.dataWidthCh}ch`,
 );
 assert.ok(
-  compactSizing.columns[0].widthCh >= 6,
-  `expected numeric ID column to preserve two-digit values, got ${compactSizing.columns[0].widthCh}ch`,
+  compactSizing.columns[0].widthCh >= 5 && compactSizing.columns[0].widthCh < 12,
+  `expected numeric ID column to stay compact while preserving two-digit values, got ${compactSizing.columns[0].widthCh}ch`,
 );
 
 const mixedSizing = measureTableColumnSizing(
@@ -160,7 +160,7 @@ const mixedSizing = measureTableColumnSizing(
   )[0],
 );
 assert.ok(
-  mixedSizing.columns[0].preferredWidthCh < 8,
+  mixedSizing.columns[0].preferredWidthCh < 12,
   `expected narrow ID column, got ${mixedSizing.columns[0].preferredWidthCh}ch`,
 );
 assert.ok(
@@ -168,11 +168,11 @@ assert.ok(
   `expected long notes column to receive wrapping priority, got ${mixedSizing.columns[1].preferredWidthCh}ch`,
 );
 assert.ok(
-  mixedSizing.widthPercentages[0] < 8,
+  mixedSizing.widthPercentages[0] < 12,
   `expected narrow ID percentage, got ${mixedSizing.widthPercentages[0]}%`,
 );
 assert.ok(
-  mixedSizing.widthPercentages[1] > 92,
+  mixedSizing.widthPercentages[1] > 88,
   `expected long notes percentage, got ${mixedSizing.widthPercentages[1]}%`,
 );
 
@@ -190,8 +190,16 @@ const featureSizing = measureTableColumnSizing(
   84,
 );
 assert.ok(
-  featureSizing.columns[0].widthCh >= 6,
-  `expected screenshot-style # column to stay readable, got ${featureSizing.columns[0].widthCh}ch`,
+  featureSizing.columns[0].widthCh < 12,
+  `expected screenshot-style # column to stay compact, got ${featureSizing.columns[0].widthCh}ch`,
+);
+assert.ok(
+  featureSizing.columns[1].minWidthCh < 12,
+  `expected screenshot-style feature column minimum to be allowed below 12ch when content permits, got ${featureSizing.columns[1].minWidthCh}ch`,
+);
+assert.ok(
+  featureSizing.columns[2].minWidthCh >= 12,
+  `expected screenshot-style markdown content column to preserve 12ch readable minimum, got ${featureSizing.columns[2].minWidthCh}ch`,
 );
 
 const constrainedSizing = measureTableColumnSizing(
@@ -207,6 +215,59 @@ const constrainedSizing = measureTableColumnSizing(
 assert.ok(
   constrainedSizing.columns[1].widthCh > constrainedSizing.columns[0].widthCh,
   `expected constrained layout to give more width to the column with higher wrap reduction, got ${constrainedSizing.columns.map((column) => column.widthCh).join(", ")}`,
+);
+
+const overflowSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| A | B | C | D |",
+      "| --- | --- | --- | --- |",
+      "| alpha beta gamma delta epsilon zeta eta | theta iota kappa lambda mu nu xi omicron | pi rho sigma tau upsilon phi chi psi | omega alpha beta gamma delta epsilon zeta |",
+    ].join("\n"),
+  )[0],
+  40,
+);
+assert.ok(
+  overflowSizing.dataWidthCh > 40,
+  `expected narrow available width to preserve readable prose columns and overflow locally, got ${overflowSizing.dataWidthCh}ch`,
+);
+assert.ok(
+  overflowSizing.columns.every((column) => column.widthCh >= 12),
+  `expected prose columns to preserve 12ch minimum widths, got ${overflowSizing.columns.map((column) => column.widthCh).join(", ")}`,
+);
+
+const compactOverflowSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| A | B | C | D | E |",
+      "| --- | --- | --- | --- | --- |",
+      "| one | two | three | four | five |",
+    ].join("\n"),
+  )[0],
+  40,
+);
+assert.ok(
+  compactOverflowSizing.dataWidthCh <= 40,
+  `expected compact columns to fit below the old blanket 12ch minimum, got ${compactOverflowSizing.dataWidthCh}ch`,
+);
+assert.ok(
+  compactOverflowSizing.columns.every((column) => column.widthCh < 12),
+  `expected compact columns to stay below 12ch, got ${compactOverflowSizing.columns.map((column) => column.widthCh).join(", ")}`,
+);
+
+const longTokenSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| ID | Token |",
+      "| --- | --- |",
+      "| 1 | abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz |",
+    ].join("\n"),
+  )[0],
+  30,
+);
+assert.ok(
+  longTokenSizing.columns[1].widthCh <= 36,
+  `expected long token guardrail to cap the token column, got ${longTokenSizing.columns[1].widthCh}ch`,
 );
 
 const packageJson = JSON.parse(

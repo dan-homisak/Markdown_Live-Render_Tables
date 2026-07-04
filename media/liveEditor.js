@@ -23860,8 +23860,10 @@
   // src/shared/tableColumnSizing.ts
   var CELL_HORIZONTAL_PADDING_CH = 2;
   var CELL_COMFORT_CH = 1;
+  var TOKEN_COMFORT_CH = 1;
   var MIN_COLUMN_WIDTH_CH = 3;
-  var READABLE_NARROW_COLUMN_WIDTH_CH = 6;
+  var READABLE_COLUMN_WIDTH_CH = 12;
+  var READABLE_LINE_LENGTH_THRESHOLD_CH = 32;
   var MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
   var MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
   var WIDTH_STEP_CH = 0.5;
@@ -23881,7 +23883,7 @@
     );
     const safeTotalWidth = totalPreferredWidth > 0 ? totalPreferredWidth : table.columnCount;
     const targetWidth = availableDataWidthCh === void 0 || availableDataWidthCh <= 0 ? safeTotalWidth : Math.min(safeTotalWidth, availableDataWidthCh);
-    const allocatedColumns = targetWidth >= totalMinWidth ? allocateColumnWidths(columns, targetWidth) : scaleColumnWidths(columns, Math.max(targetWidth, table.columnCount));
+    const allocatedColumns = targetWidth >= totalMinWidth ? allocateColumnWidths(columns, targetWidth) : columns.map((column) => ({ ...column, widthCh: column.minWidthCh }));
     const dataWidthCh = allocatedColumns.reduce(
       (total, column) => total + column.widthCh,
       0
@@ -23907,9 +23909,15 @@
         longestToken = Math.max(longestToken, measureLongestToken(line));
       }
     }
-    const readableMinWidthCh = longestToken <= 3 ? READABLE_NARROW_COLUMN_WIDTH_CH : MIN_COLUMN_WIDTH_CH;
+    const hasProseLikeContent = cellLineLengths.some(
+      (lineLength) => lineLength >= READABLE_LINE_LENGTH_THRESHOLD_CH
+    );
+    const readableMinWidthCh = hasProseLikeContent ? READABLE_COLUMN_WIDTH_CH : 0;
     const minWidthCh = clamp(
-      Math.max(longestToken + CELL_HORIZONTAL_PADDING_CH, readableMinWidthCh),
+      Math.max(
+        longestToken + CELL_HORIZONTAL_PADDING_CH + TOKEN_COMFORT_CH,
+        readableMinWidthCh
+      ),
       MIN_COLUMN_WIDTH_CH,
       MAX_UNBROKEN_TOKEN_WIDTH_CH
     );
@@ -23964,17 +23972,6 @@
       remainingSteps--;
     }
     return allocated;
-  }
-  function scaleColumnWidths(columns, targetWidthCh) {
-    const totalMinWidth = columns.reduce(
-      (total, column) => total + column.minWidthCh,
-      0
-    );
-    const scale = totalMinWidth > 0 ? targetWidthCh / totalMinWidth : 1;
-    return columns.map((column) => ({
-      ...column,
-      widthCh: Math.max(1, column.minWidthCh * scale)
-    }));
   }
   function measureWrapCost(column, widthCh) {
     const contentWidthCh = Math.max(1, widthCh - CELL_HORIZONTAL_PADDING_CH);
@@ -24047,8 +24044,23 @@
         tbody.append(tableRow);
       });
       tableElement.append(tbody);
-      wrapper.append(tableElement);
-      bindTableLayout(wrapper, tableElement, this.table);
+      const tableScroll = document.createElement("div");
+      tableScroll.className = "mm-live-v4-table-scroll";
+      tableScroll.append(tableElement);
+      const scrollbar = document.createElement("div");
+      scrollbar.className = "mm-live-v4-table-scrollbar";
+      const scrollbarThumb = document.createElement("div");
+      scrollbarThumb.className = "mm-live-v4-table-scrollbar-thumb";
+      scrollbar.append(scrollbarThumb);
+      wrapper.append(tableScroll, scrollbar);
+      bindTableLayout(
+        wrapper,
+        tableScroll,
+        tableElement,
+        scrollbar,
+        scrollbarThumb,
+        this.table
+      );
       bindTableEditing(wrapper, view2, this.table);
       return wrapper;
     }
@@ -24099,8 +24111,9 @@
     }
     tableElement.append(colgroup);
   }
-  function bindTableLayout(wrapper, tableElement, table) {
-    const sync = () => {
+  function bindTableLayout(wrapper, tableScroll, tableElement, scrollbar, scrollbarThumb, table) {
+    const syncScrollbar = () => syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
+    const syncLayout = () => {
       applyColumnSizing(
         wrapper,
         measureTableColumnSizing(table, measureAvailableDataWidthCh(wrapper))
@@ -24108,15 +24121,42 @@
       const styles = getComputedStyle(tableElement);
       const lineHeight = parseFloat(styles.lineHeight);
       const tableHeight = tableElement.getBoundingClientRect().height;
-      wrapper.style.height = `${Math.max(0, tableHeight - lineHeight * 2)}px`;
+      syncScrollbar();
+      const scrollbarHeight = scrollbar.hidden ? 0 : scrollbar.getBoundingClientRect().height;
+      wrapper.style.height = `${Math.max(
+        0,
+        tableHeight + scrollbarHeight - lineHeight * 2
+      )}px`;
     };
     const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
-    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(sync) : void 0;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(syncLayout) : void 0;
     resizeObserver?.observe(tableElement);
-    requestAnimationFrame(sync);
+    resizeObserver?.observe(tableScroll);
+    tableScroll.addEventListener("scroll", syncScrollbar);
+    requestAnimationFrame(syncLayout);
     setTableWidgetCleanup(wrapper, () => {
       resizeObserver?.disconnect();
+      tableScroll.removeEventListener("scroll", syncScrollbar);
     });
+  }
+  function syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb) {
+    const maxScrollLeft = Math.max(0, tableScroll.scrollWidth - tableScroll.clientWidth);
+    const hasOverflow = maxScrollLeft > 1;
+    scrollbar.hidden = !hasOverflow;
+    if (!hasOverflow) {
+      scrollbarThumb.style.width = "0px";
+      scrollbarThumb.style.transform = "translateX(0px)";
+      return;
+    }
+    const trackWidth = Math.max(0, scrollbar.clientWidth);
+    const thumbWidth = Math.max(
+      24,
+      tableScroll.clientWidth / tableScroll.scrollWidth * trackWidth
+    );
+    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
+    const thumbLeft = maxScrollLeft > 0 ? tableScroll.scrollLeft / maxScrollLeft * maxThumbLeft : 0;
+    scrollbarThumb.style.width = `${thumbWidth}px`;
+    scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
   }
   function applyColumnSizing(wrapper, columnSizing) {
     wrapper.style.setProperty(
@@ -24578,7 +24618,8 @@
             backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
           },
           ".cm-scroller": {
-            overflow: "auto !important",
+            overflowX: "hidden !important",
+            overflowY: "auto !important",
             height: "100%",
             fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
             fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",

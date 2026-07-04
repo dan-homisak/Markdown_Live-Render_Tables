@@ -19,8 +19,10 @@ export interface TableColumnMeasurement {
 
 const CELL_HORIZONTAL_PADDING_CH = 2;
 const CELL_COMFORT_CH = 1;
+const TOKEN_COMFORT_CH = 1;
 const MIN_COLUMN_WIDTH_CH = 3;
-const READABLE_NARROW_COLUMN_WIDTH_CH = 6;
+const READABLE_COLUMN_WIDTH_CH = 12;
+const READABLE_LINE_LENGTH_THRESHOLD_CH = 32;
 const MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
 const MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
 const WIDTH_STEP_CH = 0.5;
@@ -50,7 +52,7 @@ export function measureTableColumnSizing(
   const allocatedColumns =
     targetWidth >= totalMinWidth
       ? allocateColumnWidths(columns, targetWidth)
-      : scaleColumnWidths(columns, Math.max(targetWidth, table.columnCount));
+      : columns.map((column) => ({ ...column, widthCh: column.minWidthCh }));
   const dataWidthCh = allocatedColumns.reduce(
     (total, column) => total + column.widthCh,
     0,
@@ -84,10 +86,15 @@ function measureColumn(
     }
   }
 
-  const readableMinWidthCh =
-    longestToken <= 3 ? READABLE_NARROW_COLUMN_WIDTH_CH : MIN_COLUMN_WIDTH_CH;
+  const hasProseLikeContent = cellLineLengths.some(
+    (lineLength) => lineLength >= READABLE_LINE_LENGTH_THRESHOLD_CH,
+  );
+  const readableMinWidthCh = hasProseLikeContent ? READABLE_COLUMN_WIDTH_CH : 0;
   const minWidthCh = clamp(
-    Math.max(longestToken + CELL_HORIZONTAL_PADDING_CH, readableMinWidthCh),
+    Math.max(
+      longestToken + CELL_HORIZONTAL_PADDING_CH + TOKEN_COMFORT_CH,
+      readableMinWidthCh,
+    ),
     MIN_COLUMN_WIDTH_CH,
     MAX_UNBROKEN_TOKEN_WIDTH_CH,
   );
@@ -156,21 +163,6 @@ function allocateColumnWidths(
   }
 
   return allocated;
-}
-
-function scaleColumnWidths(
-  columns: TableColumnMeasurement[],
-  targetWidthCh: number,
-): TableColumnMeasurement[] {
-  const totalMinWidth = columns.reduce(
-    (total, column) => total + column.minWidthCh,
-    0,
-  );
-  const scale = totalMinWidth > 0 ? targetWidthCh / totalMinWidth : 1;
-  return columns.map((column) => ({
-    ...column,
-    widthCh: Math.max(1, column.minWidthCh * scale),
-  }));
 }
 
 function measureWrapCost(

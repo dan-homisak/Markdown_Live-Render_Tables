@@ -208,6 +208,26 @@ try {
   if (!liveClient) {
     throw new Error("Enter exit check failed: live webview client was not found.");
   }
+  const responsiveScroll = await evaluateJson(
+    liveClient,
+    tableResponsiveScrollExpression(),
+  );
+  assertTableResponsiveScroll(responsiveScroll);
+  console.log("TABLE RESPONSIVE SCROLL CHECK:", responsiveScroll);
+  const responsivePreview = await evaluateJson(
+    liveClient,
+    setTableResponsiveScrollPreviewExpression(),
+  );
+  if (!responsivePreview?.ok) {
+    throw new Error(
+      `Table responsive scroll preview setup failed: ${JSON.stringify(responsivePreview)}`,
+    );
+  }
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-responsive-scroll.png"),
+  );
+  await evaluateJson(liveClient, restoreTableResponsiveScrollPreviewExpression());
   const focusState = await evaluateJson(
     liveClient,
     tableCellFocusExpression(),
@@ -400,6 +420,8 @@ function liveMetricsExpression() {
       const line = root.querySelector('.cm-line');
       const activeLine = root.querySelector('.cm-activeLine');
       const activeLineGutter = root.querySelector('.cm-activeLineGutter');
+      const tableScroll = root.querySelector('.mm-live-v4-table-scroll');
+      const tableScrollbar = root.querySelector('.mm-live-v4-table-scrollbar');
       const sourceLine = root.querySelector('.mm-live-v4-table-source-line');
       const tableCell = root.querySelector('.mm-live-v4-table-cell');
       const lineStyle = line ? getComputedStyle(line) : null;
@@ -417,6 +439,13 @@ function liveMetricsExpression() {
         activeLine: box(activeLine),
         activeLineGutter: box(activeLineGutter),
         activeLineGutterBackground: activeLineGutter ? getComputedStyle(activeLineGutter).backgroundColor : null,
+        tableScroll: box(tableScroll),
+        tableScrollClientWidth: tableScroll?.clientWidth ?? 0,
+        tableScrollScrollWidth: tableScroll?.scrollWidth ?? 0,
+        tableScrollOverflow: tableScroll ? tableScroll.scrollWidth > tableScroll.clientWidth + 1 : false,
+        tableScrollLeft: tableScroll?.scrollLeft ?? 0,
+        tableScrollbar: box(tableScrollbar),
+        tableScrollbarHidden: tableScrollbar?.hidden ?? null,
         table: box(table),
         sourceLine: box(sourceLine),
         sourceLineText: textBox(root, sourceLine),
@@ -430,6 +459,149 @@ function liveMetricsExpression() {
       });
     }
     return null;
+  })()`;
+}
+
+function tableResponsiveScrollExpression() {
+  return `(() => {
+    const box = (element) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-scroll'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const scroller = root.querySelector('.cm-scroller');
+    const tableScroll = root.querySelector('.mm-live-v4-table-scroll');
+    const tableScrollbar = root.querySelector('.mm-live-v4-table-scrollbar');
+    const sourceLine = root.querySelector('.mm-live-v4-table-source-line');
+    const tableCell = root.querySelector('.mm-live-v4-table-cell');
+    const normalLine = root.querySelector('.cm-line');
+    if (!scroller || !tableScroll || !tableScrollbar || !sourceLine || !tableCell || !normalLine) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing responsive scroll targets',
+        hasScroller: Boolean(scroller),
+        hasTableScroll: Boolean(tableScroll),
+        hasTableScrollbar: Boolean(tableScrollbar),
+        hasSourceLine: Boolean(sourceLine),
+        hasTableCell: Boolean(tableCell),
+        hasNormalLine: Boolean(normalLine),
+      });
+    }
+
+    const previousWidth = tableScroll.style.width;
+    const previousMaxWidth = tableScroll.style.maxWidth;
+    const previousScrollLeft = tableScroll.scrollLeft;
+    tableScroll.style.width = '360px';
+    tableScroll.style.maxWidth = '360px';
+    tableScroll.scrollLeft = 0;
+    tableScroll.dispatchEvent(new root.defaultView.Event('scroll'));
+    const sourceLineBeforeScroll = box(sourceLine);
+    const tableCellBeforeScroll = box(tableCell);
+    const tableScrollBefore = box(tableScroll);
+    const normalLineBefore = box(normalLine);
+    tableScroll.scrollLeft = Math.max(0, tableScroll.scrollWidth - tableScroll.clientWidth);
+    tableScroll.dispatchEvent(new root.defaultView.Event('scroll'));
+    const tableScrollbarAfterScroll = box(tableScrollbar);
+    const sourceLineAfterScroll = box(sourceLine);
+    const tableCellAfterScroll = box(tableCell);
+    const result = {
+      ok: true,
+      scrollerClientWidth: scroller.clientWidth,
+      scrollerScrollWidth: scroller.scrollWidth,
+      editorOverflow: scroller.scrollWidth > scroller.clientWidth + 1,
+      scroller: box(scroller),
+      tableScrollClientWidth: tableScroll.clientWidth,
+      tableScrollScrollWidth: tableScroll.scrollWidth,
+      tableScrollOverflow: tableScroll.scrollWidth > tableScroll.clientWidth + 1,
+      tableScrollLeft: tableScroll.scrollLeft,
+      tableScroll: tableScrollBefore,
+      tableScrollbar: tableScrollbarAfterScroll,
+      tableScrollbarHidden: tableScrollbar.hidden,
+      sourceLineBeforeScroll,
+      sourceLineAfterScroll,
+      tableCellBeforeScroll,
+      tableCellAfterScroll,
+      normalLineBefore,
+    };
+    tableScroll.style.width = previousWidth;
+    tableScroll.style.maxWidth = previousMaxWidth;
+    tableScroll.scrollLeft = previousScrollLeft;
+    tableScroll.dispatchEvent(new root.defaultView.Event('scroll'));
+    return JSON.stringify(result);
+  })()`;
+}
+
+function setTableResponsiveScrollPreviewExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-scroll'));
+    const tableScroll = root?.querySelector('.mm-live-v4-table-scroll');
+    if (!root || !tableScroll) {
+      return JSON.stringify({ ok: false, reason: 'missing table scroll' });
+    }
+    root.defaultView.__MLRT_RESPONSIVE_SCROLL_PREVIEW__ = {
+      width: tableScroll.style.width,
+      maxWidth: tableScroll.style.maxWidth,
+      scrollLeft: tableScroll.scrollLeft,
+    };
+    tableScroll.style.width = '360px';
+    tableScroll.style.maxWidth = '360px';
+    tableScroll.scrollLeft = Math.max(0, tableScroll.scrollWidth - tableScroll.clientWidth);
+    tableScroll.dispatchEvent(new root.defaultView.Event('scroll'));
+    return JSON.stringify({
+      ok: true,
+      clientWidth: tableScroll.clientWidth,
+      scrollWidth: tableScroll.scrollWidth,
+      scrollLeft: tableScroll.scrollLeft,
+    });
+  })()`;
+}
+
+function restoreTableResponsiveScrollPreviewExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-scroll'));
+    const tableScroll = root?.querySelector('.mm-live-v4-table-scroll');
+    const previous = root?.defaultView.__MLRT_RESPONSIVE_SCROLL_PREVIEW__;
+    if (!root || !tableScroll || !previous) {
+      return JSON.stringify({ ok: false, reason: 'missing responsive scroll preview state' });
+    }
+    tableScroll.style.width = previous.width;
+    tableScroll.style.maxWidth = previous.maxWidth;
+    tableScroll.scrollLeft = previous.scrollLeft;
+    tableScroll.dispatchEvent(new root.defaultView.Event('scroll'));
+    delete root.defaultView.__MLRT_RESPONSIVE_SCROLL_PREVIEW__;
+    return JSON.stringify({ ok: true });
   })()`;
 }
 
@@ -733,6 +905,40 @@ function assertTableCellFocus(result) {
   }
 }
 
+function assertTableResponsiveScroll(result) {
+  const sourceLineDelta = Math.abs(
+    (result?.sourceLineAfterScroll?.left ?? 0) -
+      (result?.sourceLineBeforeScroll?.left ?? 0),
+  );
+  const tableCellDelta = Math.abs(
+    (result?.tableCellAfterScroll?.left ?? 0) -
+      (result?.tableCellBeforeScroll?.left ?? 0),
+  );
+  const normalLineRight = result?.normalLineBefore?.right ?? Number.POSITIVE_INFINITY;
+  const scrollerRight = result?.scroller?.right ?? 0;
+  const scrollbarLeft = result?.tableScrollbar?.left ?? Number.NEGATIVE_INFINITY;
+  const gutterRight = result?.sourceLineBeforeScroll?.right ?? Number.POSITIVE_INFINITY;
+  const scrollbarTop = result?.tableScrollbar?.top ?? Number.NEGATIVE_INFINITY;
+  const tableBottom = result?.tableScroll?.bottom ?? Number.POSITIVE_INFINITY;
+
+  if (
+    !result?.ok ||
+    result.editorOverflow ||
+    !result.tableScrollOverflow ||
+    result.tableScrollbarHidden ||
+    result.tableScrollLeft <= 0 ||
+    scrollbarLeft < gutterRight - pixelTolerance ||
+    scrollbarTop < tableBottom - pixelTolerance ||
+    sourceLineDelta > pixelTolerance ||
+    tableCellDelta <= pixelTolerance ||
+    normalLineRight > scrollerRight + pixelTolerance
+  ) {
+    throw new Error(
+      `Table responsive scroll check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
 function assertTableSourceProtection(result) {
   if (
     !result?.ok ||
@@ -824,6 +1030,7 @@ function assertPixelParity(stock, live) {
   const liveLineNumberText = screen(live.lineNumberText);
   const liveTableCell = screen(live.tableCell);
   const liveTable = screen(live.table);
+  const liveTableScroll = screen(live.tableScroll);
   const liveScroller = screen(live.scroller);
   const rightPadding = stock.content.left - stock.firstLineNumberText?.right;
   const liveLineHeight = parseFloat(live.lineLineHeight);
@@ -853,19 +1060,19 @@ function assertPixelParity(stock, live) {
   ];
   const failures = checks.filter((check) => !check.pass);
   const tableRightLimit = liveScroller?.right - rightPadding;
-  if (liveTable?.right > tableRightLimit + pixelTolerance) {
+  if (liveTableScroll?.right > tableRightLimit + pixelTolerance) {
     failures.push({
-      name: "table right edge",
+      name: "table scroll viewport right edge",
       expected: `<= ${tableRightLimit}`,
-      actual: liveTable.right,
-      delta: liveTable.right - tableRightLimit,
+      actual: liveTableScroll.right,
+      delta: liveTableScroll.right - tableRightLimit,
       pass: false,
     });
   }
 
   if (live.overflow) {
     failures.push({
-      name: "horizontal overflow",
+      name: "editor horizontal overflow",
       expected: false,
       actual: true,
       delta: Number.NaN,
