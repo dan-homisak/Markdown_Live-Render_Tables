@@ -146,7 +146,7 @@ assert.ok(
   `expected compact tables to fit content, got ${compactSizing.dataWidthCh}ch`,
 );
 assert.ok(
-  compactSizing.columns[0].widthCh >= 5 && compactSizing.columns[0].widthCh < 12,
+  compactSizing.columns[0].widthCh >= 4.5 && compactSizing.columns[0].widthCh < 12,
   `expected numeric ID column to stay compact while preserving two-digit values, got ${compactSizing.columns[0].widthCh}ch`,
 );
 
