@@ -2,11 +2,10 @@ node_modules/
 dist/
 .vscode-test/
 *.vsix
+install-bundles/
 .DS_Store
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-qa/live-editor-harness.html
-qa/live-editor-harness.png
-qa/edh-live.png
-qa/edh-stock.png
+qa/*.html
+qa/*.png

@@ -1,9 +1,15 @@
 .vscode/**
+AGENTS.md
+TestTable.md
+*fixture.md
 src/**
 node_modules/**
 scripts/**
 qa/**
+installers/**
+install-bundles/**
 Build_and_Install
+Build_and_Install.ps1
 tsconfig.json
 package-lock.json
 *.vsix

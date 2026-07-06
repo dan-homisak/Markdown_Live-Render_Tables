@@ -75,6 +75,9 @@ if [[ ! -f "$VSIX_PATH" ]]; then
   exit 1
 fi
 
+log "Preparing Windows copy folder"
+node scripts/prepare-windows-install-bundle.mjs
+
 log "Uninstalling previously installed extension, if present"
 "$CODE_CLI" --uninstall-extension "$EXTENSION_ID" || true
 

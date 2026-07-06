@@ -82,6 +82,58 @@ Install the latest local VSIX into VS Code:
 ./Build_and_Install
 ```
 
+### Simple Install Flow
+
+There are only two install paths to think about:
+
+- On this Mac, run `./Build_and_Install`.
+- For a Windows computer, copy the generated `install-bundles/Copy_to_Windows`
+  folder to Windows and double-click `Install_Markdown_Live_Editor.cmd`.
+
+You do not need to manage the `.cmd` and `.vsix` separately. Keep them together
+inside `Copy_to_Windows`; that folder is disposable generated output and can be
+rebuilt any time from this Mac.
+
+`./Build_and_Install` does all of this for the Mac development loop:
+
+```sh
+./Build_and_Install
+```
+
+It builds the extension, bumps the patch version so VS Code treats it as a real
+update, packages `markdown-live-render-tables-latest.vsix`, refreshes the
+Windows copy folder, installs the VSIX into local VS Code, verifies the installed
+payload, removes stale extension folders, and tries to reload the matching VS
+Code project window.
+
+The VS Code install itself uses the official VS Code CLI:
+`code --install-extension <file.vsix> --force`. VS Code does not provide a
+reliable CLI command to reload an already-open window after a local VSIX install,
+so the Mac script still uses AppleScript only for that final window reload. If
+the automatic reload is blocked, run `Developer: Reload Window` in VS Code.
+
+To refresh just the Windows copy folder without installing on this Mac:
+
+```sh
+npm run package:windows
+```
+
+That folder intentionally contains only:
+
+- `Install_Markdown_Live_Editor.cmd`
+- `markdown-live-render-tables-latest.vsix`
+
+If a managed work computer blocks scripts, install the same VSIX manually in VS
+Code:
+
+```text
+Extensions view > ... menu > Install from VSIX...
+```
+
+Choose `markdown-live-render-tables-latest.vsix` from `Copy_to_Windows`. This
+installs into the current Windows user profile and does not require publishing
+the extension to the VS Code Marketplace.
+
 ## Project Layout
 
 - `src/extension.ts` registers the VS Code custom editor and toolbar commands.
