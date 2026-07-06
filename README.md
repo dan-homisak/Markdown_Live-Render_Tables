@@ -117,24 +117,19 @@ To create a Windows transfer folder without installing locally, run:
 npm run package:windows
 ```
 
-This creates `install-bundles/Copy_to_Windows`, which contains only:
+This creates `install-bundles/Copy_to_Windows`, which contains only
+`markdown-live-render-tables-latest.vsix`.
 
-- `Install_Markdown_Live_Editor.cmd`
-- `markdown-live-render-tables-latest.vsix`
-
-Copy the whole `Copy_to_Windows` folder to the Windows machine and double-click
-`Install_Markdown_Live_Editor.cmd`. Keep the `.cmd` and `.vsix` files together;
-the folder is generated output and can be rebuilt at any time.
-
-If scripts are blocked by system policy, install the same VSIX manually in VS
-Code:
+Copy that folder to the Windows machine and install the VSIX from VS Code:
 
 ```text
 Extensions view > ... menu > Install from VSIX...
 ```
 
 Choose `markdown-live-render-tables-latest.vsix` from `Copy_to_Windows`. This
-installs into the current Windows user profile.
+installs or updates the extension in the current Windows user profile. If VS Code
+does not automatically refresh open windows after the install, run
+`Developer: Reload Window`.
 
 ## Project Layout
 
