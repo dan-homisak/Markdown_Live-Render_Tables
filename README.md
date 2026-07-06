@@ -76,54 +76,57 @@ Package the extension:
 npm run package
 ```
 
-Install the latest local VSIX into VS Code:
+Build, package, and install the latest local VSIX into the current VS Code
+profile:
 
 ```sh
 ./Build_and_Install
 ```
 
-### Simple Install Flow
+### Local VSIX Installation
 
-There are only two install paths to think about:
+The extension can be installed from a local `.vsix` package without publishing
+to the VS Code Marketplace. This is useful for private testing, internal
+distribution, and validating release candidates.
 
-- On this Mac, run `./Build_and_Install`.
-- For a Windows computer, copy the generated `install-bundles/Copy_to_Windows`
-  folder to Windows and double-click `Install_Markdown_Live_Editor.cmd`.
-
-You do not need to manage the `.cmd` and `.vsix` separately. Keep them together
-inside `Copy_to_Windows`; that folder is disposable generated output and can be
-rebuilt any time from this Mac.
-
-`./Build_and_Install` does all of this for the Mac development loop:
+For local development on macOS, run:
 
 ```sh
 ./Build_and_Install
 ```
 
-It builds the extension, bumps the patch version so VS Code treats it as a real
-update, packages `markdown-live-render-tables-latest.vsix`, refreshes the
-Windows copy folder, installs the VSIX into local VS Code, verifies the installed
-payload, removes stale extension folders, and tries to reload the matching VS
-Code project window.
+The script builds the extension, bumps the patch version so VS Code treats the
+package as a new update, creates `markdown-live-render-tables-latest.vsix`,
+installs the VSIX with the VS Code CLI, verifies the installed payload, removes
+stale local extension folders, and attempts to reload matching VS Code windows.
 
-The VS Code install itself uses the official VS Code CLI:
-`code --install-extension <file.vsix> --force`. VS Code does not provide a
-reliable CLI command to reload an already-open window after a local VSIX install,
-so the Mac script still uses AppleScript only for that final window reload. If
-the automatic reload is blocked, run `Developer: Reload Window` in VS Code.
+The install step uses the supported VS Code CLI command:
 
-To refresh just the Windows copy folder without installing on this Mac:
+```sh
+code --install-extension markdown-live-render-tables-latest.vsix --force
+```
+
+VS Code does not provide a reliable CLI command to reload an already-open window
+after a local VSIX install. The macOS helper therefore uses AppleScript only for
+the final window reload. If automatic reload is blocked, run
+`Developer: Reload Window` in VS Code.
+
+To create a Windows transfer folder without installing locally, run:
 
 ```sh
 npm run package:windows
 ```
 
-That folder intentionally contains only:
+This creates `install-bundles/Copy_to_Windows`, which contains only:
 
 - `Install_Markdown_Live_Editor.cmd`
 - `markdown-live-render-tables-latest.vsix`
 
-If a managed work computer blocks scripts, install the same VSIX manually in VS
+Copy the whole `Copy_to_Windows` folder to the Windows machine and double-click
+`Install_Markdown_Live_Editor.cmd`. Keep the `.cmd` and `.vsix` files together;
+the folder is generated output and can be rebuilt at any time.
+
+If scripts are blocked by system policy, install the same VSIX manually in VS
 Code:
 
 ```text
@@ -131,8 +134,7 @@ Extensions view > ... menu > Install from VSIX...
 ```
 
 Choose `markdown-live-render-tables-latest.vsix` from `Copy_to_Windows`. This
-installs into the current Windows user profile and does not require publishing
-the extension to the VS Code Marketplace.
+installs into the current Windows user profile.
 
 ## Project Layout
 
