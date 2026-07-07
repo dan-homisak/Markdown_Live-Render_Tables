@@ -24029,6 +24029,9 @@
     return Math.max(min, Math.min(value, max));
   }
 
+  // src/live-v4/tableCellCommitSequence.ts
+  var tableCellCommitSequence = Annotation.define();
+
   // src/live-v4/render/TableWidget.ts
   var RenderedTableWidget = class extends WidgetType {
     constructor(table) {
@@ -24109,6 +24112,7 @@
       return true;
     }
   };
+  var persistentCellHistories = /* @__PURE__ */ new Map();
   function appendCells(options) {
     appendSourceLineCell(options);
     const values2 = rowToDisplayValues(options.sourceRow, options.table.columnCount);
@@ -24308,7 +24312,7 @@
     };
   }
   function bindTableEditing(wrapper, view2, table, scheduleTableLayout) {
-    const cellHistories = /* @__PURE__ */ new WeakMap();
+    const cellHistories = persistentCellHistories;
     wrapper.addEventListener("focusin", (event) => {
       const cell = findCell(event.target);
       if (cell) {
@@ -24323,14 +24327,24 @@
         return;
       }
       if (event.inputType === "historyUndo") {
+        if (!restoreCellEditHistory(cellHistories, cell, "undo")) {
+          return;
+        }
         event.preventDefault();
-        restoreCellEditHistory(cellHistories, cell, "undo");
+        if (applyLiveCellEdit(view2, table, cell)) {
+          return;
+        }
         scheduleTableLayout();
         return;
       }
       if (event.inputType === "historyRedo") {
+        if (!restoreCellEditHistory(cellHistories, cell, "redo")) {
+          return;
+        }
         event.preventDefault();
-        restoreCellEditHistory(cellHistories, cell, "redo");
+        if (applyLiveCellEdit(view2, table, cell)) {
+          return;
+        }
         scheduleTableLayout();
         return;
       }
@@ -24342,6 +24356,9 @@
         return;
       }
       syncCellEditHistory(cellHistories, cell);
+      if (applyLiveCellEdit(view2, table, cell)) {
+        return;
+      }
       scheduleTableLayout();
     });
     wrapper.addEventListener("focusout", (event) => {
@@ -24352,7 +24369,7 @@
             view2.dom.classList.remove("mm-live-v4-table-cell-focused");
           }
           if (cell.isConnected) {
-            commitCellEdit(view2, table, cell);
+            commitCellEdit(view2, table, cell, cellHistories);
           }
         }, 0);
       }
@@ -24365,14 +24382,19 @@
       event.stopPropagation();
       const historyDirection = getCellEditHistoryDirection(event);
       if (historyDirection) {
+        if (!restoreCellEditHistory(cellHistories, cell, historyDirection)) {
+          return;
+        }
         event.preventDefault();
-        restoreCellEditHistory(cellHistories, cell, historyDirection);
+        if (applyLiveCellEdit(view2, table, cell)) {
+          return;
+        }
         scheduleTableLayout();
         return;
       }
       if (event.key === "Enter" && isPlainKey(event)) {
         event.preventDefault();
-        commitCellEdit(view2, table, cell, {
+        commitCellEdit(view2, table, cell, cellHistories, {
           selectionAnchor: getPositionAfterTable2(view2, table)
         });
         cell.blur();
@@ -24387,7 +24409,7 @@
         const target = resolveVerticalCell(cell, rowDelta);
         event.preventDefault();
         if (target === "before-table") {
-          commitCellEdit(view2, table, cell, {
+          commitCellEdit(view2, table, cell, cellHistories, {
             selectionAnchor: getPositionBeforeTable2(table)
           });
           cell.blur();
@@ -24395,29 +24417,33 @@
           return;
         }
         if (target === "after-table") {
-          commitCellEdit(view2, table, cell, {
+          commitCellEdit(view2, table, cell, cellHistories, {
             selectionAnchor: getEndOfLineAfterTable(view2, table)
           });
           cell.blur();
           view2.focus();
           return;
         }
-        commitCellEdit(view2, table, cell);
+        commitCellEdit(view2, table, cell, cellHistories);
         focusCellAfterRender(table.from, target);
         return;
       }
       if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
-        commitCellEdit(view2, table, cell);
+        commitCellEdit(view2, table, cell, cellHistories);
         focusCellAfterRender(table.from, target);
       }
     });
   }
-  function commitCellEdit(view2, table, cell, options = {}) {
+  function commitCellEdit(view2, table, cell, histories, options = {}) {
     const rowKind = cell.dataset.rowKind;
     const rowIndex = Number(cell.dataset.rowIndex ?? "0");
     const column = Number(cell.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body") {
+      dispatchSelection(view2, options.selectionAnchor);
+      return;
+    }
     const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
     if (!sourceRow || !Number.isInteger(column) || column < 0) {
       dispatchSelection(view2, options.selectionAnchor);
@@ -24429,6 +24455,95 @@
       return;
     }
     const originalValue = cell.dataset.original ?? "";
+    const caretOffset = getCellCaretOffset(cell);
+    const restoreCaretOffset = Math.min(
+      originalValue.length,
+      caretOffset + Math.max(0, originalValue.length - value.length)
+    );
+    const valueSteps = buildCellCommitValueSteps(
+      getCellEditHistory(histories, cell),
+      originalValue,
+      value,
+      restoreCaretOffset
+    );
+    const sourceSteps = buildCellSourceCommitSteps(
+      sourceRow,
+      table.columnCount,
+      column,
+      valueSteps
+    );
+    const finalSourceStep = sourceSteps[sourceSteps.length - 1];
+    if (!finalSourceStep) {
+      dispatchSelection(view2, options.selectionAnchor);
+      return;
+    }
+    const edit = formatTableCellSourceEdit(
+      sourceRow,
+      table.columnCount,
+      column,
+      value
+    );
+    view2.dom.dispatchEvent(
+      new CustomEvent("mlrt:table-cell-commit", {
+        bubbles: true,
+        detail: {
+          tableFrom: table.from,
+          rowKind,
+          rowIndex,
+          column,
+          from: edit.from,
+          to: edit.to,
+          insertLength: edit.insert.length,
+          valueLength: value.length,
+          restoreCaretOffset: finalSourceStep.restoreCaretOffset
+        }
+      })
+    );
+    const selectionAnchor = options.selectionAnchor === void 0 ? void 0 : mapPositionThroughCellEdit(options.selectionAnchor, edit);
+    view2.dispatch({
+      changes: {
+        from: edit.from,
+        to: edit.to,
+        insert: edit.insert
+      },
+      selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
+      annotations: [
+        allowTableSourceChange.of(true),
+        tableCellCommitSequence.of({
+          steps: sourceSteps.map((step) => ({
+            change: step.change,
+            restore: {
+              tableFrom: table.from,
+              rowKind,
+              rowIndex,
+              column,
+              from: step.change.from,
+              to: step.change.to,
+              restoreCaretOffset: step.restoreCaretOffset
+            }
+          }))
+        })
+      ],
+      scrollIntoView: true,
+      userEvent: "input"
+    });
+  }
+  function applyLiveCellEdit(view2, table, cell) {
+    const rowKind = cell.dataset.rowKind;
+    const rowIndex = Number(cell.dataset.rowIndex ?? "0");
+    const column = Number(cell.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
+      return false;
+    }
+    const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
+    if (!sourceRow) {
+      return false;
+    }
+    const value = readCellDisplayValue(cell);
+    const originalValue = cell.dataset.original ?? "";
+    if (value === originalValue) {
+      return false;
+    }
     const caretOffset = getCellCaretOffset(cell);
     const restoreCaretOffset = Math.min(
       originalValue.length,
@@ -24456,17 +24571,74 @@
         }
       })
     );
-    const selectionAnchor = options.selectionAnchor === void 0 ? void 0 : mapPositionThroughCellEdit(options.selectionAnchor, edit);
     view2.dispatch({
       changes: {
         from: edit.from,
         to: edit.to,
         insert: edit.insert
       },
-      selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
+      selection: EditorSelection.cursor(edit.from + edit.insert.length, 1),
       annotations: allowTableSourceChange.of(true),
       scrollIntoView: true,
       userEvent: "input"
+    });
+    focusCellAfterRenderAtOffset(
+      table.from,
+      { rowKind, rowIndex: String(rowIndex), column: String(column) },
+      caretOffset
+    );
+    return true;
+  }
+  function buildCellCommitValueSteps(history, originalValue, finalValue, fallbackRestoreCaretOffset) {
+    const snapshots = history?.undoStack ?? [];
+    const steps = [];
+    let currentValue = originalValue;
+    for (let index = 1; index < snapshots.length; index++) {
+      const snapshot = snapshots[index];
+      if (snapshot.value === currentValue) {
+        continue;
+      }
+      steps.push({
+        value: snapshot.value,
+        restoreCaretOffset: snapshots[index - 1]?.caretOffset ?? 0
+      });
+      currentValue = snapshot.value;
+    }
+    if (finalValue !== currentValue) {
+      steps.push({
+        value: finalValue,
+        restoreCaretOffset: snapshots[snapshots.length - 1]?.caretOffset ?? fallbackRestoreCaretOffset
+      });
+    }
+    return steps;
+  }
+  function buildCellSourceCommitSteps(sourceRow, columnCount, column, valueSteps) {
+    let currentEdit = null;
+    return valueSteps.map((step) => {
+      const formattedEdit = formatTableCellSourceEdit(
+        sourceRow,
+        columnCount,
+        column,
+        step.value
+      );
+      const change = currentEdit ? {
+        from: currentEdit.from,
+        to: currentEdit.from + currentEdit.insert.length,
+        text: formattedEdit.insert
+      } : {
+        from: formattedEdit.from,
+        to: formattedEdit.to,
+        text: formattedEdit.insert
+      };
+      currentEdit = {
+        from: change.from,
+        to: change.from + change.text.length,
+        insert: change.text
+      };
+      return {
+        change,
+        restoreCaretOffset: step.restoreCaretOffset
+      };
     });
   }
   function readCellDisplayValue(cell) {
@@ -24547,6 +24719,21 @@
       }
     }, 0);
   }
+  function focusCellAfterRenderAtOffset(tableFrom, target, caretOffset) {
+    setTimeout(() => {
+      const selector = [
+        `.mm-live-v4-table-cell[data-table-from="${tableFrom}"]`,
+        `[data-row-kind="${target.rowKind}"]`,
+        `[data-row-index="${target.rowIndex}"]`,
+        `[data-column="${target.column}"]`
+      ].join("");
+      const cell = document.querySelector(selector);
+      if (cell) {
+        cell.focus();
+        setCellCaretOffset(cell, caretOffset);
+      }
+    }, 0);
+  }
   function findCell(target) {
     if (!(target instanceof HTMLElement)) {
       return null;
@@ -24554,7 +24741,8 @@
     return target.closest(".mm-live-v4-table-cell");
   }
   function ensureCellEditHistory(histories, cell) {
-    const existing = histories.get(cell);
+    const key = getCellHistoryKey(cell);
+    const existing = histories.get(key);
     if (existing) {
       return existing;
     }
@@ -24563,8 +24751,19 @@
       redoStack: [],
       lastValue: readCellDisplayValue(cell)
     };
-    histories.set(cell, history);
+    histories.set(key, history);
     return history;
+  }
+  function getCellEditHistory(histories, cell) {
+    return histories.get(getCellHistoryKey(cell));
+  }
+  function getCellHistoryKey(cell) {
+    return [
+      cell.dataset.tableFrom ?? "",
+      cell.dataset.rowKind ?? "",
+      cell.dataset.rowIndex ?? "",
+      cell.dataset.column ?? ""
+    ].join(":");
   }
   function recordCellEditHistory(histories, cell) {
     const history = ensureCellEditHistory(histories, cell);
@@ -24586,11 +24785,12 @@
     const targetStack = direction === "undo" ? history.redoStack : history.undoStack;
     const snapshot = sourceStack.pop();
     if (!snapshot) {
-      return;
+      return false;
     }
     targetStack.push(captureCellEditSnapshot(cell));
     applyCellEditSnapshot(cell, snapshot);
     history.lastValue = snapshot.value;
+    return true;
   }
   function captureCellEditSnapshot(cell) {
     return {
@@ -25195,17 +25395,26 @@
               });
             }
             if (update.docChanged && !applyingFromHost) {
-              pendingHostUndoFocusStack.push({
-                beforeText: update.startState.doc.toString(),
-                restore: lastTableCellCommit ? { kind: "tableCell", detail: lastTableCellCommit } : {
-                  kind: "editor",
-                  anchor: update.startState.selection.main.head
-                }
-              });
+              const commitSequence = getTableCellCommitSequence(update);
+              if (commitSequence) {
+                pushTableCellCommitUndoFocus(
+                  update.startState.doc.toString(),
+                  commitSequence
+                );
+              } else {
+                pendingHostUndoFocusStack.push({
+                  beforeText: update.startState.doc.toString(),
+                  restore: lastTableCellCommit ? { kind: "tableCell", detail: lastTableCellCommit } : {
+                    kind: "editor",
+                    anchor: update.startState.selection.main.head
+                  }
+                });
+              }
               lastTableCellCommit = null;
               postDocumentChanges(
                 update.changes,
-                update.state.doc.toString()
+                update.state.doc.toString(),
+                commitSequence
               );
             }
           })
@@ -25256,16 +25465,14 @@
     }
   }
   function popPendingHostUndoFocus(text) {
-    const lastIndex = pendingHostUndoFocusStack.length - 1;
-    if (lastIndex < 0) {
-      return null;
+    for (let index = pendingHostUndoFocusStack.length - 1; index >= 0; index--) {
+      const pendingFocus = pendingHostUndoFocusStack[index];
+      if (pendingFocus.beforeText === text) {
+        pendingHostUndoFocusStack.splice(index);
+        return pendingFocus;
+      }
     }
-    const pendingFocus = pendingHostUndoFocusStack[lastIndex];
-    if (pendingFocus.beforeText !== text) {
-      return null;
-    }
-    pendingHostUndoFocusStack.pop();
-    return pendingFocus;
+    return null;
   }
   function selectionForHostUndoRestore(restore, documentLength) {
     const anchor = restore.kind === "tableCell" ? restore.detail.from : restore.anchor;
@@ -25273,6 +25480,31 @@
   }
   function clampEditorPosition(position, documentLength) {
     return Math.min(documentLength, Math.max(0, position));
+  }
+  function getTableCellCommitSequence(update) {
+    for (const transaction of update.transactions) {
+      const sequence = transaction.annotation(tableCellCommitSequence);
+      if (sequence) {
+        return sequence;
+      }
+    }
+    return void 0;
+  }
+  function pushTableCellCommitUndoFocus(beforeText, commitSequence) {
+    let currentText = beforeText;
+    for (const step of commitSequence.steps) {
+      pendingHostUndoFocusStack.push({
+        beforeText: currentText,
+        restore: {
+          kind: "tableCell",
+          detail: step.restore
+        }
+      });
+      currentText = applyDocumentChange(currentText, step.change);
+    }
+  }
+  function applyDocumentChange(text, change) {
+    return `${text.slice(0, change.from)}${change.text}${text.slice(change.to)}`;
   }
   function updateStatus(text, source) {
     document.documentElement.dataset.mlrtDocumentStatus = `${text.length} characters loaded from ${source}`;
@@ -25290,7 +25522,7 @@
       lineWrapping: typeof optionRecord.lineWrapping === "boolean" ? optionRecord.lineWrapping : true
     };
   }
-  function postDocumentChanges(changes, text) {
+  function postDocumentChanges(changes, text, commitSequence) {
     const documentChanges = [];
     changes.iterChanges((from, to, _fromB, _toB, inserted) => {
       documentChanges.push({
@@ -25301,12 +25533,14 @@
     });
     recordDebug("post-change", {
       baseRevision: hostRevision,
-      changes: documentChanges
+      changes: documentChanges,
+      changeGroups: commitSequence?.steps.map((step) => [step.change])
     });
     vscode.postMessage({
       type: "change",
       text,
       changes: documentChanges,
+      changeGroups: commitSequence?.steps.map((step) => [step.change]),
       baseRevision: hostRevision
     });
   }

@@ -120,7 +120,14 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         .then(async () => {
           applyingFromWebview = true;
           try {
-            if (message.changes?.length) {
+            if (message.changeGroups?.length) {
+              logDebug(
+                `apply ${message.changeGroups.length} sequential change group(s) from webview at revision ${message.baseRevision}`,
+              );
+              for (const changeGroup of message.changeGroups) {
+                await applyDocumentChanges(document, changeGroup);
+              }
+            } else if (message.changes?.length) {
               logDebug(
                 `apply ${message.changes.length} change(s) from webview at revision ${message.baseRevision}`,
               );
@@ -390,6 +397,7 @@ interface ChangeMessage {
   type: "change";
   text: string;
   changes?: DocumentChange[];
+  changeGroups?: DocumentChange[][];
   baseRevision: number;
 }
 
@@ -422,6 +430,13 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
     (message.changes === undefined ||
       (Array.isArray(message.changes) &&
         message.changes.every(isDocumentChange))) &&
+    (message.changeGroups === undefined ||
+      (Array.isArray(message.changeGroups) &&
+        message.changeGroups.every(
+          (changeGroup) =>
+            Array.isArray(changeGroup) &&
+            changeGroup.every(isDocumentChange),
+        ))) &&
     typeof message.baseRevision === "number"
   );
 }

@@ -5,6 +5,7 @@ import {
   ParsedRow,
   ParsedTable,
   rowToDisplayValues,
+  TableCellSourceEdit,
 } from "../../shared/tableModel";
 import {
   measureTableColumnSizing,
@@ -12,6 +13,7 @@ import {
   TableColumnSizing,
 } from "../../shared/tableColumnSizing";
 import { allowTableSourceChange } from "../../shared/tableSourceProtection";
+import { tableCellCommitSequence } from "../tableCellCommitSequence";
 
 export class RenderedTableWidget extends WidgetType {
   public constructor(private readonly table: ParsedTable) {
@@ -118,6 +120,20 @@ interface CellEditSnapshot {
   caretOffset: number;
 }
 
+interface CellCommitValueStep {
+  value: string;
+  restoreCaretOffset: number;
+}
+
+interface CellSourceCommitStep {
+  change: {
+    from: number;
+    to: number;
+    text: string;
+  };
+  restoreCaretOffset: number;
+}
+
 interface AppendCellsOptions {
   table: ParsedTable;
   sourceRow: ParsedRow;
@@ -135,6 +151,8 @@ interface CellTarget {
 }
 
 type VerticalCellTarget = CellTarget | "before-table" | "after-table";
+
+const persistentCellHistories = new Map<string, CellEditHistory>();
 
 function appendCells(options: AppendCellsOptions): void {
   appendSourceLineCell(options);
@@ -415,7 +433,7 @@ function bindTableEditing(
   table: ParsedTable,
   scheduleTableLayout: () => void,
 ): void {
-  const cellHistories = new WeakMap<HTMLElement, CellEditHistory>();
+  const cellHistories = persistentCellHistories;
 
   wrapper.addEventListener("focusin", (event) => {
     const cell = findCell(event.target);
@@ -433,15 +451,25 @@ function bindTableEditing(
     }
 
     if (event.inputType === "historyUndo") {
+      if (!restoreCellEditHistory(cellHistories, cell, "undo")) {
+        return;
+      }
       event.preventDefault();
-      restoreCellEditHistory(cellHistories, cell, "undo");
+      if (applyLiveCellEdit(view, table, cell)) {
+        return;
+      }
       scheduleTableLayout();
       return;
     }
 
     if (event.inputType === "historyRedo") {
+      if (!restoreCellEditHistory(cellHistories, cell, "redo")) {
+        return;
+      }
       event.preventDefault();
-      restoreCellEditHistory(cellHistories, cell, "redo");
+      if (applyLiveCellEdit(view, table, cell)) {
+        return;
+      }
       scheduleTableLayout();
       return;
     }
@@ -456,6 +484,9 @@ function bindTableEditing(
     }
 
     syncCellEditHistory(cellHistories, cell);
+    if (applyLiveCellEdit(view, table, cell)) {
+      return;
+    }
     scheduleTableLayout();
   });
 
@@ -467,7 +498,7 @@ function bindTableEditing(
           view.dom.classList.remove("mm-live-v4-table-cell-focused");
         }
         if (cell.isConnected) {
-          commitCellEdit(view, table, cell);
+          commitCellEdit(view, table, cell, cellHistories);
         }
       }, 0);
     }
@@ -483,15 +514,20 @@ function bindTableEditing(
 
     const historyDirection = getCellEditHistoryDirection(event);
     if (historyDirection) {
+      if (!restoreCellEditHistory(cellHistories, cell, historyDirection)) {
+        return;
+      }
       event.preventDefault();
-      restoreCellEditHistory(cellHistories, cell, historyDirection);
+      if (applyLiveCellEdit(view, table, cell)) {
+        return;
+      }
       scheduleTableLayout();
       return;
     }
 
     if (event.key === "Enter" && isPlainKey(event)) {
       event.preventDefault();
-      commitCellEdit(view, table, cell, {
+      commitCellEdit(view, table, cell, cellHistories, {
         selectionAnchor: getPositionAfterTable(view, table),
       });
       cell.blur();
@@ -508,7 +544,7 @@ function bindTableEditing(
       const target = resolveVerticalCell(cell, rowDelta);
       event.preventDefault();
       if (target === "before-table") {
-        commitCellEdit(view, table, cell, {
+        commitCellEdit(view, table, cell, cellHistories, {
           selectionAnchor: getPositionBeforeTable(table),
         });
         cell.blur();
@@ -516,7 +552,7 @@ function bindTableEditing(
         return;
       }
       if (target === "after-table") {
-        commitCellEdit(view, table, cell, {
+        commitCellEdit(view, table, cell, cellHistories, {
           selectionAnchor: getEndOfLineAfterTable(view, table),
         });
         cell.blur();
@@ -524,7 +560,7 @@ function bindTableEditing(
         return;
       }
 
-      commitCellEdit(view, table, cell);
+      commitCellEdit(view, table, cell, cellHistories);
       focusCellAfterRender(table.from, target);
       return;
     }
@@ -532,7 +568,7 @@ function bindTableEditing(
     if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
-      commitCellEdit(view, table, cell);
+      commitCellEdit(view, table, cell, cellHistories);
       focusCellAfterRender(table.from, target);
     }
   });
@@ -542,11 +578,17 @@ function commitCellEdit(
   view: EditorView,
   table: ParsedTable,
   cell: HTMLElement,
+  histories: Map<string, CellEditHistory>,
   options: { selectionAnchor?: number } = {},
 ): void {
   const rowKind = cell.dataset.rowKind;
   const rowIndex = Number(cell.dataset.rowIndex ?? "0");
   const column = Number(cell.dataset.column ?? "0");
+  if (rowKind !== "header" && rowKind !== "body") {
+    dispatchSelection(view, options.selectionAnchor);
+    return;
+  }
+
   const sourceRow =
     rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
   if (!sourceRow || !Number.isInteger(column) || column < 0) {
@@ -561,6 +603,116 @@ function commitCellEdit(
   }
 
   const originalValue = cell.dataset.original ?? "";
+  const caretOffset = getCellCaretOffset(cell);
+  const restoreCaretOffset = Math.min(
+    originalValue.length,
+    caretOffset + Math.max(0, originalValue.length - value.length),
+  );
+  const valueSteps = buildCellCommitValueSteps(
+    getCellEditHistory(histories, cell),
+    originalValue,
+    value,
+    restoreCaretOffset,
+  );
+  const sourceSteps = buildCellSourceCommitSteps(
+    sourceRow,
+    table.columnCount,
+    column,
+    valueSteps,
+  );
+  const finalSourceStep = sourceSteps[sourceSteps.length - 1];
+  if (!finalSourceStep) {
+    dispatchSelection(view, options.selectionAnchor);
+    return;
+  }
+  const edit = formatTableCellSourceEdit(
+    sourceRow,
+    table.columnCount,
+    column,
+    value,
+  );
+  view.dom.dispatchEvent(
+    new CustomEvent("mlrt:table-cell-commit", {
+      bubbles: true,
+      detail: {
+        tableFrom: table.from,
+        rowKind,
+        rowIndex,
+        column,
+        from: edit.from,
+        to: edit.to,
+        insertLength: edit.insert.length,
+        valueLength: value.length,
+        restoreCaretOffset: finalSourceStep.restoreCaretOffset,
+      },
+    }),
+  );
+  const selectionAnchor =
+    options.selectionAnchor === undefined
+      ? undefined
+      : mapPositionThroughCellEdit(options.selectionAnchor, edit);
+  view.dispatch({
+    changes: {
+      from: edit.from,
+      to: edit.to,
+      insert: edit.insert,
+    },
+    selection:
+      selectionAnchor === undefined
+        ? undefined
+        : EditorSelection.cursor(selectionAnchor, 1),
+    annotations: [
+      allowTableSourceChange.of(true),
+      tableCellCommitSequence.of({
+        steps: sourceSteps.map((step) => ({
+          change: step.change,
+          restore: {
+            tableFrom: table.from,
+            rowKind,
+            rowIndex,
+            column,
+            from: step.change.from,
+            to: step.change.to,
+            restoreCaretOffset: step.restoreCaretOffset,
+          },
+        })),
+      }),
+    ],
+    scrollIntoView: true,
+    userEvent: "input",
+  });
+}
+
+function applyLiveCellEdit(
+  view: EditorView,
+  table: ParsedTable,
+  cell: HTMLElement,
+): boolean {
+  const rowKind = cell.dataset.rowKind;
+  const rowIndex = Number(cell.dataset.rowIndex ?? "0");
+  const column = Number(cell.dataset.column ?? "0");
+  if (
+    (rowKind !== "header" && rowKind !== "body") ||
+    !Number.isInteger(rowIndex) ||
+    rowIndex < 0 ||
+    !Number.isInteger(column) ||
+    column < 0
+  ) {
+    return false;
+  }
+
+  const sourceRow =
+    rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
+  if (!sourceRow) {
+    return false;
+  }
+
+  const value = readCellDisplayValue(cell);
+  const originalValue = cell.dataset.original ?? "";
+  if (value === originalValue) {
+    return false;
+  }
+
   const caretOffset = getCellCaretOffset(cell);
   const restoreCaretOffset = Math.min(
     originalValue.length,
@@ -588,23 +740,94 @@ function commitCellEdit(
       },
     }),
   );
-  const selectionAnchor =
-    options.selectionAnchor === undefined
-      ? undefined
-      : mapPositionThroughCellEdit(options.selectionAnchor, edit);
   view.dispatch({
     changes: {
       from: edit.from,
       to: edit.to,
       insert: edit.insert,
     },
-    selection:
-      selectionAnchor === undefined
-        ? undefined
-        : EditorSelection.cursor(selectionAnchor, 1),
+    selection: EditorSelection.cursor(edit.from + edit.insert.length, 1),
     annotations: allowTableSourceChange.of(true),
     scrollIntoView: true,
     userEvent: "input",
+  });
+  focusCellAfterRenderAtOffset(
+    table.from,
+    { rowKind, rowIndex: String(rowIndex), column: String(column) },
+    caretOffset,
+  );
+  return true;
+}
+
+function buildCellCommitValueSteps(
+  history: CellEditHistory | undefined,
+  originalValue: string,
+  finalValue: string,
+  fallbackRestoreCaretOffset: number,
+): CellCommitValueStep[] {
+  const snapshots = history?.undoStack ?? [];
+  const steps: CellCommitValueStep[] = [];
+  let currentValue = originalValue;
+
+  for (let index = 1; index < snapshots.length; index++) {
+    const snapshot = snapshots[index];
+    if (snapshot.value === currentValue) {
+      continue;
+    }
+
+    steps.push({
+      value: snapshot.value,
+      restoreCaretOffset: snapshots[index - 1]?.caretOffset ?? 0,
+    });
+    currentValue = snapshot.value;
+  }
+
+  if (finalValue !== currentValue) {
+    steps.push({
+      value: finalValue,
+      restoreCaretOffset:
+        snapshots[snapshots.length - 1]?.caretOffset ??
+        fallbackRestoreCaretOffset,
+    });
+  }
+
+  return steps;
+}
+
+function buildCellSourceCommitSteps(
+  sourceRow: ParsedRow,
+  columnCount: number,
+  column: number,
+  valueSteps: CellCommitValueStep[],
+): CellSourceCommitStep[] {
+  let currentEdit: TableCellSourceEdit | null = null;
+  return valueSteps.map((step) => {
+    const formattedEdit = formatTableCellSourceEdit(
+      sourceRow,
+      columnCount,
+      column,
+      step.value,
+    );
+    const change = currentEdit
+      ? {
+          from: currentEdit.from,
+          to: currentEdit.from + currentEdit.insert.length,
+          text: formattedEdit.insert,
+        }
+      : {
+          from: formattedEdit.from,
+          to: formattedEdit.to,
+          text: formattedEdit.insert,
+        };
+    currentEdit = {
+      from: change.from,
+      to: change.from + change.text.length,
+      insert: change.text,
+    };
+    return {
+      change,
+      restoreCaretOffset: step.restoreCaretOffset,
+    };
   });
 }
 
@@ -712,6 +935,26 @@ function focusCellAfterRender(tableFrom: number, target: CellTarget): void {
   }, 0);
 }
 
+function focusCellAfterRenderAtOffset(
+  tableFrom: number,
+  target: CellTarget,
+  caretOffset: number,
+): void {
+  setTimeout(() => {
+    const selector = [
+      `.mm-live-v4-table-cell[data-table-from="${tableFrom}"]`,
+      `[data-row-kind="${target.rowKind}"]`,
+      `[data-row-index="${target.rowIndex}"]`,
+      `[data-column="${target.column}"]`,
+    ].join("");
+    const cell = document.querySelector<HTMLElement>(selector);
+    if (cell) {
+      cell.focus();
+      setCellCaretOffset(cell, caretOffset);
+    }
+  }, 0);
+}
+
 function findCell(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof HTMLElement)) {
     return null;
@@ -720,10 +963,11 @@ function findCell(target: EventTarget | null): HTMLElement | null {
 }
 
 function ensureCellEditHistory(
-  histories: WeakMap<HTMLElement, CellEditHistory>,
+  histories: Map<string, CellEditHistory>,
   cell: HTMLElement,
 ): CellEditHistory {
-  const existing = histories.get(cell);
+  const key = getCellHistoryKey(cell);
+  const existing = histories.get(key);
   if (existing) {
     return existing;
   }
@@ -733,12 +977,28 @@ function ensureCellEditHistory(
     redoStack: [],
     lastValue: readCellDisplayValue(cell),
   };
-  histories.set(cell, history);
+  histories.set(key, history);
   return history;
 }
 
+function getCellEditHistory(
+  histories: Map<string, CellEditHistory>,
+  cell: HTMLElement,
+): CellEditHistory | undefined {
+  return histories.get(getCellHistoryKey(cell));
+}
+
+function getCellHistoryKey(cell: HTMLElement): string {
+  return [
+    cell.dataset.tableFrom ?? "",
+    cell.dataset.rowKind ?? "",
+    cell.dataset.rowIndex ?? "",
+    cell.dataset.column ?? "",
+  ].join(":");
+}
+
 function recordCellEditHistory(
-  histories: WeakMap<HTMLElement, CellEditHistory>,
+  histories: Map<string, CellEditHistory>,
   cell: HTMLElement,
 ): void {
   const history = ensureCellEditHistory(histories, cell);
@@ -758,28 +1018,29 @@ function recordCellEditHistory(
 }
 
 function syncCellEditHistory(
-  histories: WeakMap<HTMLElement, CellEditHistory>,
+  histories: Map<string, CellEditHistory>,
   cell: HTMLElement,
 ): void {
   ensureCellEditHistory(histories, cell).lastValue = readCellDisplayValue(cell);
 }
 
 function restoreCellEditHistory(
-  histories: WeakMap<HTMLElement, CellEditHistory>,
+  histories: Map<string, CellEditHistory>,
   cell: HTMLElement,
   direction: "undo" | "redo",
-): void {
+): boolean {
   const history = ensureCellEditHistory(histories, cell);
   const sourceStack = direction === "undo" ? history.undoStack : history.redoStack;
   const targetStack = direction === "undo" ? history.redoStack : history.undoStack;
   const snapshot = sourceStack.pop();
   if (!snapshot) {
-    return;
+    return false;
   }
 
   targetStack.push(captureCellEditSnapshot(cell));
   applyCellEditSnapshot(cell, snapshot);
   history.lastValue = snapshot.value;
+  return true;
 }
 
 function captureCellEditSnapshot(cell: HTMLElement): CellEditSnapshot {

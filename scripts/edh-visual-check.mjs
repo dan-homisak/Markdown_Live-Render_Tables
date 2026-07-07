@@ -282,6 +282,12 @@ try {
   );
   assertTableHostUndoFocus(hostUndoFocus);
   console.log("TABLE HOST UNDO FOCUS CHECK:", hostUndoFocus);
+  const hostCharacterUndoFocus = await evaluateJson(
+    liveClient,
+    tableHostCharacterUndoFocusExpression(),
+  );
+  assertTableHostCharacterUndoFocus(hostCharacterUndoFocus);
+  console.log("TABLE HOST CHARACTER UNDO FOCUS CHECK:", hostCharacterUndoFocus);
   const mixedUndoFocus = await evaluateJson(
     liveClient,
     tableThenEditorUndoFocusExpression(),
@@ -699,47 +705,57 @@ function tableLiveResizeExpression() {
     }
 
     const beforeDoc = view.state.doc.toString();
-    const beforeWidth = columns[1].getBoundingClientRect().width;
-    const beforeTableWidth = table.getBoundingClientRect().width;
-    const originalText = cell.textContent ?? '';
-    cell.focus();
-    cell.textContent = 'short cell with enough live typed text to expand the value column immediately';
-    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+	    const beforeWidth = columns[1].getBoundingClientRect().width;
+	    const beforeTableWidth = table.getBoundingClientRect().width;
+	    cell.focus();
+	    cell.textContent = 'short cell with enough live typed text to expand the value column immediately';
+	    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
       bubbles: true,
       cancelable: true,
       inputType: 'insertText',
       data: ' immediately',
-    }));
-    root.defaultView.requestAnimationFrame(() => {
-      root.defaultView.requestAnimationFrame(() => {
-        const afterWidth = columns[1].getBoundingClientRect().width;
-        const afterTableWidth = table.getBoundingClientRect().width;
-        const afterDoc = view.state.doc.toString();
-        cell.textContent = originalText;
-        cell.dispatchEvent(new root.defaultView.InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'deleteContentBackward',
-          data: null,
-        }));
-        resolve(JSON.stringify({
-          ok: true,
-          beforeWidth,
-          afterWidth,
-          widthDelta: afterWidth - beforeWidth,
-          beforeTableWidth,
-          afterTableWidth,
-          tableWidthDelta: afterTableWidth - beforeTableWidth,
-          docChanged: afterDoc !== beforeDoc,
-          activeElementClass: root.activeElement?.className ?? null,
-        }));
-      });
-    });
-  })`;
-}
+	    }));
+	    root.defaultView.requestAnimationFrame(() => {
+	      root.defaultView.requestAnimationFrame(() => {
+	        const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+	        const currentWidget = currentWidgets[currentWidgets.length - 1];
+	        const currentTable = currentWidget?.querySelector('.mm-live-v4-table');
+	        const currentColumns = Array.from(currentWidget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
+	        const currentCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+	        const afterWidth = currentColumns[1]?.getBoundingClientRect().width ?? 0;
+	        const afterTableWidth = currentTable?.getBoundingClientRect().width ?? 0;
+	        const afterDoc = view.state.doc.toString();
+	        root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+	          data: {
+	            type: 'setDocument',
+	            text: beforeDoc,
+	            revision: 999000,
+	            debug: false,
+	          },
+	        }));
+	        root.defaultView.requestAnimationFrame(() => {
+	          root.defaultView.requestAnimationFrame(() => {
+	            resolve(JSON.stringify({
+	              ok: true,
+	              beforeWidth,
+	              afterWidth,
+	              widthDelta: afterWidth - beforeWidth,
+	              beforeTableWidth,
+	              afterTableWidth,
+	              tableWidthDelta: afterTableWidth - beforeTableWidth,
+	              docChanged: afterDoc !== beforeDoc,
+	              restoredDoc: view.state.doc.toString() === beforeDoc,
+	              activeElementClass: currentCell?.className ?? root.activeElement?.className ?? null,
+	            }));
+	          });
+	        });
+	      });
+	    });
+	  })`;
+	}
 
 function tableCellEditShortcutsExpression() {
-  return `new Promise((resolve) => {
+  return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
       try {
         return frame.contentDocument;
@@ -749,42 +765,47 @@ function tableCellEditShortcutsExpression() {
     }).filter(Boolean)];
     const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
     if (!root) {
-      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
-      return;
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
-    const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const queryCell = () => {
+      const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const widget = widgets[widgets.length - 1];
+      return widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    };
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    let cell = queryCell();
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
-      resolve(JSON.stringify({
+      return JSON.stringify({
         ok: false,
         reason: 'missing edit shortcut targets',
         hasCell: Boolean(cell),
         hasView: Boolean(view),
-      }));
-      return;
+      });
     }
 
     const beforeDoc = view.state.doc.toString();
-    const originalText = cell.textContent ?? '';
-    const selectCellContents = () => {
+    const selectCellContents = (targetCell) => {
       const range = root.createRange();
-      range.selectNodeContents(cell);
+      range.selectNodeContents(targetCell);
       const selection = root.defaultView.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
     };
-    const setCaretAtCellEnd = () => {
+    const setCaretAtCellEnd = (targetCell) => {
       const range = root.createRange();
-      range.selectNodeContents(cell);
+      range.selectNodeContents(targetCell);
       range.collapse(false);
       const selection = root.defaultView.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
     };
-    const selectTextOffsets = (from, to) => {
-      const text = cell.firstChild;
+    const selectTextOffsets = (targetCell, from, to) => {
+      const text = targetCell.firstChild;
       if (!text || text.nodeType !== root.defaultView.Node.TEXT_NODE) {
         return false;
       }
@@ -796,16 +817,21 @@ function tableCellEditShortcutsExpression() {
       selection.addRange(range);
       return true;
     };
-    const key = (options) => cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+    const key = (targetCell, options) => targetCell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
       bubbles: true,
       cancelable: true,
       ...options,
     }));
 
     cell.focus();
-    selectCellContents();
+    selectCellContents(cell);
     root.execCommand('insertText', false, 'base');
-    const selectedForDelete = selectTextOffsets(3, 4);
+    await waitForRender();
+    cell = queryCell();
+    const selectedForDelete = cell ? selectTextOffsets(cell, 3, 4) : false;
+    if (!cell) {
+      return JSON.stringify({ ok: false, reason: 'missing cell after base insert' });
+    }
     cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
       bubbles: true,
       cancelable: true,
@@ -813,54 +839,65 @@ function tableCellEditShortcutsExpression() {
       data: null,
     }));
     root.execCommand('delete');
-    const afterDeleteText = cell.innerText;
-    const undoDefaultAllowed = key({
+    await waitForRender();
+    cell = queryCell();
+    const afterDeleteText = cell?.innerText ?? null;
+    const undoDefaultAllowed = cell ? key(cell, {
       key: 'z',
       code: 'KeyZ',
       metaKey: true,
       keyCode: 90,
       which: 90,
+    }) : null;
+    await waitForRender();
+    cell = queryCell();
+    const afterUndoText = cell?.innerText ?? null;
+    const selectionAfterUndo = root.defaultView.getSelection();
+    const undoSelectionCollapsed = selectionAfterUndo?.isCollapsed ?? false;
+    if (cell) {
+      setCaretAtCellEnd(cell);
+    }
+    const shiftEnterDefaultAllowed = cell ? key(cell, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: true,
+      keyCode: 13,
+      which: 13,
+    }) : null;
+    root.execCommand('insertLineBreak');
+    await waitForRender();
+    cell = queryCell();
+    if (cell) {
+      setCaretAtCellEnd(cell);
+    }
+    root.execCommand('insertText', false, 'next');
+    await waitForRender();
+    cell = queryCell();
+    const afterShiftEnterText = cell?.innerText ?? null;
+    const afterDoc = view.state.doc.toString();
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: {
+        type: 'setDocument',
+        text: beforeDoc,
+        revision: 999010,
+        debug: false,
+      },
+    }));
+    await waitForRender();
+    return JSON.stringify({
+      ok: true,
+      selectedForDelete,
+      undoDefaultAllowed,
+      shiftEnterDefaultAllowed,
+      afterDeleteText,
+      afterUndoText,
+      undoSelectionCollapsed,
+      afterShiftEnterText,
+      hasLineBreak: /\\n/.test(afterShiftEnterText ?? ''),
+      docChanged: afterDoc !== beforeDoc,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
     });
-    setTimeout(() => {
-      const afterUndoText = cell.innerText;
-      const selectionAfterUndo = root.defaultView.getSelection();
-      const undoSelectionCollapsed = selectionAfterUndo?.isCollapsed ?? false;
-      cell.textContent = 'base';
-      setCaretAtCellEnd();
-      const shiftEnterDefaultAllowed = key({
-        key: 'Enter',
-        code: 'Enter',
-        shiftKey: true,
-        keyCode: 13,
-        which: 13,
-      });
-      root.execCommand('insertLineBreak');
-      root.execCommand('insertText', false, 'next');
-      setTimeout(() => {
-        const afterShiftEnterText = cell.innerText;
-        const afterDoc = view.state.doc.toString();
-        cell.textContent = originalText;
-        cell.dispatchEvent(new root.defaultView.InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertReplacementText',
-          data: originalText,
-        }));
-        resolve(JSON.stringify({
-          ok: true,
-          selectedForDelete,
-          undoDefaultAllowed,
-          shiftEnterDefaultAllowed,
-          afterDeleteText,
-          afterUndoText,
-          undoSelectionCollapsed,
-          afterShiftEnterText,
-          hasLineBreak: /\\n/.test(afterShiftEnterText),
-          docChanged: afterDoc !== beforeDoc,
-        }));
-      }, 100);
-    }, 100);
-  })`;
+  })()`;
 }
 
 function tableTrustedUndoSetupExpression() {
@@ -1072,6 +1109,143 @@ function tableHostUndoFocusExpression() {
       });
     }, 100);
   })`;
+}
+
+function tableHostCharacterUndoFocusExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const readCurrentShortCell = () => {
+      const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const currentWidget = currentWidgets[currentWidgets.length - 1];
+      return currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    };
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    let cell = readCurrentShortCell();
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!cell || !view) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing host character undo targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      });
+    }
+
+    const setCaretAtCellEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const caretOffsetForCell = (targetCell) => {
+      const selection = root.defaultView.getSelection();
+      if (!targetCell || !selection || selection.rangeCount === 0) {
+        return null;
+      }
+      const measure = root.createRange();
+      measure.selectNodeContents(targetCell);
+      const caret = selection.getRangeAt(0);
+      measure.setEnd(caret.endContainer, caret.endOffset);
+      const offset = measure.toString().length;
+      measure.detach();
+      return offset;
+    };
+    const sendHostDocument = (text, revision) => {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text,
+          revision,
+          debug: false,
+        },
+      }));
+    };
+
+    const beforeText = cell.innerText;
+    const beforeDoc = view.state.doc.toString();
+    const postChangeCountBefore = (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
+      .filter((event) => event.event === 'post-change').length;
+    const docsAfterType = [];
+    const textsAfterType = [];
+    for (const character of ['a', 'b', 'c']) {
+      cell = readCurrentShortCell();
+      if (!cell) {
+        return JSON.stringify({ ok: false, reason: 'missing cell while typing characters' });
+      }
+      cell.focus();
+      setCaretAtCellEnd(cell);
+      cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: character,
+      }));
+      root.execCommand('insertText', false, character);
+      await waitForRender();
+      cell = readCurrentShortCell();
+      docsAfterType.push(view.state.doc.toString());
+      textsAfterType.push(cell?.innerText ?? null);
+    }
+    const afterTypeText = textsAfterType[textsAfterType.length - 1];
+    const finalDoc = view.state.doc.toString();
+    const postChangeCountAfter = (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
+      .filter((event) => event.event === 'post-change').length;
+
+    sendHostDocument(docsAfterType[1], 999201);
+    await waitForRender();
+    let undoCell = readCurrentShortCell();
+    const afterFirstUndoText = undoCell?.innerText ?? null;
+    const afterFirstUndoCaret = caretOffsetForCell(undoCell);
+    const afterFirstUndoActive = root.activeElement === undoCell;
+
+    sendHostDocument(docsAfterType[0], 999202);
+    await waitForRender();
+    undoCell = readCurrentShortCell();
+    const afterSecondUndoText = undoCell?.innerText ?? null;
+    const afterSecondUndoCaret = caretOffsetForCell(undoCell);
+    const afterSecondUndoActive = root.activeElement === undoCell;
+
+    sendHostDocument(beforeDoc, 999203);
+    await waitForRender();
+    undoCell = readCurrentShortCell();
+    const afterThirdUndoText = undoCell?.innerText ?? null;
+    const afterThirdUndoCaret = caretOffsetForCell(undoCell);
+    const afterThirdUndoActive = root.activeElement === undoCell;
+
+    return JSON.stringify({
+      ok: true,
+      beforeText,
+      afterTypeText,
+      textsAfterType,
+      finalDocChanged: finalDoc !== beforeDoc,
+      sourceEditCount: postChangeCountAfter - postChangeCountBefore,
+      afterFirstUndoText,
+      afterFirstUndoCaret,
+      afterFirstUndoActive,
+      afterSecondUndoText,
+      afterSecondUndoCaret,
+      afterSecondUndoActive,
+      afterThirdUndoText,
+      afterThirdUndoCaret,
+      afterThirdUndoActive,
+    });
+  })()`;
 }
 
 function tableThenEditorUndoFocusExpression() {
@@ -1541,12 +1715,13 @@ function assertTableResponsiveScroll(result) {
 }
 
 function assertTableLiveResize(result) {
-  if (
-    !result?.ok ||
-    result.docChanged ||
-    result.widthDelta <= pixelTolerance ||
-    result.tableWidthDelta <= pixelTolerance
-  ) {
+	  if (
+	    !result?.ok ||
+	    !result.docChanged ||
+	    !result.restoredDoc ||
+	    result.widthDelta <= pixelTolerance ||
+	    result.tableWidthDelta <= pixelTolerance
+	  ) {
     throw new Error(
       `Table live resize check failed: ${JSON.stringify(result)}`,
     );
@@ -1554,18 +1729,19 @@ function assertTableLiveResize(result) {
 }
 
 function assertTableCellEditShortcuts(result) {
-  if (
-    !result?.ok ||
-    result.docChanged ||
-    !result.selectedForDelete ||
-    result.undoDefaultAllowed ||
-    !result.shiftEnterDefaultAllowed ||
-    result.afterDeleteText !== "bas" ||
-    result.afterUndoText !== "base" ||
-    !result.undoSelectionCollapsed ||
-    !result.hasLineBreak ||
-    !result.afterShiftEnterText.includes("next")
-  ) {
+	  if (
+	    !result?.ok ||
+		    !result.selectedForDelete ||
+	    result.undoDefaultAllowed ||
+	    !result.shiftEnterDefaultAllowed ||
+	    result.afterDeleteText !== "bas" ||
+	    result.afterUndoText !== "base" ||
+	    !result.undoSelectionCollapsed ||
+	    !result.hasLineBreak ||
+	    !result.afterShiftEnterText.includes("next") ||
+	    !result.docChanged ||
+	    !result.restoredDoc
+	  ) {
     throw new Error(
       `Table cell edit shortcuts check failed: ${JSON.stringify(result)}`,
     );
@@ -1603,6 +1779,31 @@ function assertTableHostUndoFocus(result) {
   ) {
     throw new Error(
       `Table host undo focus check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableHostCharacterUndoFocus(result) {
+  if (
+	    !result?.ok ||
+	    !result.finalDocChanged ||
+	    result.sourceEditCount < 3 ||
+	    result.afterTypeText !== `${result.beforeText}abc` ||
+	    result.textsAfterType?.[0] !== `${result.beforeText}a` ||
+	    result.textsAfterType?.[1] !== `${result.beforeText}ab` ||
+	    result.textsAfterType?.[2] !== `${result.beforeText}abc` ||
+    result.afterFirstUndoText !== `${result.beforeText}ab` ||
+    result.afterFirstUndoCaret !== result.afterFirstUndoText.length ||
+    !result.afterFirstUndoActive ||
+    result.afterSecondUndoText !== `${result.beforeText}a` ||
+    result.afterSecondUndoCaret !== result.afterSecondUndoText.length ||
+    !result.afterSecondUndoActive ||
+    result.afterThirdUndoText !== result.beforeText ||
+    result.afterThirdUndoCaret !== result.beforeText.length ||
+    !result.afterThirdUndoActive
+  ) {
+    throw new Error(
+      `Table host character undo focus check failed: ${JSON.stringify(result)}`,
     );
   }
 }

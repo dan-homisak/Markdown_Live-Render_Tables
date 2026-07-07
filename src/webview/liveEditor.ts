@@ -1,6 +1,11 @@
 import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, ViewUpdate } from "@codemirror/view";
 import { createLiveRuntime } from "../live-v4/LiveRuntime";
+import {
+  tableCellCommitSequence,
+  TableCellCommitRestore,
+  TableCellCommitSequence,
+} from "../live-v4/tableCellCommitSequence";
 import { allowTableSourceChange } from "../shared/tableSourceProtection";
 
 declare function acquireVsCodeApi(): {
@@ -36,15 +41,7 @@ interface DebugEvent {
   timestamp: number;
 }
 
-interface TableCellCommitDetail {
-  tableFrom: number;
-  rowKind: string;
-  rowIndex: number;
-  column: number;
-  from: number;
-  to: number;
-  restoreCaretOffset: number;
-}
+type TableCellCommitDetail = TableCellCommitRestore;
 
 interface PendingHostUndoFocus {
   beforeText: string;
@@ -104,19 +101,28 @@ try {
             });
           }
           if (update.docChanged && !applyingFromHost) {
-            pendingHostUndoFocusStack.push({
-              beforeText: update.startState.doc.toString(),
-              restore: lastTableCellCommit
-                ? { kind: "tableCell", detail: lastTableCellCommit }
-                : {
-                    kind: "editor",
-                    anchor: update.startState.selection.main.head,
-                  },
-            });
+            const commitSequence = getTableCellCommitSequence(update);
+            if (commitSequence) {
+              pushTableCellCommitUndoFocus(
+                update.startState.doc.toString(),
+                commitSequence,
+              );
+            } else {
+              pendingHostUndoFocusStack.push({
+                beforeText: update.startState.doc.toString(),
+                restore: lastTableCellCommit
+                  ? { kind: "tableCell", detail: lastTableCellCommit }
+                  : {
+                      kind: "editor",
+                      anchor: update.startState.selection.main.head,
+                    },
+              });
+            }
             lastTableCellCommit = null;
             postDocumentChanges(
               update.changes,
               update.state.doc.toString(),
+              commitSequence,
             );
           }
         }),
@@ -177,18 +183,15 @@ function setEditorDocument(text: string, source: string): void {
 }
 
 function popPendingHostUndoFocus(text: string): PendingHostUndoFocus | null {
-  const lastIndex = pendingHostUndoFocusStack.length - 1;
-  if (lastIndex < 0) {
-    return null;
+  for (let index = pendingHostUndoFocusStack.length - 1; index >= 0; index--) {
+    const pendingFocus = pendingHostUndoFocusStack[index];
+    if (pendingFocus.beforeText === text) {
+      pendingHostUndoFocusStack.splice(index);
+      return pendingFocus;
+    }
   }
 
-  const pendingFocus = pendingHostUndoFocusStack[lastIndex];
-  if (pendingFocus.beforeText !== text) {
-    return null;
-  }
-
-  pendingHostUndoFocusStack.pop();
-  return pendingFocus;
+  return null;
 }
 
 function selectionForHostUndoRestore(
@@ -202,6 +205,43 @@ function selectionForHostUndoRestore(
 
 function clampEditorPosition(position: number, documentLength: number): number {
   return Math.min(documentLength, Math.max(0, position));
+}
+
+function getTableCellCommitSequence(
+  update: ViewUpdate,
+): TableCellCommitSequence | undefined {
+  for (const transaction of update.transactions) {
+    const sequence = transaction.annotation(tableCellCommitSequence);
+    if (sequence) {
+      return sequence;
+    }
+  }
+
+  return undefined;
+}
+
+function pushTableCellCommitUndoFocus(
+  beforeText: string,
+  commitSequence: TableCellCommitSequence,
+): void {
+  let currentText = beforeText;
+  for (const step of commitSequence.steps) {
+    pendingHostUndoFocusStack.push({
+      beforeText: currentText,
+      restore: {
+        kind: "tableCell",
+        detail: step.restore,
+      },
+    });
+    currentText = applyDocumentChange(currentText, step.change);
+  }
+}
+
+function applyDocumentChange(
+  text: string,
+  change: DocumentChangeMessage,
+): string {
+  return `${text.slice(0, change.from)}${change.text}${text.slice(change.to)}`;
 }
 
 function updateStatus(text: string, source: string): void {
@@ -233,6 +273,7 @@ function readEditorOptions(): EditorOptions {
 function postDocumentChanges(
   changes: ChangeSet,
   text: string,
+  commitSequence?: TableCellCommitSequence,
 ): void {
   const documentChanges: DocumentChangeMessage[] = [];
   changes.iterChanges((from, to, _fromB, _toB, inserted) => {
@@ -245,11 +286,13 @@ function postDocumentChanges(
   recordDebug("post-change", {
     baseRevision: hostRevision,
     changes: documentChanges,
+    changeGroups: commitSequence?.steps.map((step) => [step.change]),
   });
   vscode.postMessage({
     type: "change",
     text,
     changes: documentChanges,
+    changeGroups: commitSequence?.steps.map((step) => [step.change]),
     baseRevision: hostRevision,
   });
 }
