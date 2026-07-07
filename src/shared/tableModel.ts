@@ -147,14 +147,17 @@ export function markdownCellToDisplayText(text: string): string {
 }
 
 export function formatMarkdownRow(values: string[]): string {
-  return `| ${values.map(formatMarkdownCell).join(" | ")} |`;
+  return `| ${values.map((value) => formatMarkdownCell(value)).join(" | ")} |`;
 }
 
-export function formatMarkdownCell(value: string): string {
-  return value
+export function formatMarkdownCell(
+  value: string,
+  options: { trim?: boolean } = {},
+): string {
+  const normalized = value
     .replace(/\r\n?/g, "\n")
-    .replace(/\u00a0/g, " ")
-    .trim()
+    .replace(/\u00a0/g, " ");
+  return (options.trim === false ? normalized : normalized.trim())
     .replace(/\n/g, "<br>")
     .replace(/\|/g, "&#124;");
 }

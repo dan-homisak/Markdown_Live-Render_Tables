@@ -75,7 +75,7 @@
   }
 
   // node_modules/@codemirror/state/dist/index.js
-  var Text = class _Text {
+  var Text2 = class _Text {
     /**
     Get the line description around the given position.
     */
@@ -224,7 +224,7 @@
       return text.length <= 32 ? new TextLeaf(text) : TextNode.from(TextLeaf.split(text, []));
     }
   };
-  var TextLeaf = class _TextLeaf extends Text {
+  var TextLeaf = class _TextLeaf extends Text2 {
     constructor(text, length = textLength(text)) {
       super();
       this.text = text;
@@ -306,7 +306,7 @@
       return target;
     }
   };
-  var TextNode = class _TextNode extends Text {
+  var TextNode = class _TextNode extends Text2 {
     constructor(children, length) {
       super();
       this.children = children;
@@ -436,7 +436,7 @@
       return chunked.length == 1 ? chunked[0] : new _TextNode(chunked, length);
     }
   };
-  Text.empty = /* @__PURE__ */ new TextLeaf([""], 0);
+  Text2.empty = /* @__PURE__ */ new TextLeaf([""], 0);
   function textLength(text) {
     let length = -1;
     for (let line of text)
@@ -597,7 +597,7 @@
     }
   };
   if (typeof Symbol != "undefined") {
-    Text.prototype[Symbol.iterator] = function() {
+    Text2.prototype[Symbol.iterator] = function() {
       return this.iter();
     };
     RawTextCursor.prototype[Symbol.iterator] = PartialTextCursor.prototype[Symbol.iterator] = LineCursor.prototype[Symbol.iterator] = function() {
@@ -856,8 +856,8 @@
           sections[i2 + 1] = len;
           let index = i2 >> 1;
           while (inserted.length < index)
-            inserted.push(Text.empty);
-          inserted.push(len ? doc2.slice(pos, pos + len) : Text.empty);
+            inserted.push(Text2.empty);
+          inserted.push(len ? doc2.slice(pos, pos + len) : Text2.empty);
         }
         pos += len;
       }
@@ -990,7 +990,7 @@
           let { from, to = from, insert: insert2 } = spec;
           if (from > to || from < 0 || to > length)
             throw new RangeError(`Invalid change range ${from} to ${to} (in doc of length ${length})`);
-          let insText = !insert2 ? Text.empty : typeof insert2 == "string" ? Text.of(insert2.split(lineSep || DefaultSplit)) : insert2;
+          let insText = !insert2 ? Text2.empty : typeof insert2 == "string" ? Text2.of(insert2.split(lineSep || DefaultSplit)) : insert2;
           let insLen = insText.length;
           if (from == to && insLen == 0)
             return;
@@ -1031,8 +1031,8 @@
           sections.push(part[0], 0);
         } else {
           while (inserted.length < i2)
-            inserted.push(Text.empty);
-          inserted[i2] = Text.of(part.slice(1));
+            inserted.push(Text2.empty);
+          inserted[i2] = Text2.of(part.slice(1));
           sections.push(part[0], inserted[i2].length);
         }
       }
@@ -1067,7 +1067,7 @@
       values2[values2.length - 1] = values2[values2.length - 1].append(value);
     } else {
       while (values2.length < index)
-        values2.push(Text.empty);
+        values2.push(Text2.empty);
       values2.push(value);
     }
   }
@@ -1079,7 +1079,7 @@
         posA += len;
         posB += len;
       } else {
-        let endA = posA, endB = posB, text = Text.empty;
+        let endA = posA, endB = posB, text = Text2.empty;
         for (; ; ) {
           endA += len;
           endB += ins;
@@ -1213,11 +1213,11 @@
     }
     get text() {
       let { inserted } = this.set, index = this.i - 2 >> 1;
-      return index >= inserted.length ? Text.empty : inserted[index];
+      return index >= inserted.length ? Text2.empty : inserted[index];
     }
     textBit(len) {
       let { inserted } = this.set, index = this.i - 2 >> 1;
-      return index >= inserted.length && !len ? Text.empty : inserted[index].slice(this.off, len == null ? void 0 : this.off + len);
+      return index >= inserted.length && !len ? Text2.empty : inserted[index].slice(this.off, len == null ? void 0 : this.off + len);
     }
     forward(len) {
       if (len == this.len)
@@ -2411,7 +2411,7 @@
     [`Text`](https://codemirror.net/6/docs/ref/#state.Text) instance from the given string.
     */
     toText(string2) {
-      return Text.of(string2.split(this.facet(_EditorState.lineSeparator) || DefaultSplit));
+      return Text2.of(string2.split(this.facet(_EditorState.lineSeparator) || DefaultSplit));
     }
     /**
     Return the given range of the document as a string.
@@ -2478,7 +2478,7 @@
     */
     static create(config = {}) {
       let configuration = Configuration.resolve(config.extensions || [], /* @__PURE__ */ new Map());
-      let doc2 = config.doc instanceof Text ? config.doc : Text.of((config.doc || "").split(configuration.staticFacet(_EditorState.lineSeparator) || DefaultSplit));
+      let doc2 = config.doc instanceof Text2 ? config.doc : Text2.of((config.doc || "").split(configuration.staticFacet(_EditorState.lineSeparator) || DefaultSplit));
       let selection = !config.selection ? EditorSelection.single(0) : config.selection instanceof EditorSelection ? config.selection : EditorSelection.single(config.selection.anchor, config.selection.head);
       checkSelection(selection, doc2.length);
       if (!configuration.staticFacet(allowMultipleSelections))
@@ -5561,10 +5561,10 @@
     }
     get overrideDOMText() {
       if (!this.length)
-        return Text.empty;
+        return Text2.empty;
       let { root } = this;
       if (!root)
-        return Text.empty;
+        return Text2.empty;
       let start = this.posAtStart;
       return root.view.state.doc.slice(start, start + this.length);
     }
@@ -5592,7 +5592,7 @@
       return true;
     }
     get overrideDOMText() {
-      return Text.empty;
+      return Text2.empty;
     }
     coordsIn(pos) {
       return this.dom.getBoundingClientRect();
@@ -7568,7 +7568,7 @@
         change = {
           from: sel.from,
           to: sel.to,
-          insert: Text.of(domChange.text.slice(sel.from - from, selEnd).split(LineBreakPlaceholder))
+          insert: Text2.of(domChange.text.slice(sel.from - from, selEnd).split(LineBreakPlaceholder))
         };
       } else if (diff = findDiff(cmp, domChange.text, preferredPos - from, preferredSide)) {
         if (browser.chrome && lastKey == 13 && diff.toB == diff.from + 2 && domChange.text.slice(diff.from, diff.toB) == LineBreakPlaceholder + LineBreakPlaceholder)
@@ -7576,7 +7576,7 @@
         change = {
           from: from + diff.from,
           to: from + diff.toA,
-          insert: Text.of(domChange.text.slice(diff.from, diff.toB).split(LineBreakPlaceholder))
+          insert: Text2.of(domChange.text.slice(diff.from, diff.toB).split(LineBreakPlaceholder))
         };
       }
     } else if (newSel && (!view2.hasFocus && state.facet(editable) || sameSelPos(newSel, sel))) {
@@ -7587,7 +7587,7 @@
     if ((browser.mac || browser.android) && change && change.from == change.to && change.from == sel.head - 1 && /^\. ?$/.test(change.insert.toString()) && view2.contentDOM.getAttribute("autocorrect") == "off") {
       if (newSel && change.insert.length == 2)
         newSel = EditorSelection.single(newSel.main.anchor - 1, newSel.main.head - 1);
-      change = { from: change.from, to: change.to, insert: Text.of([change.insert.toString().replace(".", " ")]) };
+      change = { from: change.from, to: change.to, insert: Text2.of([change.insert.toString().replace(".", " ")]) };
     } else if (state.doc.lineAt(sel.from).to < sel.to && view2.docView.lineHasWidget(sel.to) && view2.inputState.insertingTextAt > Date.now() - 50) {
       change = {
         from: sel.from,
@@ -7597,7 +7597,7 @@
     } else if (browser.chrome && change && change.from == change.to && change.from == sel.head && change.insert.toString() == "\n " && view2.lineWrapping) {
       if (newSel)
         newSel = EditorSelection.single(newSel.main.anchor - 1, newSel.main.head - 1);
-      change = { from: sel.from, to: sel.to, insert: Text.of([" "]) };
+      change = { from: sel.from, to: sel.to, insert: Text2.of([" "]) };
     }
     if (change) {
       return applyDOMChangeInner(view2, change, newSel, lastKey);
@@ -8519,7 +8519,7 @@
   var HeightOracle = class {
     constructor(lineWrapping) {
       this.lineWrapping = lineWrapping;
-      this.doc = Text.empty;
+      this.doc = Text2.empty;
       this.heightSamples = {};
       this.lineHeight = 14;
       this.charWidth = 7;
@@ -9345,7 +9345,7 @@
       let guessWrapping = state.facet(contentAttributes).some((v) => typeof v != "function" && v.class == "cm-lineWrapping");
       this.heightOracle = new HeightOracle(guessWrapping);
       this.stateDeco = staticDeco(state);
-      this.heightMap = HeightMap.empty().applyChanges(this.stateDeco, Text.empty, this.heightOracle.setDoc(state.doc), [new ChangedRange(0, 0, 0, state.doc.length)]);
+      this.heightMap = HeightMap.empty().applyChanges(this.stateDeco, Text2.empty, this.heightOracle.setDoc(state.doc), [new ChangedRange(0, 0, 0, state.doc.length)]);
       for (let i2 = 0; i2 < 2; i2++) {
         this.viewport = this.getViewport(0, null);
         if (!this.updateForViewport())
@@ -9496,7 +9496,7 @@
         clearHeightChangeFlag();
         for (let vp of this.viewports) {
           let heights = vp.from == this.viewport.from ? lineHeights : view2.docView.measureVisibleLineHeights(vp);
-          this.heightMap = (refresh ? HeightMap.empty().applyChanges(this.stateDeco, Text.empty, this.heightOracle, [new ChangedRange(0, 0, 0, view2.state.doc.length)]) : this.heightMap).updateHeight(oracle, 0, refresh, new MeasuredHeights(vp.from, heights));
+          this.heightMap = (refresh ? HeightMap.empty().applyChanges(this.stateDeco, Text2.empty, this.heightOracle, [new ChangedRange(0, 0, 0, view2.state.doc.length)]) : this.heightMap).updateHeight(oracle, 0, refresh, new MeasuredHeights(vp.from, heights));
         }
         if (heightChangeFlag)
           result |= 2;
@@ -10652,10 +10652,10 @@
         let change = {
           from: diff.from + from,
           to: diff.toA + from,
-          insert: Text.of(e.text.slice(diff.from, diff.toB).split("\n"))
+          insert: Text2.of(e.text.slice(diff.from, diff.toB).split("\n"))
         };
         if ((browser.mac || browser.android) && change.from == head - 1 && /^\. ?$/.test(e.text) && view2.contentDOM.getAttribute("autocorrect") == "off")
-          change = { from, to, insert: Text.of([e.text.replace(".", " ")]) };
+          change = { from, to, insert: Text2.of([e.text.replace(".", " ")]) };
         this.pendingContextChange = change;
         if (!view2.state.readOnly) {
           let newLen = this.to - this.from + (change.to - change.from + change.insert.length);
@@ -16466,7 +16466,7 @@
       let { text, ranges } = snippet2.instantiate(editor.state, from);
       let { main } = editor.state.selection;
       let spec = {
-        changes: { from, to: to == main.from ? main.to : to, insert: Text.of(text) },
+        changes: { from, to: to == main.from ? main.to : to, insert: Text2.of(text) },
         scrollIntoView: true,
         annotations: completion ? [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")] : void 0
       };
@@ -23494,10 +23494,11 @@
     return text.trim().replace(/<br\s*\/?>/gi, "\n").replace(/&#124;|&vert;/gi, "|");
   }
   function formatMarkdownRow(values2) {
-    return `| ${values2.map(formatMarkdownCell).join(" | ")} |`;
+    return `| ${values2.map((value) => formatMarkdownCell(value)).join(" | ")} |`;
   }
-  function formatMarkdownCell(value) {
-    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ").trim().replace(/\n/g, "<br>").replace(/\|/g, "&#124;");
+  function formatMarkdownCell(value, options = {}) {
+    const normalized = value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+    return (options.trim === false ? normalized : normalized.trim()).replace(/\n/g, "<br>").replace(/\|/g, "&#124;");
   }
   function formatTableCellEdit(row, columnCount, column, value) {
     const values2 = rowToDisplayValues(row, Math.max(columnCount, column + 1));
@@ -24031,16 +24032,24 @@
 
   // src/live-v4/tableCellCommitSequence.ts
   var tableCellCommitSequence = Annotation.define();
+  var tableCellLiveEdit = Annotation.define();
 
   // src/live-v4/render/TableWidget.ts
-  var RenderedTableWidget = class extends WidgetType {
+  var RenderedTableWidget = class _RenderedTableWidget extends WidgetType {
     constructor(table) {
       super();
       this.table = table;
     }
     table;
-    eq() {
-      return false;
+    eq(widget) {
+      return widget instanceof _RenderedTableWidget && widget.table.from === this.table.from && preservedLiveEditTableStarts.has(this.table.from);
+    }
+    updateDOM(dom, _view) {
+      if (!canPatchTableDOM(dom, this.table)) {
+        return false;
+      }
+      patchTableDOM(dom, this.table);
+      return true;
     }
     getTableFrom() {
       return this.table.from;
@@ -24112,11 +24121,77 @@
       return true;
     }
   };
+  function canPatchTableDOM(dom, table) {
+    if (!dom.classList.contains("mm-live-v4-table-widget")) {
+      return false;
+    }
+    const existingCells = dom.querySelectorAll(
+      ".mm-live-v4-table-cell"
+    );
+    return existingCells.length === table.columnCount * (table.body.length + 1);
+  }
+  function patchTableDOM(dom, table) {
+    dom.dataset.blockId = table.id;
+    dom.dataset.srcFrom = String(table.from);
+    dom.dataset.srcTo = String(table.to);
+    patchTableRowDOM(dom, table, table.header, "header", 0);
+    table.body.forEach((row, rowIndex) => {
+      patchTableRowDOM(dom, table, row, "body", rowIndex);
+    });
+    applyColumnSizing(
+      dom,
+      measureTableColumnSizing(
+        table,
+        measureAvailableDataWidthCh(dom),
+        readActiveCellSizingOverride(dom)
+      )
+    );
+  }
+  function patchTableRowDOM(dom, table, sourceRow, rowKind, rowIndex) {
+    const lineCell = dom.querySelector(
+      `.mm-live-v4-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`
+    );
+    if (lineCell) {
+      lineCell.textContent = String(sourceRow.lineIndex + 1);
+    }
+    const values2 = rowToDisplayValues(sourceRow, table.columnCount);
+    for (let column = 0; column < table.columnCount; column++) {
+      const cell = dom.querySelector(
+        [
+          `.mm-live-v4-table-cell[data-row-kind="${rowKind}"]`,
+          `[data-row-index="${rowIndex}"]`,
+          `[data-column="${column}"]`
+        ].join("")
+      );
+      if (!cell) {
+        continue;
+      }
+      const value = values2[column] ?? "";
+      const isActive = cell.ownerDocument.activeElement === cell;
+      cell.dataset.tableFrom = String(table.from);
+      cell.dataset.sourceValue = value;
+      cell.dataset.original = value;
+      const sourceCell = sourceRow.cells[column];
+      if (sourceCell) {
+        const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
+        cell.dataset.sourceFrom = String(sourceCell.start);
+        cell.dataset.sourceTo = String(sourceCell.end);
+        cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
+        cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
+      }
+      if (!isActive && cell.textContent !== value) {
+        cell.textContent = value;
+      }
+    }
+  }
   var persistentCellHistories = /* @__PURE__ */ new Map();
+  var preservedLiveEditTableStarts = /* @__PURE__ */ new Set();
+  var chWidthCache = /* @__PURE__ */ new WeakMap();
   function appendCells(options) {
     appendSourceLineCell(options);
     const values2 = rowToDisplayValues(options.sourceRow, options.table.columnCount);
     values2.forEach((value, column) => {
+      const sourceCell = options.sourceRow.cells[column];
       const cell = document.createElement(options.tagName);
       cell.className = "mm-live-v4-table-cell";
       cell.contentEditable = "true";
@@ -24127,6 +24202,14 @@
       cell.dataset.rowIndex = String(options.rowIndex);
       cell.dataset.column = String(column);
       cell.dataset.original = value;
+      cell.dataset.sourceValue = value;
+      if (sourceCell) {
+        const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
+        cell.dataset.sourceFrom = String(sourceCell.start);
+        cell.dataset.sourceTo = String(sourceCell.end);
+        cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
+        cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
+      }
       cell.style.textAlign = options.table.alignments[column] ?? "left";
       options.tableRow.append(cell);
     });
@@ -24139,6 +24222,19 @@
     cell.textContent = String(options.sourceLineNumber);
     cell.setAttribute("aria-hidden", "true");
     options.tableRow.append(cell);
+  }
+  function getSourceCellPaddingWhitespace(raw) {
+    if (raw.trim() === "") {
+      const split = Math.floor(raw.length / 2);
+      return {
+        leadingWhitespace: raw.slice(0, split),
+        trailingWhitespace: raw.slice(split)
+      };
+    }
+    return {
+      leadingWhitespace: raw.match(/^\s*/)?.[0] ?? "",
+      trailingWhitespace: raw.match(/\s*$/)?.[0] ?? ""
+    };
   }
   function appendColumnSizing(tableElement, table, columnSizing) {
     const colgroup = document.createElement("colgroup");
@@ -24166,15 +24262,10 @@
           readActiveCellSizingOverride(wrapper)
         )
       );
-      const styles = getComputedStyle(tableElement);
-      const lineHeight = parseFloat(styles.lineHeight);
       const tableHeight = tableElement.getBoundingClientRect().height;
       syncScrollbar();
       const scrollbarHeight = scrollbar.hidden ? 0 : scrollbar.getBoundingClientRect().height;
-      wrapper.style.height = `${Math.max(
-        0,
-        tableHeight + scrollbarHeight - lineHeight * 2
-      )}px`;
+      wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
     };
     const scheduleLayout = () => {
       if (pendingAnimationFrame !== 0) {
@@ -24248,15 +24339,42 @@
     return chWidth > 0 ? availablePx / chWidth : void 0;
   }
   function measureChWidth(element) {
+    const styles = getComputedStyle(element);
+    const cacheKey = [
+      styles.fontFamily,
+      styles.fontSize,
+      styles.fontWeight,
+      styles.fontStretch,
+      styles.fontStyle,
+      styles.letterSpacing,
+      styles.fontFeatureSettings,
+      styles.fontVariationSettings
+    ].join("|");
+    const cached = chWidthCache.get(element);
+    if (cached?.key === cacheKey) {
+      return cached.width;
+    }
     const probe = element.ownerDocument.createElement("span");
     probe.textContent = "0";
     probe.style.position = "absolute";
+    probe.style.left = "-10000px";
+    probe.style.top = "0";
     probe.style.visibility = "hidden";
     probe.style.pointerEvents = "none";
     probe.style.whiteSpace = "pre";
-    element.append(probe);
+    probe.style.fontFamily = styles.fontFamily;
+    probe.style.fontSize = styles.fontSize;
+    probe.style.fontWeight = styles.fontWeight;
+    probe.style.fontStretch = styles.fontStretch;
+    probe.style.fontStyle = styles.fontStyle;
+    probe.style.letterSpacing = styles.letterSpacing;
+    probe.style.fontFeatureSettings = styles.fontFeatureSettings;
+    probe.style.fontVariationSettings = styles.fontVariationSettings;
+    const host = element.ownerDocument.body ?? element.ownerDocument.documentElement;
+    host.append(probe);
     const width = probe.getBoundingClientRect().width;
     probe.remove();
+    chWidthCache.set(element, { key: cacheKey, width });
     return width;
   }
   function resolveCssLengthPx(element, value) {
@@ -24332,6 +24450,7 @@
         }
         event.preventDefault();
         if (applyLiveCellEdit(view2, table, cell)) {
+          scheduleTableLayout();
           return;
         }
         scheduleTableLayout();
@@ -24343,12 +24462,26 @@
         }
         event.preventDefault();
         if (applyLiveCellEdit(view2, table, cell)) {
+          scheduleTableLayout();
           return;
         }
         scheduleTableLayout();
         return;
       }
-      recordCellEditHistory(cellHistories, cell);
+      const nextSnapshot = computeBeforeInputSnapshot(cell, event);
+      if (!nextSnapshot) {
+        recordCellEditHistory(cellHistories, cell);
+        return;
+      }
+      event.preventDefault();
+      applyCellEditSnapshotChange(
+        view2,
+        table,
+        cell,
+        cellHistories,
+        nextSnapshot,
+        scheduleTableLayout
+      );
     });
     wrapper.addEventListener("input", (event) => {
       const cell = findCell(event.target);
@@ -24357,6 +24490,7 @@
       }
       syncCellEditHistory(cellHistories, cell);
       if (applyLiveCellEdit(view2, table, cell)) {
+        scheduleTableLayout();
         return;
       }
       scheduleTableLayout();
@@ -24387,6 +24521,7 @@
         }
         event.preventDefault();
         if (applyLiveCellEdit(view2, table, cell)) {
+          scheduleTableLayout();
           return;
         }
         scheduleTableLayout();
@@ -24399,6 +24534,25 @@
         });
         cell.blur();
         view2.focus();
+        return;
+      }
+      if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (!getCellSelectionOffsets(cell)) {
+          focusCellAtEnd(cell);
+        }
+        const nextSnapshot = computeCellTextInsertionSnapshot(cell, "\n");
+        if (!nextSnapshot) {
+          return;
+        }
+        event.preventDefault();
+        applyCellEditSnapshotChange(
+          view2,
+          table,
+          cell,
+          cellHistories,
+          nextSnapshot,
+          scheduleTableLayout
+        );
         return;
       }
       if (isUnmodifiedVerticalArrow(event)) {
@@ -24450,11 +24604,11 @@
       return;
     }
     const value = readCellDisplayValue(cell);
-    if (value === cell.dataset.original) {
+    if (value === getCellSourceValue(cell)) {
       dispatchSelection(view2, options.selectionAnchor);
       return;
     }
-    const originalValue = cell.dataset.original ?? "";
+    const originalValue = getCellSourceValue(cell);
     const caretOffset = getCellCaretOffset(cell);
     const restoreCaretOffset = Math.min(
       originalValue.length,
@@ -24540,7 +24694,7 @@
       return false;
     }
     const value = readCellDisplayValue(cell);
-    const originalValue = cell.dataset.original ?? "";
+    const originalValue = getCellSourceValue(cell);
     if (value === originalValue) {
       return false;
     }
@@ -24549,45 +24703,121 @@
       originalValue.length,
       caretOffset + Math.max(0, originalValue.length - value.length)
     );
-    const edit = formatTableCellSourceEdit(
+    const edit = formatLiveTableCellSourceEdit(cell, value) ?? formatTableCellSourceEdit(
       sourceRow,
       table.columnCount,
       column,
       value
     );
+    const restore = {
+      tableFrom: table.from,
+      rowKind,
+      rowIndex,
+      column,
+      from: edit.from,
+      to: edit.to,
+      restoreCaretOffset
+    };
     view2.dom.dispatchEvent(
       new CustomEvent("mlrt:table-cell-commit", {
         bubbles: true,
         detail: {
-          tableFrom: table.from,
-          rowKind,
-          rowIndex,
-          column,
-          from: edit.from,
-          to: edit.to,
+          ...restore,
           insertLength: edit.insert.length,
-          valueLength: value.length,
-          restoreCaretOffset
+          valueLength: value.length
         }
       })
     );
+    updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, value);
+    updateCellSourceDataset(cell, edit, value);
+    preservedLiveEditTableStarts.add(table.from);
     view2.dispatch({
       changes: {
         from: edit.from,
         to: edit.to,
         insert: edit.insert
       },
-      selection: EditorSelection.cursor(edit.from + edit.insert.length, 1),
-      annotations: allowTableSourceChange.of(true),
-      scrollIntoView: true,
+      annotations: [
+        allowTableSourceChange.of(true),
+        tableCellLiveEdit.of({
+          change: {
+            from: edit.from,
+            to: edit.to,
+            text: edit.insert
+          },
+          restore
+        })
+      ],
       userEvent: "input"
     });
-    focusCellAfterRenderAtOffset(
-      table.from,
-      { rowKind, rowIndex: String(rowIndex), column: String(column) },
-      caretOffset
-    );
+    requestTableAnimationFrame(cell, () => {
+      preservedLiveEditTableStarts.delete(table.from);
+    });
+    if (!cell.isConnected || cell.ownerDocument.activeElement !== cell) {
+      focusCellAfterRenderAtOffset(
+        table.from,
+        { rowKind, rowIndex: String(rowIndex), column: String(column) },
+        caretOffset
+      );
+    }
     return true;
+  }
+  function getCellSourceValue(cell) {
+    return cell.dataset.sourceValue ?? cell.dataset.original ?? "";
+  }
+  function formatLiveTableCellSourceEdit(cell, value) {
+    const from = Number(cell.dataset.sourceFrom);
+    const to = Number(cell.dataset.sourceTo);
+    if (!Number.isInteger(from) || from < 0 || !Number.isInteger(to) || to < from) {
+      return null;
+    }
+    return {
+      from,
+      to,
+      insert: `${cell.dataset.sourceLeadingWhitespace ?? ""}${formatMarkdownCell(value, { trim: false })}${cell.dataset.sourceTrailingWhitespace ?? ""}`
+    };
+  }
+  function updateCellSourceDataset(cell, edit, value) {
+    cell.dataset.sourceValue = value;
+    cell.dataset.original = value;
+    cell.dataset.sourceFrom = String(edit.from);
+    cell.dataset.sourceTo = String(edit.from + edit.insert.length);
+  }
+  function updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, value) {
+    const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex];
+    if (!sourceRow) {
+      return;
+    }
+    const delta = edit.insert.length - (edit.to - edit.from);
+    table.to += delta;
+    sourceRow.to += delta;
+    sourceRow.text = `${sourceRow.text.slice(0, edit.from - sourceRow.from)}${edit.insert}${sourceRow.text.slice(edit.to - sourceRow.from)}`;
+    for (const cell of sourceRow.cells) {
+      if (cell.start > edit.from) {
+        cell.start += delta;
+      }
+      if (cell.end >= edit.to) {
+        cell.end += delta;
+      }
+    }
+    for (const row of [table.delimiter, ...table.body]) {
+      if (row === sourceRow || row.from <= sourceRow.from) {
+        continue;
+      }
+      row.from += delta;
+      row.to += delta;
+      for (const cell of row.cells) {
+        cell.start += delta;
+        cell.end += delta;
+      }
+    }
+    const editedCell = sourceRow.cells[column];
+    if (editedCell) {
+      editedCell.start = edit.from;
+      editedCell.end = edit.from + edit.insert.length;
+      editedCell.raw = edit.insert;
+    }
+    table.id = `table-${table.from}-${table.to}`;
   }
   function buildCellCommitValueSteps(history, originalValue, finalValue, fallbackRestoreCaretOffset) {
     const snapshots = history?.undoStack ?? [];
@@ -24642,7 +24872,7 @@
     });
   }
   function readCellDisplayValue(cell) {
-    return cell.innerText.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
+    return cell.innerText.replace(/\u00a0/g, " ");
   }
   function dispatchSelection(view2, selectionAnchor) {
     if (selectionAnchor === void 0) {
@@ -24792,6 +25022,70 @@
     history.lastValue = snapshot.value;
     return true;
   }
+  function computeBeforeInputSnapshot(cell, event) {
+    const selection = getCellSelectionOffsets(cell);
+    if (!selection) {
+      return null;
+    }
+    const value = readCellDisplayValue(cell);
+    const from = Math.min(selection.anchor, selection.head);
+    const to = Math.max(selection.anchor, selection.head);
+    if (event.inputType === "insertText") {
+      const insert2 = event.data ?? "";
+      return replaceCellTextRange(value, from, to, insert2);
+    }
+    if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
+      return replaceCellTextRange(value, from, to, "\n");
+    }
+    if (event.inputType === "deleteContentBackward" || event.inputType === "deleteByCut") {
+      if (from !== to) {
+        return replaceCellTextRange(value, from, to, "");
+      }
+      if (from === 0) {
+        return { value, caretOffset: 0 };
+      }
+      return replaceCellTextRange(value, from - 1, to, "");
+    }
+    if (event.inputType === "deleteContentForward") {
+      if (from !== to) {
+        return replaceCellTextRange(value, from, to, "");
+      }
+      if (to >= value.length) {
+        return { value, caretOffset: value.length };
+      }
+      return replaceCellTextRange(value, from, to + 1, "");
+    }
+    return null;
+  }
+  function computeCellTextInsertionSnapshot(cell, insert2) {
+    const selection = getCellSelectionOffsets(cell);
+    if (!selection) {
+      return null;
+    }
+    const value = readCellDisplayValue(cell);
+    return replaceCellTextRange(
+      value,
+      Math.min(selection.anchor, selection.head),
+      Math.max(selection.anchor, selection.head),
+      insert2
+    );
+  }
+  function replaceCellTextRange(value, from, to, insert2) {
+    return {
+      value: `${value.slice(0, from)}${insert2}${value.slice(to)}`,
+      caretOffset: from + insert2.length
+    };
+  }
+  function applyCellEditSnapshotChange(view2, table, cell, histories, snapshot, scheduleTableLayout) {
+    recordCellEditHistory(histories, cell);
+    applyCellEditSnapshot(cell, snapshot);
+    syncCellEditHistory(histories, cell);
+    if (applyLiveCellEdit(view2, table, cell)) {
+      scheduleTableLayout();
+      return;
+    }
+    scheduleTableLayout();
+  }
   function captureCellEditSnapshot(cell) {
     return {
       value: readCellDisplayValue(cell),
@@ -24799,8 +25093,21 @@
     };
   }
   function applyCellEditSnapshot(cell, snapshot) {
-    cell.textContent = snapshot.value;
+    setCellPlainText(cell, snapshot.value);
     setCellCaretOffset(cell, snapshot.caretOffset);
+  }
+  function setCellPlainText(cell, value) {
+    if (cell.childNodes.length === 1 && cell.firstChild instanceof Text) {
+      if (cell.firstChild.data !== value) {
+        cell.firstChild.data = value;
+      }
+      return;
+    }
+    if (cell.childNodes.length === 0) {
+      cell.append(cell.ownerDocument.createTextNode(value));
+      return;
+    }
+    cell.replaceChildren(cell.ownerDocument.createTextNode(value));
   }
   function getCellEditHistoryDirection(event) {
     const key = event.key.toLowerCase();
@@ -24835,6 +25142,27 @@
     range.detach();
     measuringRange.detach();
     return offset;
+  }
+  function getCellSelectionOffsets(cell) {
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell) || !isNodeInside(selection.focusNode, cell)) {
+      return null;
+    }
+    return {
+      anchor: getCellNodeOffset(cell, selection.anchorNode, selection.anchorOffset),
+      head: getCellNodeOffset(cell, selection.focusNode, selection.focusOffset)
+    };
+  }
+  function getCellNodeOffset(cell, node, offset) {
+    if (!node) {
+      return readCellDisplayValue(cell).length;
+    }
+    const measuringRange = cell.ownerDocument.createRange();
+    measuringRange.selectNodeContents(cell);
+    measuringRange.setEnd(node, offset);
+    const measuredOffset = measuringRange.toString().replace(/\u00a0/g, " ").length;
+    measuringRange.detach();
+    return measuredOffset;
   }
   function setCellCaretOffset(cell, offset) {
     const selection = cell.ownerDocument.defaultView?.getSelection();
@@ -24962,13 +25290,18 @@
       return {
         projection,
         decorations: Decoration.set(
-          tables.map(
-            (table) => Decoration.replace({
+          tables.flatMap((table) => [
+            Decoration.widget({
               widget: new RenderedTableWidget(table),
               block: true,
-              inclusive: false
-            }).range(table.from, table.to)
-          ),
+              side: -1
+            }).range(table.from),
+            ...[table.header, table.delimiter, ...table.body].map(
+              (row) => Decoration.line({
+                class: "mm-live-v4-hidden-table-source-line"
+              }).range(row.from)
+            )
+          ]),
           true
         )
       };
@@ -24980,6 +25313,13 @@
       update(value, transaction) {
         if (!transaction.docChanged) {
           return value;
+        }
+        const liveEdit = transaction.annotation(tableCellLiveEdit);
+        if (liveEdit) {
+          return {
+            projection: value.projection,
+            decorations: value.decorations.map(transaction.changes)
+          };
         }
         return buildState(transaction.state);
       },
@@ -25216,6 +25556,11 @@
         }
         update(update) {
           this.syncObservedTableWidgets(update.view);
+          if (update.transactions.some(
+            (transaction) => transaction.annotation(tableCellLiveEdit)
+          )) {
+            return;
+          }
           if (update.geometryChanged || update.viewportChanged || update.docChanged) {
             this.schedule(update.view);
           }
@@ -25331,6 +25676,9 @@
           if (!transaction.docChanged) {
             return value;
           }
+          if (transaction.annotation(tableCellLiveEdit)) {
+            return value.map(transaction.changes);
+          }
           return buildTableLineNumberSuppressions(
             transaction.state.doc.toString()
           );
@@ -25343,6 +25691,7 @@
     return tableLineNumberSuppressions;
   }
   var hiddenLineNumberMarker = new class extends GutterMarker {
+    elementClass = "mm-live-v4-hidden-table-source-gutter";
     eq(other) {
       return other === this;
     }
@@ -25353,7 +25702,9 @@
   function buildTableLineNumberSuppressions(text) {
     const builder = new RangeSetBuilder();
     for (const table of parseMarkdownTables(text)) {
-      builder.add(table.from, table.from, hiddenLineNumberMarker);
+      for (const row of [table.header, table.delimiter, ...table.body]) {
+        builder.add(row.from, row.from, hiddenLineNumberMarker);
+      }
     }
     return builder.finish();
   }

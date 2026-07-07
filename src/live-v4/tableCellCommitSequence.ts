@@ -25,3 +25,5 @@ export interface TableCellCommitRestore {
 
 export const tableCellCommitSequence =
   Annotation.define<TableCellCommitSequence>();
+
+export const tableCellLiveEdit = Annotation.define<TableCellCommitStep>();

@@ -23016,10 +23016,11 @@
     return text.trim().replace(/<br\s*\/?>/gi, "\n").replace(/&#124;|&vert;/gi, "|");
   }
   function formatMarkdownRow(values2) {
-    return `| ${values2.map(formatMarkdownCell).join(" | ")} |`;
+    return `| ${values2.map((value) => formatMarkdownCell(value)).join(" | ")} |`;
   }
-  function formatMarkdownCell(value) {
-    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ").trim().replace(/\n/g, "<br>").replace(/\|/g, "&#124;");
+  function formatMarkdownCell(value, options = {}) {
+    const normalized = value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+    return (options.trim === false ? normalized : normalized.trim()).replace(/\n/g, "<br>").replace(/\|/g, "&#124;");
   }
   function formatTableCellEdit(row, columnCount, column, value) {
     const values2 = rowToDisplayValues(row, Math.max(columnCount, column + 1));

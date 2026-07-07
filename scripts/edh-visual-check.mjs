@@ -208,6 +208,12 @@ try {
   if (!liveClient) {
     throw new Error("Enter exit check failed: live webview client was not found.");
   }
+  const gutterAlignment = await evaluateJson(
+    liveClient,
+    tableGutterAlignmentExpression(),
+  );
+  assertTableGutterAlignment(gutterAlignment);
+  console.log("TABLE GUTTER ALIGNMENT CHECK:", gutterAlignment);
   const responsiveScroll = await evaluateJson(
     liveClient,
     tableResponsiveScrollExpression(),
@@ -231,6 +237,24 @@ try {
   const liveResize = await evaluateJson(liveClient, tableLiveResizeExpression());
   assertTableLiveResize(liveResize);
   console.log("TABLE LIVE RESIZE CHECK:", liveResize);
+  const gutterStability = await evaluateJson(
+    liveClient,
+    tableGutterStabilityExpression(),
+  );
+  assertTableGutterStability(gutterStability);
+  console.log("TABLE GUTTER STABILITY CHECK:", gutterStability);
+  const tableRenderStability = await evaluateJson(
+    liveClient,
+    tableRenderStabilityExpression(),
+  );
+  assertTableRenderStability(tableRenderStability);
+  console.log("TABLE RENDER STABILITY CHECK:", tableRenderStability);
+  const whitespaceDeletion = await evaluateJson(
+    liveClient,
+    tableWhitespaceDeletionExpression(),
+  );
+  assertTableWhitespaceDeletion(whitespaceDeletion);
+  console.log("TABLE WHITESPACE DELETION CHECK:", whitespaceDeletion);
   const editShortcuts = await evaluateJson(
     liveClient,
     tableCellEditShortcutsExpression(),
@@ -528,6 +552,456 @@ function liveMetricsExpression() {
   })()`;
 }
 
+function tableGutterAlignmentExpression() {
+  return `(() => {
+    const box = (element) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        top: rect.top,
+        bottom: rect.bottom,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+      };
+    };
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const scroller = root.querySelector('.cm-scroller');
+    const table = root.querySelector('.mm-live-v4-table');
+    const tableSourceLines = Array.from(root.querySelectorAll('.mm-live-v4-table-source-line'));
+    const nativeRows = Array.from(root.querySelectorAll('.cm-lineNumbers .cm-gutterElement')).map((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = root.defaultView.getComputedStyle(element);
+      return {
+        text: element.textContent.trim(),
+        className: element.className,
+        top: rect.top,
+        bottom: rect.bottom,
+        height: rect.height,
+        visible:
+          rect.height > 0.5 &&
+          style.visibility !== 'hidden' &&
+          style.display !== 'none' &&
+          (!scroller || (rect.bottom > scroller.getBoundingClientRect().top && rect.top < scroller.getBoundingClientRect().bottom)),
+        inTableBand:
+          Boolean(table) &&
+          rect.height > 0.5 &&
+          rect.bottom > table.getBoundingClientRect().top + 0.5 &&
+          rect.top < table.getBoundingClientRect().bottom - 0.5,
+      };
+    });
+    const visibleTextRows = nativeRows
+      .filter((row) => row.visible && row.text)
+      .sort((a, b) => a.top - b.top);
+    const numericRows = visibleTextRows
+      .map((row) => Number(row.text))
+      .filter((value) => Number.isFinite(value));
+    const hiddenNativeRows = nativeRows.filter((row) =>
+      row.className.includes('mm-live-v4-hidden-table-source-gutter')
+    );
+    const hiddenContentLines = Array.from(root.querySelectorAll('.cm-line.mm-live-v4-hidden-table-source-line')).map((element) => box(element));
+    return JSON.stringify({
+      ok: true,
+      table: box(table),
+      nativeRowsInTableBand: nativeRows.filter((row) => row.visible && row.inTableBand),
+      visibleNativeTexts: visibleTextRows.map((row) => row.text),
+      nativeNumbersStrictlyIncrease: numericRows.every((value, index) =>
+        index === 0 || value > numericRows[index - 1]
+      ),
+      hiddenNativeRowCount: hiddenNativeRows.length,
+      hiddenNativeRowsHaveZeroHeight: hiddenNativeRows.every((row) => row.height <= 0.5),
+      hiddenContentLineCount: hiddenContentLines.length,
+      hiddenContentLinesHaveZeroHeight: hiddenContentLines.every((row) => !row || row.height <= 0.5),
+      tableSourceLineCount: tableSourceLines.length,
+      tableSourceLineTexts: tableSourceLines.map((line) => line.textContent.trim()),
+    });
+  })()`;
+}
+
+function tableGutterStabilityExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const waitForHostEcho = () => new Promise((done) => {
+      root.defaultView.setTimeout(done, 250);
+    });
+    const visibleNativeRows = () => Array.from(root.querySelectorAll('.cm-lineNumbers .cm-gutterElement')).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = root.defaultView.getComputedStyle(element);
+      return rect.height > 0.5 && style.visibility !== 'hidden' && style.display !== 'none';
+    });
+    const nativeRowsInTableBand = () => {
+      const table = root.querySelector('.mm-live-v4-table');
+      if (!table) return [];
+      const tableRect = table.getBoundingClientRect();
+      return visibleNativeRows().filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.bottom > tableRect.top + 0.5 && rect.top < tableRect.bottom - 0.5;
+      }).map((element) => element.textContent.trim());
+    };
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const gutter = root.querySelector('.cm-lineNumbers');
+    if (!view || !cell || !gutter) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing gutter stability targets',
+        hasView: Boolean(view),
+        hasCell: Boolean(cell),
+        hasGutter: Boolean(gutter),
+      });
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    cell.focus();
+    const range = root.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await waitForRender();
+    const beforeRows = visibleNativeRows();
+    const beforeTexts = beforeRows.map((row) => row.textContent.trim());
+    let childListMutations = 0;
+    let visibleAttributeMutations = 0;
+    const observer = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          childListMutations++;
+        }
+        if (
+          mutation.type === 'attributes' &&
+          mutation.target instanceof root.defaultView.HTMLElement
+        ) {
+          const rect = mutation.target.getBoundingClientRect();
+          if (rect.height > 0.5) {
+            visibleAttributeMutations++;
+          }
+        }
+      }
+    });
+    observer.observe(gutter, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'x',
+    }));
+    await waitForRender();
+    observer.disconnect();
+    const afterRows = visibleNativeRows();
+    const afterTexts = afterRows.map((row) => row.textContent.trim());
+    const preservedVisibleRows =
+      beforeRows.length === afterRows.length &&
+      beforeRows.every((row, index) => row === afterRows[index]);
+    const afterDoc = view.state.doc.toString();
+    await waitForHostEcho();
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: {
+        type: 'setDocument',
+        text: beforeDoc,
+        revision: 999020,
+        debug: false,
+      },
+    }));
+    await waitForRender();
+    return JSON.stringify({
+      ok: true,
+      docChanged: afterDoc !== beforeDoc,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+      beforeTexts,
+      afterTexts,
+      preservedVisibleRows,
+      childListMutations,
+      visibleAttributeMutations,
+      nativeRowsInTableBandAfter: nativeRowsInTableBand(),
+    });
+  })()`;
+}
+
+function tableRenderStabilityExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const waitForHostEcho = () => new Promise((done) => {
+      root.defaultView.setTimeout(done, 250);
+    });
+    const box = (element) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+    const readCell = () => root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const setCaretAtEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const widget = root.querySelector('.mm-live-v4-table-widget');
+    const table = root.querySelector('.mm-live-v4-table');
+    const tableSourceLine = root.querySelector('.mm-live-v4-table-source-line');
+    const scroller = root.querySelector('.cm-scroller');
+    const activeLine = root.querySelector('.cm-activeLine');
+    const activeLineGutter = root.querySelector('.cm-activeLineGutter');
+    const cursorLayer = root.querySelector('.cm-cursorLayer');
+    const selectionLayer = root.querySelector('.cm-selectionLayer');
+    let cell = readCell();
+    if (!view || !widget || !table || !cell || !tableSourceLine || !scroller) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing render stability targets',
+        hasView: Boolean(view),
+        hasWidget: Boolean(widget),
+        hasTable: Boolean(table),
+        hasCell: Boolean(cell),
+        hasTableSourceLine: Boolean(tableSourceLine),
+        hasScroller: Boolean(scroller),
+      });
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    cell.focus();
+    setCaretAtEnd(cell);
+    await waitForRender();
+    const beforeEditorSelection = view.state.selection.toJSON();
+    const beforeScrollTop = scroller.scrollTop;
+    let widgetChildListMutations = 0;
+    let cellChildListMutations = 0;
+    let cellCharacterDataMutations = 0;
+    let tableSourceLineChildListMutations = 0;
+    let activeLineMutations = 0;
+    let activeLineGutterMutations = 0;
+    let cursorLayerChildListMutations = 0;
+    let selectionLayerChildListMutations = 0;
+    let scrollerScrollEvents = 0;
+    const widgetObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          widgetChildListMutations++;
+        }
+      }
+    });
+    const cellObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          cellChildListMutations++;
+        }
+        if (mutation.type === 'characterData') {
+          cellCharacterDataMutations++;
+        }
+      }
+    });
+    const tableSourceLineObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          tableSourceLineChildListMutations++;
+        }
+      }
+    });
+    const activeLineObserver = new root.defaultView.MutationObserver((mutations) => {
+      activeLineMutations += mutations.length;
+    });
+    const activeLineGutterObserver = new root.defaultView.MutationObserver((mutations) => {
+      activeLineGutterMutations += mutations.length;
+    });
+    const cursorLayerObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          cursorLayerChildListMutations++;
+        }
+      }
+    });
+    const selectionLayerObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          selectionLayerChildListMutations++;
+        }
+      }
+    });
+    const onScroll = () => {
+      scrollerScrollEvents++;
+    };
+    widgetObserver.observe(widget, { childList: true, subtree: true });
+    cellObserver.observe(cell, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    tableSourceLineObserver.observe(tableSourceLine, {
+      childList: true,
+      subtree: true,
+    });
+    activeLineObserver.observe(activeLine ?? root.body, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
+    activeLineGutterObserver.observe(activeLineGutter ?? root.body, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
+    if (cursorLayer) {
+      cursorLayerObserver.observe(cursorLayer, { childList: true, subtree: true });
+    }
+    if (selectionLayer) {
+      selectionLayerObserver.observe(selectionLayer, { childList: true, subtree: true });
+    }
+    scroller.addEventListener('scroll', onScroll);
+    const frames = [];
+    const beforeCellText = cell.textContent;
+    for (const character of ['x', 'y', 'z']) {
+      cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: character,
+      }));
+      frames.push({
+        phase: 'sync-' + character,
+        sameWidget: root.querySelector('.mm-live-v4-table-widget') === widget,
+        sameTable: root.querySelector('.mm-live-v4-table') === table,
+        sameCell: readCell() === cell,
+        sameTableSourceLine: root.querySelector('.mm-live-v4-table-source-line') === tableSourceLine,
+        activeIsCell: root.activeElement === cell,
+        cellTextLength: cell.textContent.length,
+        tableBox: box(table),
+        cellBox: box(cell),
+        sourceLineBox: box(tableSourceLine),
+        editorSelection: view.state.selection.toJSON(),
+        scrollTop: scroller.scrollTop,
+      });
+      await waitForRender();
+      frames.push({
+        phase: 'raf-' + character,
+        sameWidget: root.querySelector('.mm-live-v4-table-widget') === widget,
+        sameTable: root.querySelector('.mm-live-v4-table') === table,
+        sameCell: readCell() === cell,
+        sameTableSourceLine: root.querySelector('.mm-live-v4-table-source-line') === tableSourceLine,
+        activeIsCell: root.activeElement === cell,
+        cellTextLength: cell.textContent.length,
+        tableBox: box(table),
+        cellBox: box(cell),
+        sourceLineBox: box(tableSourceLine),
+        editorSelection: view.state.selection.toJSON(),
+        scrollTop: scroller.scrollTop,
+      });
+    }
+    widgetObserver.disconnect();
+    cellObserver.disconnect();
+    tableSourceLineObserver.disconnect();
+    activeLineObserver.disconnect();
+    activeLineGutterObserver.disconnect();
+    cursorLayerObserver.disconnect();
+    selectionLayerObserver.disconnect();
+    scroller.removeEventListener('scroll', onScroll);
+    const afterDoc = view.state.doc.toString();
+    const afterCellText = cell.textContent;
+    const afterEditorSelection = view.state.selection.toJSON();
+    await waitForHostEcho();
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: {
+        type: 'setDocument',
+        text: beforeDoc,
+        revision: 999025,
+        debug: false,
+      },
+    }));
+    await waitForRender();
+    const blankFrames = frames.filter((frame) =>
+      !frame.sameWidget ||
+      !frame.sameTable ||
+      !frame.sameCell ||
+      !frame.sameTableSourceLine ||
+      !frame.activeIsCell ||
+      frame.cellTextLength === 0 ||
+      !frame.tableBox ||
+      !frame.cellBox ||
+      !frame.sourceLineBox ||
+      frame.tableBox.width <= 0 ||
+      frame.tableBox.height <= 0 ||
+      frame.cellBox.width <= 0 ||
+      frame.cellBox.height <= 0 ||
+      frame.sourceLineBox.width <= 0 ||
+      frame.sourceLineBox.height <= 0
+    );
+    return JSON.stringify({
+      ok: true,
+      docChanged: afterDoc !== beforeDoc,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+      beforeCellText,
+      afterCellText,
+      widgetChildListMutations,
+      cellChildListMutations,
+      cellCharacterDataMutations,
+      tableSourceLineChildListMutations,
+      activeLineMutations,
+      activeLineGutterMutations,
+      cursorLayerChildListMutations,
+      selectionLayerChildListMutations,
+      scrollerScrollEvents,
+      beforeEditorSelection,
+      afterEditorSelection,
+      beforeScrollTop,
+      afterScrollTop: scroller.scrollTop,
+      blankFrames,
+      frames,
+    });
+  })()`;
+}
+
 function tableResponsiveScrollExpression() {
   return `(() => {
     const box = (element) => {
@@ -672,7 +1146,7 @@ function restoreTableResponsiveScrollPreviewExpression() {
 }
 
 function tableLiveResizeExpression() {
-  return `new Promise((resolve) => {
+  return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
       try {
         return frame.contentDocument;
@@ -682,9 +1156,27 @@ function tableLiveResizeExpression() {
     }).filter(Boolean)];
     const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
     if (!root) {
-      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
-      return;
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const waitForHostEcho = () => new Promise((done) => {
+      root.defaultView.setTimeout(done, 250);
+    });
+    const restoreDocument = async (revision) => {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text: beforeDoc,
+          revision,
+          debug: false,
+        },
+      }));
+      await waitForRender();
+    };
     const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
     const widget = widgets[widgets.length - 1];
     const table = widget?.querySelector('.mm-live-v4-table');
@@ -692,7 +1184,7 @@ function tableLiveResizeExpression() {
     const columns = Array.from(widget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!widget || !table || !cell || columns.length < 2 || !view) {
-      resolve(JSON.stringify({
+      return JSON.stringify({
         ok: false,
         reason: 'missing live resize targets',
         hasWidget: Boolean(widget),
@@ -700,59 +1192,145 @@ function tableLiveResizeExpression() {
         hasCell: Boolean(cell),
         columnCount: columns.length,
         hasView: Boolean(view),
-      }));
-      return;
+      });
     }
 
     const beforeDoc = view.state.doc.toString();
-	    const beforeWidth = columns[1].getBoundingClientRect().width;
-	    const beforeTableWidth = table.getBoundingClientRect().width;
-	    cell.focus();
-	    cell.textContent = 'short cell with enough live typed text to expand the value column immediately';
-	    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+    const beforeWidth = columns[1].getBoundingClientRect().width;
+    const beforeTableWidth = table.getBoundingClientRect().width;
+    const beforeGutter = root.querySelector('.cm-lineNumbers .cm-gutterElement');
+    cell.focus();
+    const range = root.createRange();
+    range.selectNodeContents(cell);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
       bubbles: true,
       cancelable: true,
       inputType: 'insertText',
-      data: ' immediately',
-	    }));
-	    root.defaultView.requestAnimationFrame(() => {
-	      root.defaultView.requestAnimationFrame(() => {
-	        const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
-	        const currentWidget = currentWidgets[currentWidgets.length - 1];
-	        const currentTable = currentWidget?.querySelector('.mm-live-v4-table');
-	        const currentColumns = Array.from(currentWidget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
-	        const currentCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
-	        const afterWidth = currentColumns[1]?.getBoundingClientRect().width ?? 0;
-	        const afterTableWidth = currentTable?.getBoundingClientRect().width ?? 0;
-	        const afterDoc = view.state.doc.toString();
-	        root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
-	          data: {
-	            type: 'setDocument',
-	            text: beforeDoc,
-	            revision: 999000,
-	            debug: false,
-	          },
-	        }));
-	        root.defaultView.requestAnimationFrame(() => {
-	          root.defaultView.requestAnimationFrame(() => {
-	            resolve(JSON.stringify({
-	              ok: true,
-	              beforeWidth,
-	              afterWidth,
-	              widthDelta: afterWidth - beforeWidth,
-	              beforeTableWidth,
-	              afterTableWidth,
-	              tableWidthDelta: afterTableWidth - beforeTableWidth,
-	              docChanged: afterDoc !== beforeDoc,
-	              restoredDoc: view.state.doc.toString() === beforeDoc,
-	              activeElementClass: currentCell?.className ?? root.activeElement?.className ?? null,
-	            }));
-	          });
-	        });
-	      });
-	    });
-	  })`;
+      data: 'short cell with enough live typed text to expand the value column immediately',
+    }));
+    await waitForRender();
+    const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const currentWidget = currentWidgets[currentWidgets.length - 1];
+    const currentTable = currentWidget?.querySelector('.mm-live-v4-table');
+    const currentColumns = Array.from(currentWidget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
+    const currentCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const currentGutter = root.querySelector('.cm-lineNumbers .cm-gutterElement');
+    const afterWidth = currentColumns[1]?.getBoundingClientRect().width ?? 0;
+    const afterTableWidth = currentTable?.getBoundingClientRect().width ?? 0;
+    const afterDoc = view.state.doc.toString();
+    await waitForHostEcho();
+    await restoreDocument(999000);
+    await restoreDocument(999001);
+    return JSON.stringify({
+      ok: true,
+      beforeWidth,
+      afterWidth,
+      widthDelta: afterWidth - beforeWidth,
+      beforeTableWidth,
+      afterTableWidth,
+      tableWidthDelta: afterTableWidth - beforeTableWidth,
+      docChanged: afterDoc !== beforeDoc,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+      activeElementClass: currentCell?.className ?? root.activeElement?.className ?? null,
+      cellPreserved: currentCell === cell,
+      gutterPreserved: currentGutter === beforeGutter,
+    });
+	  })()`;
 	}
+
+function tableWhitespaceDeletionExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const readCell = () => {
+      const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const widget = widgets[widgets.length - 1];
+      return widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    };
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    let cell = readCell();
+    if (!cell || !view) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing whitespace deletion targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      });
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    cell.focus();
+    cell.textContent = 'alpha now';
+    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertReplacementText',
+      data: 'alpha now',
+    }));
+    await waitForRender();
+    cell = readCell();
+    const textNode = cell?.firstChild;
+    let selectedN = false;
+    if (cell && textNode && textNode.nodeType === root.defaultView.Node.TEXT_NODE) {
+      const nIndex = textNode.textContent.indexOf('now');
+      if (nIndex >= 0) {
+        const range = root.createRange();
+        range.setStart(textNode, nIndex);
+        range.setEnd(textNode, nIndex + 1);
+        const selection = root.defaultView.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        selectedN = true;
+      }
+    }
+    if (cell) {
+      cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'deleteContentBackward',
+        data: null,
+      }));
+    }
+    await waitForRender();
+    cell = readCell();
+    const afterDeleteText = cell?.innerText ?? null;
+    const afterDeleteDoc = view.state.doc.toString();
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: {
+        type: 'setDocument',
+        text: beforeDoc,
+        revision: 999005,
+        debug: false,
+      },
+    }));
+    await waitForRender();
+    return JSON.stringify({
+      ok: true,
+      selectedN,
+      afterDeleteText,
+      sourceContainsExpected: afterDeleteDoc.includes('alpha ow'),
+      sourceContainsCollapsed: afterDeleteDoc.includes('alphaow'),
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
+}
 
 function tableCellEditShortcutsExpression() {
   return `(async () => {
@@ -825,7 +1403,12 @@ function tableCellEditShortcutsExpression() {
 
     cell.focus();
     selectCellContents(cell);
-    root.execCommand('insertText', false, 'base');
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'base',
+    }));
     await waitForRender();
     cell = queryCell();
     const selectedForDelete = cell ? selectTextOffsets(cell, 3, 4) : false;
@@ -838,7 +1421,6 @@ function tableCellEditShortcutsExpression() {
       inputType: 'deleteContentBackward',
       data: null,
     }));
-    root.execCommand('delete');
     await waitForRender();
     cell = queryCell();
     const afterDeleteText = cell?.innerText ?? null;
@@ -864,13 +1446,27 @@ function tableCellEditShortcutsExpression() {
       keyCode: 13,
       which: 13,
     }) : null;
-    root.execCommand('insertLineBreak');
+    if (shiftEnterDefaultAllowed && cell) {
+      cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertLineBreak',
+        data: null,
+      }));
+    }
     await waitForRender();
     cell = queryCell();
     if (cell) {
       setCaretAtCellEnd(cell);
     }
-    root.execCommand('insertText', false, 'next');
+    if (cell) {
+      cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: 'next',
+      }));
+    }
     await waitForRender();
     cell = queryCell();
     const afterShiftEnterText = cell?.innerText ?? null;
@@ -1053,7 +1649,6 @@ function tableHostUndoFocusExpression() {
       inputType: 'deleteContentBackward',
       data: null,
     }));
-    root.execCommand('delete');
     const afterDeleteText = cell.innerText;
     cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
       key: 'Enter',
@@ -1196,7 +1791,6 @@ function tableHostCharacterUndoFocusExpression() {
         inputType: 'insertText',
         data: character,
       }));
-      root.execCommand('insertText', false, character);
       await waitForRender();
       cell = readCurrentShortCell();
       docsAfterType.push(view.state.doc.toString());
@@ -1297,7 +1891,6 @@ function tableThenEditorUndoFocusExpression() {
       inputType: 'deleteContentBackward',
       data: null,
     }));
-    root.execCommand('delete');
     const afterDeleteText = cell.innerText;
     cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
       key: 'Enter',
@@ -1714,11 +2307,30 @@ function assertTableResponsiveScroll(result) {
   }
 }
 
+function assertTableGutterAlignment(result) {
+  if (
+    !result?.ok ||
+    result.nativeRowsInTableBand?.length !== 0 ||
+    !result.nativeNumbersStrictlyIncrease ||
+    result.hiddenNativeRowCount <= 0 ||
+    !result.hiddenNativeRowsHaveZeroHeight ||
+    result.hiddenContentLineCount <= 0 ||
+    !result.hiddenContentLinesHaveZeroHeight ||
+    result.tableSourceLineCount <= 0
+  ) {
+    throw new Error(
+      `Table gutter alignment check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
 function assertTableLiveResize(result) {
 	  if (
 	    !result?.ok ||
 	    !result.docChanged ||
 	    !result.restoredDoc ||
+	    !result.cellPreserved ||
+	    !result.gutterPreserved ||
 	    result.widthDelta <= pixelTolerance ||
 	    result.tableWidthDelta <= pixelTolerance
 	  ) {
@@ -1728,12 +2340,68 @@ function assertTableLiveResize(result) {
   }
 }
 
+function assertTableGutterStability(result) {
+  if (
+    !result?.ok ||
+    !result.docChanged ||
+    !result.restoredDoc ||
+    !result.preservedVisibleRows ||
+    result.childListMutations !== 0 ||
+    result.nativeRowsInTableBandAfter?.length !== 0
+  ) {
+    throw new Error(
+      `Table gutter stability check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableRenderStability(result) {
+  if (
+    !result?.ok ||
+    !result.docChanged ||
+    !result.restoredDoc ||
+    result.widgetChildListMutations !== 0 ||
+    result.cellChildListMutations !== 0 ||
+    result.tableSourceLineChildListMutations !== 0 ||
+    result.activeLineMutations !== 0 ||
+    result.activeLineGutterMutations !== 0 ||
+    result.cursorLayerChildListMutations !== 0 ||
+    result.selectionLayerChildListMutations !== 0 ||
+    result.scrollerScrollEvents !== 0 ||
+    JSON.stringify(result.beforeEditorSelection) !==
+      JSON.stringify(result.afterEditorSelection) ||
+    result.beforeScrollTop !== result.afterScrollTop ||
+    result.cellCharacterDataMutations <= 0 ||
+    result.blankFrames?.length !== 0 ||
+    !result.afterCellText.endsWith("xyz")
+  ) {
+    throw new Error(
+      `Table render stability check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableWhitespaceDeletion(result) {
+  if (
+    !result?.ok ||
+    !result.selectedN ||
+    result.afterDeleteText !== "alpha ow" ||
+    !result.sourceContainsExpected ||
+    result.sourceContainsCollapsed ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table whitespace deletion check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
 function assertTableCellEditShortcuts(result) {
 	  if (
 	    !result?.ok ||
 		    !result.selectedForDelete ||
 	    result.undoDefaultAllowed ||
-	    !result.shiftEnterDefaultAllowed ||
+	    result.shiftEnterDefaultAllowed ||
 	    result.afterDeleteText !== "bas" ||
 	    result.afterUndoText !== "base" ||
 	    !result.undoSelectionCollapsed ||

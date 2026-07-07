@@ -1,6 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
 import { EditorView, WidgetType } from "@codemirror/view";
 import {
+  formatMarkdownCell,
   formatTableCellSourceEdit,
   ParsedRow,
   ParsedTable,
@@ -13,15 +14,31 @@ import {
   TableColumnSizing,
 } from "../../shared/tableColumnSizing";
 import { allowTableSourceChange } from "../../shared/tableSourceProtection";
-import { tableCellCommitSequence } from "../tableCellCommitSequence";
+import {
+  tableCellCommitSequence,
+  tableCellLiveEdit,
+} from "../tableCellCommitSequence";
 
 export class RenderedTableWidget extends WidgetType {
   public constructor(private readonly table: ParsedTable) {
     super();
   }
 
-  public eq(): boolean {
-    return false;
+  public eq(widget: WidgetType): boolean {
+    return (
+      widget instanceof RenderedTableWidget &&
+      widget.table.from === this.table.from &&
+      preservedLiveEditTableStarts.has(this.table.from)
+    );
+  }
+
+  public updateDOM(dom: HTMLElement, _view: EditorView): boolean {
+    if (!canPatchTableDOM(dom, this.table)) {
+      return false;
+    }
+
+    patchTableDOM(dom, this.table);
+    return true;
   }
 
   public getTableFrom(): number {
@@ -105,6 +122,84 @@ export class RenderedTableWidget extends WidgetType {
   }
 }
 
+function canPatchTableDOM(dom: HTMLElement, table: ParsedTable): boolean {
+  if (!dom.classList.contains("mm-live-v4-table-widget")) {
+    return false;
+  }
+
+  const existingCells = dom.querySelectorAll<HTMLElement>(
+    ".mm-live-v4-table-cell",
+  );
+  return existingCells.length === table.columnCount * (table.body.length + 1);
+}
+
+function patchTableDOM(dom: HTMLElement, table: ParsedTable): void {
+  dom.dataset.blockId = table.id;
+  dom.dataset.srcFrom = String(table.from);
+  dom.dataset.srcTo = String(table.to);
+
+  patchTableRowDOM(dom, table, table.header, "header", 0);
+  table.body.forEach((row, rowIndex) => {
+    patchTableRowDOM(dom, table, row, "body", rowIndex);
+  });
+
+  applyColumnSizing(
+    dom,
+    measureTableColumnSizing(
+      table,
+      measureAvailableDataWidthCh(dom),
+      readActiveCellSizingOverride(dom),
+    ),
+  );
+}
+
+function patchTableRowDOM(
+  dom: HTMLElement,
+  table: ParsedTable,
+  sourceRow: ParsedRow,
+  rowKind: "header" | "body",
+  rowIndex: number,
+): void {
+  const lineCell = dom.querySelector<HTMLElement>(
+    `.mm-live-v4-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`,
+  );
+  if (lineCell) {
+    lineCell.textContent = String(sourceRow.lineIndex + 1);
+  }
+
+  const values = rowToDisplayValues(sourceRow, table.columnCount);
+  for (let column = 0; column < table.columnCount; column++) {
+    const cell = dom.querySelector<HTMLElement>(
+      [
+        `.mm-live-v4-table-cell[data-row-kind="${rowKind}"]`,
+        `[data-row-index="${rowIndex}"]`,
+        `[data-column="${column}"]`,
+      ].join(""),
+    );
+    if (!cell) {
+      continue;
+    }
+
+    const value = values[column] ?? "";
+    const isActive = cell.ownerDocument.activeElement === cell;
+    cell.dataset.tableFrom = String(table.from);
+    cell.dataset.sourceValue = value;
+    cell.dataset.original = value;
+    const sourceCell = sourceRow.cells[column];
+    if (sourceCell) {
+      const { leadingWhitespace, trailingWhitespace } =
+        getSourceCellPaddingWhitespace(sourceCell.raw);
+      cell.dataset.sourceFrom = String(sourceCell.start);
+      cell.dataset.sourceTo = String(sourceCell.end);
+      cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
+      cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
+    }
+    if (!isActive && cell.textContent !== value) {
+      cell.textContent = value;
+    }
+  }
+}
+
 interface TableWidgetElement extends HTMLElement {
   __mlrtTableWidgetCleanup?: () => void;
 }
@@ -153,12 +248,15 @@ interface CellTarget {
 type VerticalCellTarget = CellTarget | "before-table" | "after-table";
 
 const persistentCellHistories = new Map<string, CellEditHistory>();
+const preservedLiveEditTableStarts = new Set<number>();
+const chWidthCache = new WeakMap<HTMLElement, { key: string; width: number }>();
 
 function appendCells(options: AppendCellsOptions): void {
   appendSourceLineCell(options);
 
   const values = rowToDisplayValues(options.sourceRow, options.table.columnCount);
   values.forEach((value, column) => {
+    const sourceCell = options.sourceRow.cells[column];
     const cell = document.createElement(options.tagName);
     cell.className = "mm-live-v4-table-cell";
     cell.contentEditable = "true";
@@ -169,6 +267,15 @@ function appendCells(options: AppendCellsOptions): void {
     cell.dataset.rowIndex = String(options.rowIndex);
     cell.dataset.column = String(column);
     cell.dataset.original = value;
+    cell.dataset.sourceValue = value;
+    if (sourceCell) {
+      const { leadingWhitespace, trailingWhitespace } =
+        getSourceCellPaddingWhitespace(sourceCell.raw);
+      cell.dataset.sourceFrom = String(sourceCell.start);
+      cell.dataset.sourceTo = String(sourceCell.end);
+      cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
+      cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
+    }
     cell.style.textAlign = options.table.alignments[column] ?? "left";
     options.tableRow.append(cell);
   });
@@ -182,6 +289,24 @@ function appendSourceLineCell(options: AppendCellsOptions): void {
   cell.textContent = String(options.sourceLineNumber);
   cell.setAttribute("aria-hidden", "true");
   options.tableRow.append(cell);
+}
+
+function getSourceCellPaddingWhitespace(raw: string): {
+  leadingWhitespace: string;
+  trailingWhitespace: string;
+} {
+  if (raw.trim() === "") {
+    const split = Math.floor(raw.length / 2);
+    return {
+      leadingWhitespace: raw.slice(0, split),
+      trailingWhitespace: raw.slice(split),
+    };
+  }
+
+  return {
+    leadingWhitespace: raw.match(/^\s*/)?.[0] ?? "",
+    trailingWhitespace: raw.match(/\s*$/)?.[0] ?? "",
+  };
 }
 
 function appendColumnSizing(
@@ -226,17 +351,12 @@ function bindTableLayout(
         readActiveCellSizingOverride(wrapper),
       ),
     );
-    const styles = getComputedStyle(tableElement);
-    const lineHeight = parseFloat(styles.lineHeight);
     const tableHeight = tableElement.getBoundingClientRect().height;
     syncScrollbar();
     const scrollbarHeight = scrollbar.hidden
       ? 0
       : scrollbar.getBoundingClientRect().height;
-    wrapper.style.height = `${Math.max(
-      0,
-      tableHeight + scrollbarHeight - lineHeight * 2,
-    )}px`;
+    wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
   };
   const scheduleLayout = () => {
     if (pendingAnimationFrame !== 0) {
@@ -334,15 +454,43 @@ function measureAvailableDataWidthCh(wrapper: HTMLElement): number | undefined {
 }
 
 function measureChWidth(element: HTMLElement): number {
+  const styles = getComputedStyle(element);
+  const cacheKey = [
+    styles.fontFamily,
+    styles.fontSize,
+    styles.fontWeight,
+    styles.fontStretch,
+    styles.fontStyle,
+    styles.letterSpacing,
+    styles.fontFeatureSettings,
+    styles.fontVariationSettings,
+  ].join("|");
+  const cached = chWidthCache.get(element);
+  if (cached?.key === cacheKey) {
+    return cached.width;
+  }
+
   const probe = element.ownerDocument.createElement("span");
   probe.textContent = "0";
   probe.style.position = "absolute";
+  probe.style.left = "-10000px";
+  probe.style.top = "0";
   probe.style.visibility = "hidden";
   probe.style.pointerEvents = "none";
   probe.style.whiteSpace = "pre";
-  element.append(probe);
+  probe.style.fontFamily = styles.fontFamily;
+  probe.style.fontSize = styles.fontSize;
+  probe.style.fontWeight = styles.fontWeight;
+  probe.style.fontStretch = styles.fontStretch;
+  probe.style.fontStyle = styles.fontStyle;
+  probe.style.letterSpacing = styles.letterSpacing;
+  probe.style.fontFeatureSettings = styles.fontFeatureSettings;
+  probe.style.fontVariationSettings = styles.fontVariationSettings;
+  const host = element.ownerDocument.body ?? element.ownerDocument.documentElement;
+  host.append(probe);
   const width = probe.getBoundingClientRect().width;
   probe.remove();
+  chWidthCache.set(element, { key: cacheKey, width });
   return width;
 }
 
@@ -456,6 +604,7 @@ function bindTableEditing(
       }
       event.preventDefault();
       if (applyLiveCellEdit(view, table, cell)) {
+        scheduleTableLayout();
         return;
       }
       scheduleTableLayout();
@@ -468,13 +617,28 @@ function bindTableEditing(
       }
       event.preventDefault();
       if (applyLiveCellEdit(view, table, cell)) {
+        scheduleTableLayout();
         return;
       }
       scheduleTableLayout();
       return;
     }
 
-    recordCellEditHistory(cellHistories, cell);
+    const nextSnapshot = computeBeforeInputSnapshot(cell, event);
+    if (!nextSnapshot) {
+      recordCellEditHistory(cellHistories, cell);
+      return;
+    }
+
+    event.preventDefault();
+    applyCellEditSnapshotChange(
+      view,
+      table,
+      cell,
+      cellHistories,
+      nextSnapshot,
+      scheduleTableLayout,
+    );
   });
 
   wrapper.addEventListener("input", (event) => {
@@ -485,6 +649,7 @@ function bindTableEditing(
 
     syncCellEditHistory(cellHistories, cell);
     if (applyLiveCellEdit(view, table, cell)) {
+      scheduleTableLayout();
       return;
     }
     scheduleTableLayout();
@@ -519,6 +684,7 @@ function bindTableEditing(
       }
       event.preventDefault();
       if (applyLiveCellEdit(view, table, cell)) {
+        scheduleTableLayout();
         return;
       }
       scheduleTableLayout();
@@ -532,6 +698,33 @@ function bindTableEditing(
       });
       cell.blur();
       view.focus();
+      return;
+    }
+
+    if (
+      event.key === "Enter" &&
+      event.shiftKey &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey
+    ) {
+      if (!getCellSelectionOffsets(cell)) {
+        focusCellAtEnd(cell);
+      }
+      const nextSnapshot = computeCellTextInsertionSnapshot(cell, "\n");
+      if (!nextSnapshot) {
+        return;
+      }
+
+      event.preventDefault();
+      applyCellEditSnapshotChange(
+        view,
+        table,
+        cell,
+        cellHistories,
+        nextSnapshot,
+        scheduleTableLayout,
+      );
       return;
     }
 
@@ -597,12 +790,12 @@ function commitCellEdit(
   }
 
   const value = readCellDisplayValue(cell);
-  if (value === cell.dataset.original) {
+  if (value === getCellSourceValue(cell)) {
     dispatchSelection(view, options.selectionAnchor);
     return;
   }
 
-  const originalValue = cell.dataset.original ?? "";
+  const originalValue = getCellSourceValue(cell);
   const caretOffset = getCellCaretOffset(cell);
   const restoreCaretOffset = Math.min(
     originalValue.length,
@@ -708,7 +901,7 @@ function applyLiveCellEdit(
   }
 
   const value = readCellDisplayValue(cell);
-  const originalValue = cell.dataset.original ?? "";
+  const originalValue = getCellSourceValue(cell);
   if (value === originalValue) {
     return false;
   }
@@ -718,45 +911,152 @@ function applyLiveCellEdit(
     originalValue.length,
     caretOffset + Math.max(0, originalValue.length - value.length),
   );
-  const edit = formatTableCellSourceEdit(
-    sourceRow,
-    table.columnCount,
+  const edit =
+    formatLiveTableCellSourceEdit(cell, value) ??
+    formatTableCellSourceEdit(
+      sourceRow,
+      table.columnCount,
+      column,
+      value,
+    );
+  const restore = {
+    tableFrom: table.from,
+    rowKind,
+    rowIndex,
     column,
-    value,
-  );
+    from: edit.from,
+    to: edit.to,
+    restoreCaretOffset,
+  };
   view.dom.dispatchEvent(
     new CustomEvent("mlrt:table-cell-commit", {
       bubbles: true,
       detail: {
-        tableFrom: table.from,
-        rowKind,
-        rowIndex,
-        column,
-        from: edit.from,
-        to: edit.to,
+        ...restore,
         insertLength: edit.insert.length,
         valueLength: value.length,
-        restoreCaretOffset,
       },
     }),
   );
+  updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, value);
+  updateCellSourceDataset(cell, edit, value);
+  preservedLiveEditTableStarts.add(table.from);
   view.dispatch({
     changes: {
       from: edit.from,
       to: edit.to,
       insert: edit.insert,
     },
-    selection: EditorSelection.cursor(edit.from + edit.insert.length, 1),
-    annotations: allowTableSourceChange.of(true),
-    scrollIntoView: true,
+    annotations: [
+      allowTableSourceChange.of(true),
+      tableCellLiveEdit.of({
+        change: {
+          from: edit.from,
+          to: edit.to,
+          text: edit.insert,
+        },
+        restore,
+      }),
+    ],
     userEvent: "input",
   });
-  focusCellAfterRenderAtOffset(
-    table.from,
-    { rowKind, rowIndex: String(rowIndex), column: String(column) },
-    caretOffset,
-  );
+  requestTableAnimationFrame(cell, () => {
+    preservedLiveEditTableStarts.delete(table.from);
+  });
+  if (!cell.isConnected || cell.ownerDocument.activeElement !== cell) {
+    focusCellAfterRenderAtOffset(
+      table.from,
+      { rowKind, rowIndex: String(rowIndex), column: String(column) },
+      caretOffset,
+    );
+  }
   return true;
+}
+
+function getCellSourceValue(cell: HTMLElement): string {
+  return cell.dataset.sourceValue ?? cell.dataset.original ?? "";
+}
+
+function formatLiveTableCellSourceEdit(
+  cell: HTMLElement,
+  value: string,
+): TableCellSourceEdit | null {
+  const from = Number(cell.dataset.sourceFrom);
+  const to = Number(cell.dataset.sourceTo);
+  if (
+    !Number.isInteger(from) ||
+    from < 0 ||
+    !Number.isInteger(to) ||
+    to < from
+  ) {
+    return null;
+  }
+
+  return {
+    from,
+    to,
+    insert: `${cell.dataset.sourceLeadingWhitespace ?? ""}${formatMarkdownCell(value, { trim: false })}${cell.dataset.sourceTrailingWhitespace ?? ""}`,
+  };
+}
+
+function updateCellSourceDataset(
+  cell: HTMLElement,
+  edit: TableCellSourceEdit,
+  value: string,
+): void {
+  cell.dataset.sourceValue = value;
+  cell.dataset.original = value;
+  cell.dataset.sourceFrom = String(edit.from);
+  cell.dataset.sourceTo = String(edit.from + edit.insert.length);
+}
+
+function updateTableSourceAfterCellEdit(
+  table: ParsedTable,
+  rowKind: "header" | "body",
+  rowIndex: number,
+  column: number,
+  edit: TableCellSourceEdit,
+  value: string,
+): void {
+  const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex];
+  if (!sourceRow) {
+    return;
+  }
+
+  const delta = edit.insert.length - (edit.to - edit.from);
+  table.to += delta;
+  sourceRow.to += delta;
+  sourceRow.text =
+    `${sourceRow.text.slice(0, edit.from - sourceRow.from)}${edit.insert}${sourceRow.text.slice(edit.to - sourceRow.from)}`;
+
+  for (const cell of sourceRow.cells) {
+    if (cell.start > edit.from) {
+      cell.start += delta;
+    }
+    if (cell.end >= edit.to) {
+      cell.end += delta;
+    }
+  }
+
+  for (const row of [table.delimiter, ...table.body]) {
+    if (row === sourceRow || row.from <= sourceRow.from) {
+      continue;
+    }
+    row.from += delta;
+    row.to += delta;
+    for (const cell of row.cells) {
+      cell.start += delta;
+      cell.end += delta;
+    }
+  }
+
+  const editedCell = sourceRow.cells[column];
+  if (editedCell) {
+    editedCell.start = edit.from;
+    editedCell.end = edit.from + edit.insert.length;
+    editedCell.raw = edit.insert;
+  }
+  table.id = `table-${table.from}-${table.to}`;
 }
 
 function buildCellCommitValueSteps(
@@ -832,7 +1132,7 @@ function buildCellSourceCommitSteps(
 }
 
 function readCellDisplayValue(cell: HTMLElement): string {
-  return cell.innerText.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
+  return cell.innerText.replace(/\u00a0/g, " ");
 }
 
 function dispatchSelection(
@@ -1043,6 +1343,104 @@ function restoreCellEditHistory(
   return true;
 }
 
+function computeBeforeInputSnapshot(
+  cell: HTMLElement,
+  event: InputEvent,
+): CellEditSnapshot | null {
+  const selection = getCellSelectionOffsets(cell);
+  if (!selection) {
+    return null;
+  }
+
+  const value = readCellDisplayValue(cell);
+  const from = Math.min(selection.anchor, selection.head);
+  const to = Math.max(selection.anchor, selection.head);
+  if (event.inputType === "insertText") {
+    const insert = event.data ?? "";
+    return replaceCellTextRange(value, from, to, insert);
+  }
+
+  if (
+    event.inputType === "insertLineBreak" ||
+    event.inputType === "insertParagraph"
+  ) {
+    return replaceCellTextRange(value, from, to, "\n");
+  }
+
+  if (
+    event.inputType === "deleteContentBackward" ||
+    event.inputType === "deleteByCut"
+  ) {
+    if (from !== to) {
+      return replaceCellTextRange(value, from, to, "");
+    }
+    if (from === 0) {
+      return { value, caretOffset: 0 };
+    }
+    return replaceCellTextRange(value, from - 1, to, "");
+  }
+
+  if (event.inputType === "deleteContentForward") {
+    if (from !== to) {
+      return replaceCellTextRange(value, from, to, "");
+    }
+    if (to >= value.length) {
+      return { value, caretOffset: value.length };
+    }
+    return replaceCellTextRange(value, from, to + 1, "");
+  }
+
+  return null;
+}
+
+function computeCellTextInsertionSnapshot(
+  cell: HTMLElement,
+  insert: string,
+): CellEditSnapshot | null {
+  const selection = getCellSelectionOffsets(cell);
+  if (!selection) {
+    return null;
+  }
+
+  const value = readCellDisplayValue(cell);
+  return replaceCellTextRange(
+    value,
+    Math.min(selection.anchor, selection.head),
+    Math.max(selection.anchor, selection.head),
+    insert,
+  );
+}
+
+function replaceCellTextRange(
+  value: string,
+  from: number,
+  to: number,
+  insert: string,
+): CellEditSnapshot {
+  return {
+    value: `${value.slice(0, from)}${insert}${value.slice(to)}`,
+    caretOffset: from + insert.length,
+  };
+}
+
+function applyCellEditSnapshotChange(
+  view: EditorView,
+  table: ParsedTable,
+  cell: HTMLElement,
+  histories: Map<string, CellEditHistory>,
+  snapshot: CellEditSnapshot,
+  scheduleTableLayout: () => void,
+): void {
+  recordCellEditHistory(histories, cell);
+  applyCellEditSnapshot(cell, snapshot);
+  syncCellEditHistory(histories, cell);
+  if (applyLiveCellEdit(view, table, cell)) {
+    scheduleTableLayout();
+    return;
+  }
+  scheduleTableLayout();
+}
+
 function captureCellEditSnapshot(cell: HTMLElement): CellEditSnapshot {
   return {
     value: readCellDisplayValue(cell),
@@ -1054,8 +1452,24 @@ function applyCellEditSnapshot(
   cell: HTMLElement,
   snapshot: CellEditSnapshot,
 ): void {
-  cell.textContent = snapshot.value;
+  setCellPlainText(cell, snapshot.value);
   setCellCaretOffset(cell, snapshot.caretOffset);
+}
+
+function setCellPlainText(cell: HTMLElement, value: string): void {
+  if (cell.childNodes.length === 1 && cell.firstChild instanceof Text) {
+    if (cell.firstChild.data !== value) {
+      cell.firstChild.data = value;
+    }
+    return;
+  }
+
+  if (cell.childNodes.length === 0) {
+    cell.append(cell.ownerDocument.createTextNode(value));
+    return;
+  }
+
+  cell.replaceChildren(cell.ownerDocument.createTextNode(value));
 }
 
 function getCellEditHistoryDirection(
@@ -1107,6 +1521,42 @@ function getCellCaretOffset(cell: HTMLElement): number {
   range.detach();
   measuringRange.detach();
   return offset;
+}
+
+function getCellSelectionOffsets(
+  cell: HTMLElement,
+): { anchor: number; head: number } | null {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  if (
+    !selection ||
+    selection.rangeCount === 0 ||
+    !isNodeInside(selection.anchorNode, cell) ||
+    !isNodeInside(selection.focusNode, cell)
+  ) {
+    return null;
+  }
+
+  return {
+    anchor: getCellNodeOffset(cell, selection.anchorNode, selection.anchorOffset),
+    head: getCellNodeOffset(cell, selection.focusNode, selection.focusOffset),
+  };
+}
+
+function getCellNodeOffset(
+  cell: HTMLElement,
+  node: Node | null,
+  offset: number,
+): number {
+  if (!node) {
+    return readCellDisplayValue(cell).length;
+  }
+
+  const measuringRange = cell.ownerDocument.createRange();
+  measuringRange.selectNodeContents(cell);
+  measuringRange.setEnd(node, offset);
+  const measuredOffset = measuringRange.toString().replace(/\u00a0/g, " ").length;
+  measuringRange.detach();
+  return measuredOffset;
 }
 
 function setCellCaretOffset(cell: HTMLElement, offset: number): void {

@@ -24,6 +24,7 @@ import {
 import { createLiveStateField } from "./LiveStateField";
 import { createPointerController } from "./PointerController";
 import { createTableFirstParser } from "./parser/TableFirstParser";
+import { tableCellLiveEdit } from "./tableCellCommitSequence";
 
 export interface LiveRuntime {
   extensions: Extension[];
@@ -288,6 +289,11 @@ function createEditorGeometrySync(): Extension {
 
       public update(update: ViewUpdate): void {
         this.syncObservedTableWidgets(update.view);
+        if (update.transactions.some((transaction) =>
+          transaction.annotation(tableCellLiveEdit)
+        )) {
+          return;
+        }
         if (
           update.geometryChanged ||
           update.viewportChanged ||
@@ -431,6 +437,9 @@ function createTableLineNumberSuppressions(): Extension {
         if (!transaction.docChanged) {
           return value;
         }
+        if (transaction.annotation(tableCellLiveEdit)) {
+          return value.map(transaction.changes);
+        }
         return buildTableLineNumberSuppressions(
           transaction.state.doc.toString(),
         );
@@ -445,6 +454,8 @@ function createTableLineNumberSuppressions(): Extension {
 }
 
 const hiddenLineNumberMarker = new (class extends GutterMarker {
+  public override elementClass = "mm-live-v4-hidden-table-source-gutter";
+
   public eq(other: GutterMarker): boolean {
     return other === this;
   }
@@ -459,7 +470,9 @@ function buildTableLineNumberSuppressions(
 ): RangeSet<GutterMarker> {
   const builder = new RangeSetBuilder<GutterMarker>();
   for (const table of parseMarkdownTables(text)) {
-    builder.add(table.from, table.from, hiddenLineNumberMarker);
+    for (const row of [table.header, table.delimiter, ...table.body]) {
+      builder.add(row.from, row.from, hiddenLineNumberMarker);
+    }
   }
   return builder.finish();
 }

@@ -12,6 +12,7 @@ import {
   TableFirstParser,
 } from "./parser/TableFirstParser";
 import { RenderedTableWidget } from "./render/TableWidget";
+import { tableCellLiveEdit } from "./tableCellCommitSequence";
 
 export interface LiveEditorState {
   projection: LiveProjection;
@@ -32,13 +33,18 @@ export function createLiveStateField({
     return {
       projection,
       decorations: Decoration.set(
-        tables.map((table) =>
-          Decoration.replace({
+        tables.flatMap((table) => [
+          Decoration.widget({
             widget: new RenderedTableWidget(table),
             block: true,
-            inclusive: false,
-          }).range(table.from, table.to),
-        ),
+            side: -1,
+          }).range(table.from),
+          ...[table.header, table.delimiter, ...table.body].map((row) =>
+            Decoration.line({
+              class: "mm-live-v4-hidden-table-source-line",
+            }).range(row.from),
+          ),
+        ]),
         true,
       ),
     };
@@ -51,6 +57,13 @@ export function createLiveStateField({
     update(value, transaction) {
       if (!transaction.docChanged) {
         return value;
+      }
+      const liveEdit = transaction.annotation(tableCellLiveEdit);
+      if (liveEdit) {
+        return {
+          projection: value.projection,
+          decorations: value.decorations.map(transaction.changes),
+        };
       }
       return buildState(transaction.state);
     },
