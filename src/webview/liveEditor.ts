@@ -28,6 +28,7 @@ interface HostSetDocumentMessage {
   revision: number;
   debug: boolean;
   source?: "host" | "webviewAck";
+  ackId?: number;
 }
 
 interface DocumentChangeMessage {
@@ -75,7 +76,9 @@ let debugEnabled = window.__MLRT_DEBUG__ === true;
 let hostRevision = 0;
 let view: EditorView;
 let lastTableCellCommit: TableCellCommitDetail | null = null;
-const pendingWebviewEchoTexts: string[] = [];
+let nextWebviewChangeId = 1;
+let hostDocumentApplyToken = 0;
+const pendingWebviewEchoes: { id: number; text: string }[] = [];
 const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
 
 try {
@@ -147,10 +150,19 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 
   hostRevision = message.revision;
   debugEnabled = message.debug;
-  if (
-    message.source === "webviewAck" &&
-    acknowledgeWebviewEcho(message.text, `host revision ${message.revision}`)
-  ) {
+  if (message.source === "webviewAck") {
+    if (typeof message.ackId === "number") {
+      acknowledgeWebviewEcho(
+        message.ackId,
+        message.text,
+        `host revision ${message.revision}`,
+      );
+    } else {
+      recordDebug("ignore-unidentified-webview-echo", {
+        echoedTextLength: message.text.length,
+        currentTextLength: view.state.doc.length,
+      });
+    }
     return;
   }
   setEditorDocument(message.text, `host revision ${message.revision}`);
@@ -170,14 +182,13 @@ function setEditorDocument(text: string, source: string): void {
     view.state.selection.main.head,
     text.length,
   );
+  markHostDocumentApplyInProgress();
+  blurActiveTableCell();
 
   applyingFromHost = true;
+  const hostChange = computeMinimalTextChange(currentText, text);
   view.dispatch({
-    changes: {
-      from: 0,
-      to: currentText.length,
-      insert: text,
-    },
+    changes: hostChange,
     selection: undoFocus
       ? selectionForHostUndoRestore(undoFocus.restore, text.length)
       : EditorSelection.cursor(fallbackSelection, 1),
@@ -190,17 +201,107 @@ function setEditorDocument(text: string, source: string): void {
   }
 }
 
-function acknowledgeWebviewEcho(text: string, source: string): boolean {
-  const acknowledgedIndex = pendingWebviewEchoTexts.indexOf(text);
+function markHostDocumentApplyInProgress(): void {
+  const token = ++hostDocumentApplyToken;
+  const documentElement = view.dom.ownerDocument.documentElement;
+  const ownerWindow = view.dom.ownerDocument.defaultView;
+  documentElement.dataset.mlrtApplyingHostDocument = "true";
+  const clearIfCurrent = (): void => {
+    if (hostDocumentApplyToken !== token) {
+      return;
+    }
+    delete documentElement.dataset.mlrtApplyingHostDocument;
+  };
+  if (!ownerWindow) {
+    setTimeout(clearIfCurrent, 50);
+    return;
+  }
+
+  ownerWindow.requestAnimationFrame(() => {
+    ownerWindow.requestAnimationFrame(clearIfCurrent);
+  });
+}
+
+function blurActiveTableCell(): void {
+  const activeElement = view.dom.ownerDocument.activeElement;
+  if (!(activeElement instanceof HTMLElement)) {
+    return;
+  }
+
+  activeElement.closest<HTMLElement>(".mm-live-v4-table-cell")?.blur();
+}
+
+function computeMinimalTextChange(
+  currentText: string,
+  nextText: string,
+): { from: number; to: number; insert: string } {
+  let from = 0;
+  while (
+    from < currentText.length &&
+    from < nextText.length &&
+    currentText[from] === nextText[from]
+  ) {
+    from++;
+  }
+
+  let currentTo = currentText.length;
+  let nextTo = nextText.length;
+  while (
+    currentTo > from &&
+    nextTo > from &&
+    currentText[currentTo - 1] === nextText[nextTo - 1]
+  ) {
+    currentTo--;
+    nextTo--;
+  }
+
+  return {
+    from,
+    to: currentTo,
+    insert: nextText.slice(from, nextTo),
+  };
+}
+
+function acknowledgeWebviewEcho(
+  ackId: number,
+  text: string,
+  source: string,
+): boolean {
+  const acknowledgedIndex = pendingWebviewEchoes.findIndex(
+    (pending) => pending.id === ackId,
+  );
   if (acknowledgedIndex === -1) {
+    if (ackId > 0 && ackId < nextWebviewChangeId) {
+      recordDebug("ignore-stale-webview-echo", {
+        ackId,
+        pendingEchoCount: pendingWebviewEchoes.length,
+        echoedTextLength: text.length,
+        currentTextLength: view.state.doc.length,
+      });
+      return true;
+    }
     return false;
   }
 
-  pendingWebviewEchoTexts.splice(0, acknowledgedIndex + 1);
+  const acknowledged = pendingWebviewEchoes[acknowledgedIndex];
+  if (acknowledged.text !== text) {
+    pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
+    recordDebug("ignore-mismatched-webview-echo", {
+      ackId,
+      pendingEchoCount: pendingWebviewEchoes.length,
+      echoedTextLength: text.length,
+      expectedTextLength: acknowledged.text.length,
+      currentTextLength: view.state.doc.length,
+    });
+    return true;
+  }
+
+  pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
   updateStatus(view.state.doc.toString(), `${source} acknowledged`);
   recordDebug("ack-webview-echo", {
+    ackId,
     acknowledgedIndex,
-    pendingEchoCount: pendingWebviewEchoTexts.length,
+    pendingEchoCount: pendingWebviewEchoes.length,
     echoedTextLength: text.length,
     currentTextLength: view.state.doc.length,
   });
@@ -308,17 +409,20 @@ function postDocumentChanges(
       text: inserted.toString(),
     });
   });
+  const changeId = nextWebviewChangeId++;
   recordDebug("post-change", {
+    changeId,
     baseRevision: hostRevision,
     changes: documentChanges,
     changeGroups: commitSequence?.steps.map((step) => [step.change]),
   });
-  pendingWebviewEchoTexts.push(text);
-  if (pendingWebviewEchoTexts.length > 100) {
-    pendingWebviewEchoTexts.splice(0, pendingWebviewEchoTexts.length - 100);
+  pendingWebviewEchoes.push({ id: changeId, text });
+  if (pendingWebviewEchoes.length > 100) {
+    pendingWebviewEchoes.splice(0, pendingWebviewEchoes.length - 100);
   }
   vscode.postMessage({
     type: "change",
+    changeId,
     text,
     changes: documentChanges,
     changeGroups: commitSequence?.steps.map((step) => [step.change]),

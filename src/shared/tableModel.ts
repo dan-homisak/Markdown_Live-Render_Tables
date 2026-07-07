@@ -287,6 +287,19 @@ function parseRow(line: SourceLine): ParsedRow {
   };
 }
 
+export function parseMarkdownTableRow(
+  lineIndex: number,
+  from: number,
+  text: string,
+): ParsedRow {
+  return parseRow({
+    index: lineIndex,
+    from,
+    to: from + text.length,
+    text,
+  });
+}
+
 function parseAlignment(delimiterCell: string): CellAlignment {
   const text = delimiterCell.trim();
   const left = text.startsWith(":");

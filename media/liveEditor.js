@@ -23595,6 +23595,14 @@
       cells
     };
   }
+  function parseMarkdownTableRow(lineIndex, from, text) {
+    return parseRow2({
+      index: lineIndex,
+      from,
+      to: from + text.length,
+      text
+    });
+  }
   function parseAlignment(delimiterCell) {
     const text = delimiterCell.trim();
     const left = text.startsWith(":");
@@ -24061,6 +24069,7 @@
       wrapper.dataset.srcFrom = String(this.table.from);
       wrapper.dataset.srcTo = String(getPositionAfterTable2(view2, this.table));
       wrapper.contentEditable = "false";
+      setTableWidgetTable(wrapper, this.table);
       const columnSizing = measureTableColumnSizing(this.table);
       applyColumnSizing(wrapper, columnSizing);
       const tableElement = document.createElement("table");
@@ -24131,6 +24140,7 @@
     return existingCells.length === table.columnCount * (table.body.length + 1);
   }
   function patchTableDOM(dom, table) {
+    setTableWidgetTable(dom, table);
     dom.dataset.blockId = table.id;
     dom.dataset.srcFrom = String(table.from);
     dom.dataset.srcTo = String(table.to);
@@ -24152,7 +24162,10 @@
       `.mm-live-v4-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`
     );
     if (lineCell) {
-      lineCell.textContent = String(sourceRow.lineIndex + 1);
+      const sourceLineText = String(sourceRow.lineIndex + 1);
+      if (lineCell.textContent !== sourceLineText) {
+        lineCell.textContent = sourceLineText;
+      }
     }
     const values2 = rowToDisplayValues(sourceRow, table.columnCount);
     for (let column = 0; column < table.columnCount; column++) {
@@ -24168,21 +24181,62 @@
       }
       const value = values2[column] ?? "";
       const isActive = cell.ownerDocument.activeElement === cell;
-      cell.dataset.tableFrom = String(table.from);
-      cell.dataset.sourceValue = value;
-      cell.dataset.original = value;
-      const sourceCell = sourceRow.cells[column];
-      if (sourceCell) {
-        const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
-        cell.dataset.sourceFrom = String(sourceCell.start);
-        cell.dataset.sourceTo = String(sourceCell.end);
-        cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
-        cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
-      }
-      if (!isActive && cell.textContent !== value) {
-        cell.textContent = value;
+      const isApplyingHostDocument = dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true";
+      syncCellSourceMetadata(cell, table, sourceRow, column, value);
+      if ((!isActive || isApplyingHostDocument) && cell.textContent !== value) {
+        setCellPlainText(cell, value);
       }
     }
+  }
+  function syncTableSourceMetadata(dom, table) {
+    setTableWidgetTable(dom, table);
+    dom.dataset.blockId = table.id;
+    dom.dataset.srcFrom = String(table.from);
+    dom.dataset.srcTo = String(table.to);
+    syncTableRowSourceMetadata(dom, table, table.header, "header", 0);
+    table.body.forEach((row, rowIndex) => {
+      syncTableRowSourceMetadata(dom, table, row, "body", rowIndex);
+    });
+  }
+  function syncTableRowSourceMetadata(dom, table, sourceRow, rowKind, rowIndex) {
+    const values2 = rowToDisplayValues(sourceRow, table.columnCount);
+    for (let column = 0; column < table.columnCount; column++) {
+      const cell = dom.querySelector(
+        [
+          `.mm-live-v4-table-cell[data-row-kind="${rowKind}"]`,
+          `[data-row-index="${rowIndex}"]`,
+          `[data-column="${column}"]`
+        ].join("")
+      );
+      if (!cell) {
+        continue;
+      }
+      syncCellSourceMetadata(
+        cell,
+        table,
+        sourceRow,
+        column,
+        values2[column] ?? ""
+      );
+    }
+  }
+  function syncCellSourceMetadata(cell, table, sourceRow, column, value) {
+    cell.dataset.tableFrom = String(table.from);
+    cell.dataset.sourceValue = value;
+    cell.dataset.original = value;
+    const sourceCell = sourceRow.cells[column];
+    if (!sourceCell) {
+      delete cell.dataset.sourceFrom;
+      delete cell.dataset.sourceTo;
+      delete cell.dataset.sourceLeadingWhitespace;
+      delete cell.dataset.sourceTrailingWhitespace;
+      return;
+    }
+    const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
+    cell.dataset.sourceFrom = String(sourceCell.start);
+    cell.dataset.sourceTo = String(sourceCell.end);
+    cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
+    cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
   }
   var persistentCellHistories = /* @__PURE__ */ new Map();
   var preservedLiveEditTableStarts = /* @__PURE__ */ new Set();
@@ -24254,10 +24308,11 @@
     let pendingAnimationFrame = 0;
     const syncLayout = () => {
       pendingAnimationFrame = 0;
+      const currentTable = getTableWidgetTable(wrapper) ?? table;
       applyColumnSizing(
         wrapper,
         measureTableColumnSizing(
-          table,
+          currentTable,
           measureAvailableDataWidthCh(wrapper),
           readActiveCellSizingOverride(wrapper)
         )
@@ -24398,6 +24453,12 @@
   function getTableWidgetCleanup(wrapper) {
     return wrapper.__mlrtTableWidgetCleanup;
   }
+  function setTableWidgetTable(wrapper, table) {
+    wrapper.__mlrtTable = table;
+  }
+  function getTableWidgetTable(wrapper) {
+    return wrapper.__mlrtTable;
+  }
   function requestTableAnimationFrame(wrapper, callback) {
     const view2 = wrapper.ownerDocument.defaultView;
     return view2 ? view2.requestAnimationFrame(callback) : requestAnimationFrame(callback);
@@ -24431,6 +24492,7 @@
   }
   function bindTableEditing(wrapper, view2, table, scheduleTableLayout) {
     const cellHistories = persistentCellHistories;
+    const getCurrentTable = () => getTableWidgetTable(wrapper) ?? table;
     wrapper.addEventListener("focusin", (event) => {
       const cell = findCell(event.target);
       if (cell) {
@@ -24444,12 +24506,20 @@
       if (!cell || !(event instanceof InputEvent)) {
         return;
       }
+      const currentTable = getCurrentTable();
       if (event.inputType === "historyUndo") {
         if (!restoreCellEditHistory(cellHistories, cell, "undo")) {
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell,
+            cellHistories,
+            scheduleTableLayout
+          );
           return;
         }
         event.preventDefault();
-        if (applyLiveCellEdit(view2, table, cell)) {
+        if (applyLiveCellEdit(view2, currentTable, cell)) {
           scheduleTableLayout();
           return;
         }
@@ -24458,10 +24528,17 @@
       }
       if (event.inputType === "historyRedo") {
         if (!restoreCellEditHistory(cellHistories, cell, "redo")) {
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell,
+            cellHistories,
+            scheduleTableLayout
+          );
           return;
         }
         event.preventDefault();
-        if (applyLiveCellEdit(view2, table, cell)) {
+        if (applyLiveCellEdit(view2, currentTable, cell)) {
           scheduleTableLayout();
           return;
         }
@@ -24476,7 +24553,7 @@
       event.preventDefault();
       applyCellEditSnapshotChange(
         view2,
-        table,
+        currentTable,
         cell,
         cellHistories,
         nextSnapshot,
@@ -24489,7 +24566,7 @@
         return;
       }
       syncCellEditHistory(cellHistories, cell);
-      if (applyLiveCellEdit(view2, table, cell)) {
+      if (applyLiveCellEdit(view2, getCurrentTable(), cell)) {
         scheduleTableLayout();
         return;
       }
@@ -24502,8 +24579,11 @@
           if (!findCell(wrapper.ownerDocument.activeElement)) {
             view2.dom.classList.remove("mm-live-v4-table-cell-focused");
           }
+          if (wrapper.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
+            return;
+          }
           if (cell.isConnected) {
-            commitCellEdit(view2, table, cell, cellHistories);
+            commitCellEdit(view2, getCurrentTable(), cell, cellHistories);
           }
         }, 0);
       }
@@ -24514,13 +24594,21 @@
         return;
       }
       event.stopPropagation();
+      const currentTable = getCurrentTable();
       const historyDirection = getCellEditHistoryDirection(event);
       if (historyDirection) {
         if (!restoreCellEditHistory(cellHistories, cell, historyDirection)) {
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell,
+            cellHistories,
+            scheduleTableLayout
+          );
           return;
         }
         event.preventDefault();
-        if (applyLiveCellEdit(view2, table, cell)) {
+        if (applyLiveCellEdit(view2, currentTable, cell)) {
           scheduleTableLayout();
           return;
         }
@@ -24529,8 +24617,8 @@
       }
       if (event.key === "Enter" && isPlainKey(event)) {
         event.preventDefault();
-        commitCellEdit(view2, table, cell, cellHistories, {
-          selectionAnchor: getPositionAfterTable2(view2, table)
+        commitCellEdit(view2, currentTable, cell, cellHistories, {
+          selectionAnchor: getPositionAfterTable2(view2, currentTable)
         });
         cell.blur();
         view2.focus();
@@ -24547,7 +24635,7 @@
         event.preventDefault();
         applyCellEditSnapshotChange(
           view2,
-          table,
+          currentTable,
           cell,
           cellHistories,
           nextSnapshot,
@@ -24563,32 +24651,45 @@
         const target = resolveVerticalCell(cell, rowDelta);
         event.preventDefault();
         if (target === "before-table") {
-          commitCellEdit(view2, table, cell, cellHistories, {
-            selectionAnchor: getPositionBeforeTable2(table)
+          commitCellEdit(view2, currentTable, cell, cellHistories, {
+            selectionAnchor: getPositionBeforeTable2(currentTable)
           });
           cell.blur();
           view2.focus();
           return;
         }
         if (target === "after-table") {
-          commitCellEdit(view2, table, cell, cellHistories, {
-            selectionAnchor: getEndOfLineAfterTable(view2, table)
+          commitCellEdit(view2, currentTable, cell, cellHistories, {
+            selectionAnchor: getEndOfLineAfterTable(view2, currentTable)
           });
           cell.blur();
           view2.focus();
           return;
         }
-        commitCellEdit(view2, table, cell, cellHistories);
-        focusCellAfterRender(table.from, target);
+        commitCellEdit(view2, currentTable, cell, cellHistories);
+        focusCellAfterRender(currentTable.from, target);
         return;
       }
       if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
-        commitCellEdit(view2, table, cell, cellHistories);
-        focusCellAfterRender(table.from, target);
+        commitCellEdit(view2, currentTable, cell, cellHistories);
+        focusCellAfterRender(currentTable.from, target);
       }
     });
+  }
+  function scheduleNativeHistoryFallback(view2, table, cell, histories, scheduleTableLayout) {
+    setTimeout(() => {
+      if (!cell.isConnected) {
+        return;
+      }
+      syncCellEditHistory(histories, cell);
+      if (applyLiveCellEdit(view2, table, cell)) {
+        scheduleTableLayout();
+        return;
+      }
+      scheduleTableLayout();
+    }, 0);
   }
   function commitCellEdit(view2, table, cell, histories, options = {}) {
     const rowKind = cell.dataset.rowKind;
@@ -24703,7 +24804,14 @@
       originalValue.length,
       caretOffset + Math.max(0, originalValue.length - value.length)
     );
-    const edit = formatLiveTableCellSourceEdit(cell, value) ?? formatTableCellSourceEdit(
+    const currentRowText = readCurrentSourceRowText(view2, sourceRow);
+    const edit = formatLiveTableCellSourceEdit(
+      view2,
+      sourceRow,
+      table.columnCount,
+      column,
+      value
+    ) ?? formatTableCellSourceEdit(
       sourceRow,
       table.columnCount,
       column,
@@ -24728,8 +24836,18 @@
         }
       })
     );
-    updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, value);
-    updateCellSourceDataset(cell, edit, value);
+    updateTableSourceAfterCellEdit(
+      table,
+      rowKind,
+      rowIndex,
+      column,
+      edit,
+      currentRowText
+    );
+    const wrapper = cell.closest(".mm-live-v4-table-widget");
+    if (wrapper) {
+      syncTableSourceMetadata(wrapper, table);
+    }
     preservedLiveEditTableStarts.add(table.from);
     view2.dispatch({
       changes: {
@@ -24765,41 +24883,53 @@
   function getCellSourceValue(cell) {
     return cell.dataset.sourceValue ?? cell.dataset.original ?? "";
   }
-  function formatLiveTableCellSourceEdit(cell, value) {
-    const from = Number(cell.dataset.sourceFrom);
-    const to = Number(cell.dataset.sourceTo);
-    if (!Number.isInteger(from) || from < 0 || !Number.isInteger(to) || to < from) {
+  function formatLiveTableCellSourceEdit(view2, sourceRow, columnCount, column, value) {
+    const currentRowText = readCurrentSourceRowText(view2, sourceRow);
+    if (currentRowText === void 0) {
       return null;
     }
+    const currentRow = parseMarkdownTableRow(
+      sourceRow.lineIndex,
+      sourceRow.from,
+      currentRowText
+    );
+    const sourceCell = currentRow.cells[column];
+    if (!sourceCell) {
+      return formatTableCellSourceEdit(currentRow, columnCount, column, value);
+    }
+    const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
     return {
-      from,
-      to,
-      insert: `${cell.dataset.sourceLeadingWhitespace ?? ""}${formatMarkdownCell(value, { trim: false })}${cell.dataset.sourceTrailingWhitespace ?? ""}`
+      from: sourceCell.start,
+      to: sourceCell.end,
+      insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`
     };
   }
-  function updateCellSourceDataset(cell, edit, value) {
-    cell.dataset.sourceValue = value;
-    cell.dataset.original = value;
-    cell.dataset.sourceFrom = String(edit.from);
-    cell.dataset.sourceTo = String(edit.from + edit.insert.length);
+  function readCurrentSourceRowText(view2, sourceRow) {
+    try {
+      const line = view2.state.doc.lineAt(sourceRow.from);
+      return line.text;
+    } catch {
+      return void 0;
+    }
   }
-  function updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, value) {
+  function updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, currentRowText) {
     const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex];
     if (!sourceRow) {
       return;
     }
-    const delta = edit.insert.length - (edit.to - edit.from);
+    const previousRowText = currentRowText ?? sourceRow.text;
+    const previousRowLength = previousRowText.length;
+    const nextRowText = `${previousRowText.slice(0, edit.from - sourceRow.from)}${edit.insert}${previousRowText.slice(edit.to - sourceRow.from)}`;
+    const delta = nextRowText.length - previousRowLength;
     table.to += delta;
-    sourceRow.to += delta;
-    sourceRow.text = `${sourceRow.text.slice(0, edit.from - sourceRow.from)}${edit.insert}${sourceRow.text.slice(edit.to - sourceRow.from)}`;
-    for (const cell of sourceRow.cells) {
-      if (cell.start > edit.from) {
-        cell.start += delta;
-      }
-      if (cell.end >= edit.to) {
-        cell.end += delta;
-      }
-    }
+    const nextSourceRow = parseMarkdownTableRow(
+      sourceRow.lineIndex,
+      sourceRow.from,
+      nextRowText
+    );
+    sourceRow.to = nextSourceRow.to;
+    sourceRow.text = nextSourceRow.text;
+    sourceRow.cells = nextSourceRow.cells;
     for (const row of [table.delimiter, ...table.body]) {
       if (row === sourceRow || row.from <= sourceRow.from) {
         continue;
@@ -24810,12 +24940,6 @@
         cell.start += delta;
         cell.end += delta;
       }
-    }
-    const editedCell = sourceRow.cells[column];
-    if (editedCell) {
-      editedCell.start = edit.from;
-      editedCell.end = edit.from + edit.insert.length;
-      editedCell.raw = edit.insert;
     }
     table.id = `table-${table.from}-${table.to}`;
   }
@@ -25720,7 +25844,9 @@
   var hostRevision = 0;
   var view;
   var lastTableCellCommit = null;
-  var pendingWebviewEchoTexts = [];
+  var nextWebviewChangeId = 1;
+  var hostDocumentApplyToken = 0;
+  var pendingWebviewEchoes = [];
   var pendingHostUndoFocusStack = [];
   try {
     const runtime = createLiveRuntime(readEditorOptions());
@@ -25787,7 +25913,19 @@
     }
     hostRevision = message.revision;
     debugEnabled = message.debug;
-    if (message.source === "webviewAck" && acknowledgeWebviewEcho(message.text, `host revision ${message.revision}`)) {
+    if (message.source === "webviewAck") {
+      if (typeof message.ackId === "number") {
+        acknowledgeWebviewEcho(
+          message.ackId,
+          message.text,
+          `host revision ${message.revision}`
+        );
+      } else {
+        recordDebug("ignore-unidentified-webview-echo", {
+          echoedTextLength: message.text.length,
+          currentTextLength: view.state.doc.length
+        });
+      }
       return;
     }
     setEditorDocument(message.text, `host revision ${message.revision}`);
@@ -25804,13 +25942,12 @@
       view.state.selection.main.head,
       text.length
     );
+    markHostDocumentApplyInProgress();
+    blurActiveTableCell();
     applyingFromHost = true;
+    const hostChange = computeMinimalTextChange(currentText, text);
     view.dispatch({
-      changes: {
-        from: 0,
-        to: currentText.length,
-        insert: text
-      },
+      changes: hostChange,
       selection: undoFocus ? selectionForHostUndoRestore(undoFocus.restore, text.length) : EditorSelection.cursor(fallbackSelection, 1),
       annotations: allowTableSourceChange.of(true)
     });
@@ -25819,16 +25956,83 @@
       focusTableCellAfterRender(undoFocus.restore.detail);
     }
   }
-  function acknowledgeWebviewEcho(text, source) {
-    const acknowledgedIndex = pendingWebviewEchoTexts.indexOf(text);
+  function markHostDocumentApplyInProgress() {
+    const token = ++hostDocumentApplyToken;
+    const documentElement = view.dom.ownerDocument.documentElement;
+    const ownerWindow = view.dom.ownerDocument.defaultView;
+    documentElement.dataset.mlrtApplyingHostDocument = "true";
+    const clearIfCurrent = () => {
+      if (hostDocumentApplyToken !== token) {
+        return;
+      }
+      delete documentElement.dataset.mlrtApplyingHostDocument;
+    };
+    if (!ownerWindow) {
+      setTimeout(clearIfCurrent, 50);
+      return;
+    }
+    ownerWindow.requestAnimationFrame(() => {
+      ownerWindow.requestAnimationFrame(clearIfCurrent);
+    });
+  }
+  function blurActiveTableCell() {
+    const activeElement = view.dom.ownerDocument.activeElement;
+    if (!(activeElement instanceof HTMLElement)) {
+      return;
+    }
+    activeElement.closest(".mm-live-v4-table-cell")?.blur();
+  }
+  function computeMinimalTextChange(currentText, nextText) {
+    let from = 0;
+    while (from < currentText.length && from < nextText.length && currentText[from] === nextText[from]) {
+      from++;
+    }
+    let currentTo = currentText.length;
+    let nextTo = nextText.length;
+    while (currentTo > from && nextTo > from && currentText[currentTo - 1] === nextText[nextTo - 1]) {
+      currentTo--;
+      nextTo--;
+    }
+    return {
+      from,
+      to: currentTo,
+      insert: nextText.slice(from, nextTo)
+    };
+  }
+  function acknowledgeWebviewEcho(ackId, text, source) {
+    const acknowledgedIndex = pendingWebviewEchoes.findIndex(
+      (pending) => pending.id === ackId
+    );
     if (acknowledgedIndex === -1) {
+      if (ackId > 0 && ackId < nextWebviewChangeId) {
+        recordDebug("ignore-stale-webview-echo", {
+          ackId,
+          pendingEchoCount: pendingWebviewEchoes.length,
+          echoedTextLength: text.length,
+          currentTextLength: view.state.doc.length
+        });
+        return true;
+      }
       return false;
     }
-    pendingWebviewEchoTexts.splice(0, acknowledgedIndex + 1);
+    const acknowledged = pendingWebviewEchoes[acknowledgedIndex];
+    if (acknowledged.text !== text) {
+      pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
+      recordDebug("ignore-mismatched-webview-echo", {
+        ackId,
+        pendingEchoCount: pendingWebviewEchoes.length,
+        echoedTextLength: text.length,
+        expectedTextLength: acknowledged.text.length,
+        currentTextLength: view.state.doc.length
+      });
+      return true;
+    }
+    pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
     updateStatus(view.state.doc.toString(), `${source} acknowledged`);
     recordDebug("ack-webview-echo", {
+      ackId,
       acknowledgedIndex,
-      pendingEchoCount: pendingWebviewEchoTexts.length,
+      pendingEchoCount: pendingWebviewEchoes.length,
       echoedTextLength: text.length,
       currentTextLength: view.state.doc.length
     });
@@ -25901,17 +26105,20 @@
         text: inserted.toString()
       });
     });
+    const changeId = nextWebviewChangeId++;
     recordDebug("post-change", {
+      changeId,
       baseRevision: hostRevision,
       changes: documentChanges,
       changeGroups: commitSequence?.steps.map((step) => [step.change])
     });
-    pendingWebviewEchoTexts.push(text);
-    if (pendingWebviewEchoTexts.length > 100) {
-      pendingWebviewEchoTexts.splice(0, pendingWebviewEchoTexts.length - 100);
+    pendingWebviewEchoes.push({ id: changeId, text });
+    if (pendingWebviewEchoes.length > 100) {
+      pendingWebviewEchoes.splice(0, pendingWebviewEchoes.length - 100);
     }
     vscode.postMessage({
       type: "change",
+      changeId,
       text,
       changes: documentChanges,
       changeGroups: commitSequence?.steps.map((step) => [step.change]),

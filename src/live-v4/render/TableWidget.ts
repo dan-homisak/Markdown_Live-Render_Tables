@@ -3,6 +3,7 @@ import { EditorView, WidgetType } from "@codemirror/view";
 import {
   formatMarkdownCell,
   formatTableCellSourceEdit,
+  parseMarkdownTableRow,
   ParsedRow,
   ParsedTable,
   rowToDisplayValues,
@@ -52,6 +53,7 @@ export class RenderedTableWidget extends WidgetType {
     wrapper.dataset.srcFrom = String(this.table.from);
     wrapper.dataset.srcTo = String(getPositionAfterTable(view, this.table));
     wrapper.contentEditable = "false";
+    setTableWidgetTable(wrapper, this.table);
 
     const columnSizing = measureTableColumnSizing(this.table);
     applyColumnSizing(wrapper, columnSizing);
@@ -134,6 +136,7 @@ function canPatchTableDOM(dom: HTMLElement, table: ParsedTable): boolean {
 }
 
 function patchTableDOM(dom: HTMLElement, table: ParsedTable): void {
+  setTableWidgetTable(dom, table);
   dom.dataset.blockId = table.id;
   dom.dataset.srcFrom = String(table.from);
   dom.dataset.srcTo = String(table.to);
@@ -164,7 +167,10 @@ function patchTableRowDOM(
     `.mm-live-v4-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`,
   );
   if (lineCell) {
-    lineCell.textContent = String(sourceRow.lineIndex + 1);
+    const sourceLineText = String(sourceRow.lineIndex + 1);
+    if (lineCell.textContent !== sourceLineText) {
+      lineCell.textContent = sourceLineText;
+    }
   }
 
   const values = rowToDisplayValues(sourceRow, table.columnCount);
@@ -182,26 +188,87 @@ function patchTableRowDOM(
 
     const value = values[column] ?? "";
     const isActive = cell.ownerDocument.activeElement === cell;
-    cell.dataset.tableFrom = String(table.from);
-    cell.dataset.sourceValue = value;
-    cell.dataset.original = value;
-    const sourceCell = sourceRow.cells[column];
-    if (sourceCell) {
-      const { leadingWhitespace, trailingWhitespace } =
-        getSourceCellPaddingWhitespace(sourceCell.raw);
-      cell.dataset.sourceFrom = String(sourceCell.start);
-      cell.dataset.sourceTo = String(sourceCell.end);
-      cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
-      cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
-    }
-    if (!isActive && cell.textContent !== value) {
-      cell.textContent = value;
+    const isApplyingHostDocument =
+      dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument ===
+      "true";
+    syncCellSourceMetadata(cell, table, sourceRow, column, value);
+    if ((!isActive || isApplyingHostDocument) && cell.textContent !== value) {
+      setCellPlainText(cell, value);
     }
   }
 }
 
+function syncTableSourceMetadata(dom: HTMLElement, table: ParsedTable): void {
+  setTableWidgetTable(dom, table);
+  dom.dataset.blockId = table.id;
+  dom.dataset.srcFrom = String(table.from);
+  dom.dataset.srcTo = String(table.to);
+  syncTableRowSourceMetadata(dom, table, table.header, "header", 0);
+  table.body.forEach((row, rowIndex) => {
+    syncTableRowSourceMetadata(dom, table, row, "body", rowIndex);
+  });
+}
+
+function syncTableRowSourceMetadata(
+  dom: HTMLElement,
+  table: ParsedTable,
+  sourceRow: ParsedRow,
+  rowKind: "header" | "body",
+  rowIndex: number,
+): void {
+  const values = rowToDisplayValues(sourceRow, table.columnCount);
+  for (let column = 0; column < table.columnCount; column++) {
+    const cell = dom.querySelector<HTMLElement>(
+      [
+        `.mm-live-v4-table-cell[data-row-kind="${rowKind}"]`,
+        `[data-row-index="${rowIndex}"]`,
+        `[data-column="${column}"]`,
+      ].join(""),
+    );
+    if (!cell) {
+      continue;
+    }
+
+    syncCellSourceMetadata(
+      cell,
+      table,
+      sourceRow,
+      column,
+      values[column] ?? "",
+    );
+  }
+}
+
+function syncCellSourceMetadata(
+  cell: HTMLElement,
+  table: ParsedTable,
+  sourceRow: ParsedRow,
+  column: number,
+  value: string,
+): void {
+  cell.dataset.tableFrom = String(table.from);
+  cell.dataset.sourceValue = value;
+  cell.dataset.original = value;
+  const sourceCell = sourceRow.cells[column];
+  if (!sourceCell) {
+    delete cell.dataset.sourceFrom;
+    delete cell.dataset.sourceTo;
+    delete cell.dataset.sourceLeadingWhitespace;
+    delete cell.dataset.sourceTrailingWhitespace;
+    return;
+  }
+
+  const { leadingWhitespace, trailingWhitespace } =
+    getSourceCellPaddingWhitespace(sourceCell.raw);
+  cell.dataset.sourceFrom = String(sourceCell.start);
+  cell.dataset.sourceTo = String(sourceCell.end);
+  cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
+  cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
+}
+
 interface TableWidgetElement extends HTMLElement {
   __mlrtTableWidgetCleanup?: () => void;
+  __mlrtTable?: ParsedTable;
 }
 
 interface CellEditHistory {
@@ -343,10 +410,11 @@ function bindTableLayout(
   let pendingAnimationFrame = 0;
   const syncLayout = () => {
     pendingAnimationFrame = 0;
+    const currentTable = getTableWidgetTable(wrapper) ?? table;
     applyColumnSizing(
       wrapper,
       measureTableColumnSizing(
-        table,
+        currentTable,
         measureAvailableDataWidthCh(wrapper),
         readActiveCellSizingOverride(wrapper),
       ),
@@ -522,6 +590,14 @@ function getTableWidgetCleanup(wrapper: HTMLElement): (() => void) | undefined {
   return (wrapper as TableWidgetElement).__mlrtTableWidgetCleanup;
 }
 
+function setTableWidgetTable(wrapper: HTMLElement, table: ParsedTable): void {
+  (wrapper as TableWidgetElement).__mlrtTable = table;
+}
+
+function getTableWidgetTable(wrapper: HTMLElement): ParsedTable | undefined {
+  return (wrapper as TableWidgetElement).__mlrtTable;
+}
+
 function requestTableAnimationFrame(
   wrapper: HTMLElement,
   callback: FrameRequestCallback,
@@ -582,6 +658,8 @@ function bindTableEditing(
   scheduleTableLayout: () => void,
 ): void {
   const cellHistories = persistentCellHistories;
+  const getCurrentTable = (): ParsedTable =>
+    getTableWidgetTable(wrapper) ?? table;
 
   wrapper.addEventListener("focusin", (event) => {
     const cell = findCell(event.target);
@@ -598,12 +676,20 @@ function bindTableEditing(
       return;
     }
 
+    const currentTable = getCurrentTable();
     if (event.inputType === "historyUndo") {
       if (!restoreCellEditHistory(cellHistories, cell, "undo")) {
+        scheduleNativeHistoryFallback(
+          view,
+          currentTable,
+          cell,
+          cellHistories,
+          scheduleTableLayout,
+        );
         return;
       }
       event.preventDefault();
-      if (applyLiveCellEdit(view, table, cell)) {
+      if (applyLiveCellEdit(view, currentTable, cell)) {
         scheduleTableLayout();
         return;
       }
@@ -613,10 +699,17 @@ function bindTableEditing(
 
     if (event.inputType === "historyRedo") {
       if (!restoreCellEditHistory(cellHistories, cell, "redo")) {
+        scheduleNativeHistoryFallback(
+          view,
+          currentTable,
+          cell,
+          cellHistories,
+          scheduleTableLayout,
+        );
         return;
       }
       event.preventDefault();
-      if (applyLiveCellEdit(view, table, cell)) {
+      if (applyLiveCellEdit(view, currentTable, cell)) {
         scheduleTableLayout();
         return;
       }
@@ -633,7 +726,7 @@ function bindTableEditing(
     event.preventDefault();
     applyCellEditSnapshotChange(
       view,
-      table,
+      currentTable,
       cell,
       cellHistories,
       nextSnapshot,
@@ -648,7 +741,7 @@ function bindTableEditing(
     }
 
     syncCellEditHistory(cellHistories, cell);
-    if (applyLiveCellEdit(view, table, cell)) {
+    if (applyLiveCellEdit(view, getCurrentTable(), cell)) {
       scheduleTableLayout();
       return;
     }
@@ -662,8 +755,14 @@ function bindTableEditing(
         if (!findCell(wrapper.ownerDocument.activeElement)) {
           view.dom.classList.remove("mm-live-v4-table-cell-focused");
         }
+        if (
+          wrapper.ownerDocument.documentElement.dataset
+            .mlrtApplyingHostDocument === "true"
+        ) {
+          return;
+        }
         if (cell.isConnected) {
-          commitCellEdit(view, table, cell, cellHistories);
+          commitCellEdit(view, getCurrentTable(), cell, cellHistories);
         }
       }, 0);
     }
@@ -676,14 +775,22 @@ function bindTableEditing(
     }
 
     event.stopPropagation();
+    const currentTable = getCurrentTable();
 
     const historyDirection = getCellEditHistoryDirection(event);
     if (historyDirection) {
       if (!restoreCellEditHistory(cellHistories, cell, historyDirection)) {
+        scheduleNativeHistoryFallback(
+          view,
+          currentTable,
+          cell,
+          cellHistories,
+          scheduleTableLayout,
+        );
         return;
       }
       event.preventDefault();
-      if (applyLiveCellEdit(view, table, cell)) {
+      if (applyLiveCellEdit(view, currentTable, cell)) {
         scheduleTableLayout();
         return;
       }
@@ -693,8 +800,8 @@ function bindTableEditing(
 
     if (event.key === "Enter" && isPlainKey(event)) {
       event.preventDefault();
-      commitCellEdit(view, table, cell, cellHistories, {
-        selectionAnchor: getPositionAfterTable(view, table),
+      commitCellEdit(view, currentTable, cell, cellHistories, {
+        selectionAnchor: getPositionAfterTable(view, currentTable),
       });
       cell.blur();
       view.focus();
@@ -719,7 +826,7 @@ function bindTableEditing(
       event.preventDefault();
       applyCellEditSnapshotChange(
         view,
-        table,
+        currentTable,
         cell,
         cellHistories,
         nextSnapshot,
@@ -737,34 +844,55 @@ function bindTableEditing(
       const target = resolveVerticalCell(cell, rowDelta);
       event.preventDefault();
       if (target === "before-table") {
-        commitCellEdit(view, table, cell, cellHistories, {
-          selectionAnchor: getPositionBeforeTable(table),
+        commitCellEdit(view, currentTable, cell, cellHistories, {
+          selectionAnchor: getPositionBeforeTable(currentTable),
         });
         cell.blur();
         view.focus();
         return;
       }
       if (target === "after-table") {
-        commitCellEdit(view, table, cell, cellHistories, {
-          selectionAnchor: getEndOfLineAfterTable(view, table),
+        commitCellEdit(view, currentTable, cell, cellHistories, {
+          selectionAnchor: getEndOfLineAfterTable(view, currentTable),
         });
         cell.blur();
         view.focus();
         return;
       }
 
-      commitCellEdit(view, table, cell, cellHistories);
-      focusCellAfterRender(table.from, target);
+      commitCellEdit(view, currentTable, cell, cellHistories);
+      focusCellAfterRender(currentTable.from, target);
       return;
     }
 
     if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
-      commitCellEdit(view, table, cell, cellHistories);
-      focusCellAfterRender(table.from, target);
+      commitCellEdit(view, currentTable, cell, cellHistories);
+      focusCellAfterRender(currentTable.from, target);
     }
   });
+}
+
+function scheduleNativeHistoryFallback(
+  view: EditorView,
+  table: ParsedTable,
+  cell: HTMLElement,
+  histories: Map<string, CellEditHistory>,
+  scheduleTableLayout: () => void,
+): void {
+  setTimeout(() => {
+    if (!cell.isConnected) {
+      return;
+    }
+
+    syncCellEditHistory(histories, cell);
+    if (applyLiveCellEdit(view, table, cell)) {
+      scheduleTableLayout();
+      return;
+    }
+    scheduleTableLayout();
+  }, 0);
 }
 
 function commitCellEdit(
@@ -911,8 +1039,15 @@ function applyLiveCellEdit(
     originalValue.length,
     caretOffset + Math.max(0, originalValue.length - value.length),
   );
+  const currentRowText = readCurrentSourceRowText(view, sourceRow);
   const edit =
-    formatLiveTableCellSourceEdit(cell, value) ??
+    formatLiveTableCellSourceEdit(
+      view,
+      sourceRow,
+      table.columnCount,
+      column,
+      value,
+    ) ??
     formatTableCellSourceEdit(
       sourceRow,
       table.columnCount,
@@ -938,8 +1073,18 @@ function applyLiveCellEdit(
       },
     }),
   );
-  updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, value);
-  updateCellSourceDataset(cell, edit, value);
+  updateTableSourceAfterCellEdit(
+    table,
+    rowKind,
+    rowIndex,
+    column,
+    edit,
+    currentRowText,
+  );
+  const wrapper = cell.closest<HTMLElement>(".mm-live-v4-table-widget");
+  if (wrapper) {
+    syncTableSourceMetadata(wrapper, table);
+  }
   preservedLiveEditTableStarts.add(table.from);
   view.dispatch({
     changes: {
@@ -978,36 +1123,46 @@ function getCellSourceValue(cell: HTMLElement): string {
 }
 
 function formatLiveTableCellSourceEdit(
-  cell: HTMLElement,
+  view: EditorView,
+  sourceRow: ParsedRow,
+  columnCount: number,
+  column: number,
   value: string,
 ): TableCellSourceEdit | null {
-  const from = Number(cell.dataset.sourceFrom);
-  const to = Number(cell.dataset.sourceTo);
-  if (
-    !Number.isInteger(from) ||
-    from < 0 ||
-    !Number.isInteger(to) ||
-    to < from
-  ) {
+  const currentRowText = readCurrentSourceRowText(view, sourceRow);
+  if (currentRowText === undefined) {
     return null;
   }
 
+  const currentRow = parseMarkdownTableRow(
+    sourceRow.lineIndex,
+    sourceRow.from,
+    currentRowText,
+  );
+  const sourceCell = currentRow.cells[column];
+  if (!sourceCell) {
+    return formatTableCellSourceEdit(currentRow, columnCount, column, value);
+  }
+
+  const { leadingWhitespace, trailingWhitespace } =
+    getSourceCellPaddingWhitespace(sourceCell.raw);
   return {
-    from,
-    to,
-    insert: `${cell.dataset.sourceLeadingWhitespace ?? ""}${formatMarkdownCell(value, { trim: false })}${cell.dataset.sourceTrailingWhitespace ?? ""}`,
+    from: sourceCell.start,
+    to: sourceCell.end,
+    insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`,
   };
 }
 
-function updateCellSourceDataset(
-  cell: HTMLElement,
-  edit: TableCellSourceEdit,
-  value: string,
-): void {
-  cell.dataset.sourceValue = value;
-  cell.dataset.original = value;
-  cell.dataset.sourceFrom = String(edit.from);
-  cell.dataset.sourceTo = String(edit.from + edit.insert.length);
+function readCurrentSourceRowText(
+  view: EditorView,
+  sourceRow: ParsedRow,
+): string | undefined {
+  try {
+    const line = view.state.doc.lineAt(sourceRow.from);
+    return line.text;
+  } catch {
+    return undefined;
+  }
 }
 
 function updateTableSourceAfterCellEdit(
@@ -1016,27 +1171,27 @@ function updateTableSourceAfterCellEdit(
   rowIndex: number,
   column: number,
   edit: TableCellSourceEdit,
-  value: string,
+  currentRowText: string | undefined,
 ): void {
   const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex];
   if (!sourceRow) {
     return;
   }
 
-  const delta = edit.insert.length - (edit.to - edit.from);
+  const previousRowText = currentRowText ?? sourceRow.text;
+  const previousRowLength = previousRowText.length;
+  const nextRowText =
+    `${previousRowText.slice(0, edit.from - sourceRow.from)}${edit.insert}${previousRowText.slice(edit.to - sourceRow.from)}`;
+  const delta = nextRowText.length - previousRowLength;
   table.to += delta;
-  sourceRow.to += delta;
-  sourceRow.text =
-    `${sourceRow.text.slice(0, edit.from - sourceRow.from)}${edit.insert}${sourceRow.text.slice(edit.to - sourceRow.from)}`;
-
-  for (const cell of sourceRow.cells) {
-    if (cell.start > edit.from) {
-      cell.start += delta;
-    }
-    if (cell.end >= edit.to) {
-      cell.end += delta;
-    }
-  }
+  const nextSourceRow = parseMarkdownTableRow(
+    sourceRow.lineIndex,
+    sourceRow.from,
+    nextRowText,
+  );
+  sourceRow.to = nextSourceRow.to;
+  sourceRow.text = nextSourceRow.text;
+  sourceRow.cells = nextSourceRow.cells;
 
   for (const row of [table.delimiter, ...table.body]) {
     if (row === sourceRow || row.from <= sourceRow.from) {
@@ -1050,12 +1205,6 @@ function updateTableSourceAfterCellEdit(
     }
   }
 
-  const editedCell = sourceRow.cells[column];
-  if (editedCell) {
-    editedCell.start = edit.from;
-    editedCell.end = edit.from + edit.insert.length;
-    editedCell.raw = edit.insert;
-  }
   table.id = `table-${table.from}-${table.to}`;
 }
 

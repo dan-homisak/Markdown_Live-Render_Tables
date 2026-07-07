@@ -107,6 +107,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
 
     const postDocument = (
       source: HostSetDocumentMessage["source"] = "host",
+      ackId?: number,
     ): void => {
       documentRevision++;
       void webview.postMessage({
@@ -115,6 +116,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         revision: documentRevision,
         debug: isDebugEnabled(),
         source,
+        ackId,
       } satisfies HostSetDocumentMessage);
     };
 
@@ -150,7 +152,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
               "Markdown live editor changes were applied, but the editor document is out of sync.",
             );
           }
-          postDocument("webviewAck");
+          postDocument("webviewAck", message.changeId);
         })
         .catch((error: unknown) => {
           applyingFromWebview = false;
@@ -398,6 +400,7 @@ interface DocumentChange {
 
 interface ChangeMessage {
   type: "change";
+  changeId?: number;
   text: string;
   changes?: DocumentChange[];
   changeGroups?: DocumentChange[][];
@@ -420,6 +423,7 @@ interface HostSetDocumentMessage {
   revision: number;
   debug: boolean;
   source?: "host" | "webviewAck";
+  ackId?: number;
 }
 
 function isReadyMessage(message: unknown): message is ReadyMessage {
@@ -430,6 +434,10 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
   return (
     isMessageRecord(message) &&
     message.type === "change" &&
+    (message.changeId === undefined ||
+      (typeof message.changeId === "number" &&
+        Number.isInteger(message.changeId) &&
+        message.changeId > 0)) &&
     typeof message.text === "string" &&
     (message.changes === undefined ||
       (Array.isArray(message.changes) &&

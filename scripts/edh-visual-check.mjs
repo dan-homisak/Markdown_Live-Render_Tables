@@ -255,6 +255,21 @@ try {
   );
   assertTableStaleWebviewAckStability(staleAckStability);
   console.log("TABLE STALE WEBVIEW ACK STABILITY CHECK:", staleAckStability);
+  const hostSyncStability = await evaluateJson(
+    liveClient,
+    tableHostSyncStabilityExpression(),
+  );
+  assertTableHostSyncStability(hostSyncStability);
+  console.log("TABLE HOST SYNC STABILITY CHECK:", hostSyncStability);
+  const sequentialCellToEditorTyping = await evaluateJson(
+    liveClient,
+    tableSequentialCellToEditorTypingExpression(),
+  );
+  assertTableSequentialCellToEditorTyping(sequentialCellToEditorTyping);
+  console.log(
+    "TABLE SEQUENTIAL CELL TO EDITOR TYPING CHECK:",
+    sequentialCellToEditorTyping,
+  );
   const whitespaceDeletion = await evaluateJson(
     liveClient,
     tableWhitespaceDeletionExpression(),
@@ -1026,7 +1041,7 @@ function tableStaleWebviewAckStabilityExpression() {
         root.defaultView.requestAnimationFrame(done);
       });
     });
-    const sendHostDocument = (text, revision, source) => {
+    const sendHostDocument = (text, revision, source, ackId) => {
       root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
         data: {
           type: 'setDocument',
@@ -1034,6 +1049,7 @@ function tableStaleWebviewAckStabilityExpression() {
           revision,
           debug: false,
           source,
+          ackId,
         },
       }));
     };
@@ -1072,6 +1088,7 @@ function tableStaleWebviewAckStabilityExpression() {
     await waitForRender();
 
     const docsAfterType = [];
+    const rowTextAfterType = [];
     const textsAfterType = [];
     for (const character of ['a', 'b', 'c']) {
       cell = readShortCell();
@@ -1090,6 +1107,10 @@ function tableStaleWebviewAckStabilityExpression() {
 
     const finalLocalDoc = view.state.doc.toString();
     const finalLocalText = readShortCell()?.textContent ?? null;
+    const changeIds = (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
+      .filter((event) => event.event === 'post-change')
+      .slice(-3)
+      .map((event) => event.details?.changeId);
     let contentChildListMutations = 0;
     let widgetChildListMutations = 0;
     let gutterChildListMutations = 0;
@@ -1118,11 +1139,11 @@ function tableStaleWebviewAckStabilityExpression() {
     widgetObserver.observe(widget, { childList: true, subtree: true });
     gutterObserver.observe(gutter, { childList: true, subtree: true });
 
-    sendHostDocument(docsAfterType[0], 999301, 'webviewAck');
+    sendHostDocument(docsAfterType[0], 999301, 'webviewAck', changeIds[0]);
     await waitForRender();
     const afterFirstAckDoc = view.state.doc.toString();
     const afterFirstAckText = readShortCell()?.textContent ?? null;
-    sendHostDocument(docsAfterType[1], 999302, 'webviewAck');
+    sendHostDocument(docsAfterType[1], 999302, 'webviewAck', changeIds[1]);
     await waitForRender();
     const afterSecondAckDoc = view.state.doc.toString();
     const afterSecondAckText = readShortCell()?.textContent ?? null;
@@ -1138,6 +1159,7 @@ function tableStaleWebviewAckStabilityExpression() {
 
     return JSON.stringify({
       ok: true,
+      changeIds,
       textsAfterType,
       finalLocalText,
       finalLocalDocChanged: finalLocalDoc !== beforeDoc,
@@ -1151,6 +1173,295 @@ function tableStaleWebviewAckStabilityExpression() {
       contentChildListMutations,
       widgetChildListMutations,
       gutterChildListMutations,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
+}
+
+function tableHostSyncStabilityExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const sendHostDocument = (text, revision) => {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text,
+          revision,
+          debug: false,
+          source: 'host',
+        },
+      }));
+    };
+    const setCaretAtEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const widget = root.querySelector('.mm-live-v4-table-widget');
+    const content = root.querySelector('.cm-content');
+    const gutter = root.querySelector('.cm-lineNumbers');
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!widget || !content || !gutter || !cell || !view) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing host sync stability targets',
+        hasWidget: Boolean(widget),
+        hasContent: Boolean(content),
+        hasGutter: Boolean(gutter),
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      });
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    cell.focus();
+    setCaretAtEnd(cell);
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: ' HOSTSYNC',
+    }));
+    await waitForRender();
+    const afterEditDoc = view.state.doc.toString();
+
+    let contentChildListMutations = 0;
+    let widgetChildListMutations = 0;
+    let gutterChildListMutations = 0;
+    const contentObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          contentChildListMutations++;
+        }
+      }
+    });
+    const widgetObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          widgetChildListMutations++;
+        }
+      }
+    });
+    const gutterObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          gutterChildListMutations++;
+        }
+      }
+    });
+    contentObserver.observe(content, { childList: true, subtree: true });
+    widgetObserver.observe(widget, { childList: true, subtree: true });
+    gutterObserver.observe(gutter, { childList: true, subtree: true });
+
+    sendHostDocument(beforeDoc, 999351);
+    await waitForRender();
+    contentObserver.disconnect();
+    widgetObserver.disconnect();
+    gutterObserver.disconnect();
+
+    return JSON.stringify({
+      ok: true,
+      docChangedBeforeSync: afterEditDoc !== beforeDoc,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+      sameWidget: root.querySelector('.mm-live-v4-table-widget') === widget,
+      sameCell: root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]') === cell,
+      contentChildListMutations,
+      widgetChildListMutations,
+      gutterChildListMutations,
+    });
+  })()`;
+}
+
+function tableSequentialCellToEditorTypingExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const sendHostDocument = (text, revision) => {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text,
+          revision,
+          debug: false,
+          source: 'host',
+        },
+      }));
+    };
+    const setCaretAtEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const headerKeyCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="header"][data-column="0"]');
+    const keyCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="0"]');
+    const valueCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!widget || !headerKeyCell || !keyCell || !valueCell || !view) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing sequential cell/editor targets',
+        hasWidget: Boolean(widget),
+        hasHeaderKeyCell: Boolean(headerKeyCell),
+        hasKeyCell: Boolean(keyCell),
+        hasValueCell: Boolean(valueCell),
+        hasView: Boolean(view),
+      });
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    headerKeyCell.focus();
+    setCaretAtEnd(headerKeyCell);
+    headerKeyCell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'H',
+    }));
+    await waitForRender();
+
+    keyCell.focus();
+    setCaretAtEnd(keyCell);
+    keyCell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'X',
+    }));
+    await waitForRender();
+
+    const beforeValueSourceFrom = Number(valueCell.dataset.sourceFrom);
+    const beforeValueSourceTo = Number(valueCell.dataset.sourceTo);
+    const beforeValueSourceText =
+      Number.isFinite(beforeValueSourceFrom) && Number.isFinite(beforeValueSourceTo)
+        ? view.state.doc.sliceString(beforeValueSourceFrom, beforeValueSourceTo)
+        : null;
+    const beforeValueTrailingWhitespace = valueCell.dataset.sourceTrailingWhitespace ?? null;
+    const beforeValueRowText = Number.isFinite(beforeValueSourceFrom)
+      ? view.state.doc.lineAt(beforeValueSourceFrom).text
+      : '';
+
+    valueCell.focus();
+    setCaretAtEnd(valueCell);
+    valueCell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: ' VALUE',
+    }));
+    await waitForRender();
+
+    const afterCellDoc = view.state.doc.toString();
+    const headerKeyTextAfterCells = headerKeyCell.textContent;
+    const keyTextAfterCells = keyCell.textContent;
+    const valueTextAfterCells = valueCell.textContent;
+    const headerSourceFrom = Number(headerKeyCell.dataset.sourceFrom);
+    const headerTextAfterCells = Number.isFinite(headerSourceFrom)
+      ? view.state.doc.lineAt(headerSourceFrom).text
+      : '';
+    const rowSourceFrom = Number(valueCell.dataset.sourceFrom);
+    const rowTextAfterCells = Number.isFinite(rowSourceFrom)
+      ? view.state.doc.lineAt(rowSourceFrom).text
+      : '';
+    const outsideMarker = 'outside editor text ';
+    const outsideInsertFrom = view.state.doc.toString().indexOf('more test here');
+    if (outsideInsertFrom < 0) {
+      sendHostDocument(beforeDoc, 999403);
+      await waitForRender();
+      return JSON.stringify({ ok: false, reason: 'missing outside insertion target' });
+    }
+
+    view.focus();
+    view.dispatch({ selection: { anchor: outsideInsertFrom } });
+    await waitForRender();
+    const activeBeforeOutsideType = root.activeElement?.className ?? null;
+    const execCommandResult = root.execCommand('insertText', false, outsideMarker);
+    await waitForRender();
+
+    const afterOutsideDoc = view.state.doc.toString();
+    const activeAfterOutsideType = root.activeElement?.className ?? null;
+    const headerKeyTextAfterOutside = headerKeyCell.textContent;
+    const keyTextAfterOutside = keyCell.textContent;
+    const valueTextAfterOutside = valueCell.textContent;
+    const headerTextAfterOutside = Number.isFinite(headerSourceFrom)
+      ? view.state.doc.lineAt(headerSourceFrom).text
+      : '';
+    const rowTextAfterOutside = Number.isFinite(rowSourceFrom)
+      ? view.state.doc.lineAt(rowSourceFrom).text
+      : '';
+    const outsideIndex = afterOutsideDoc.indexOf(outsideMarker);
+    const moreIndex = afterOutsideDoc.indexOf('more test here');
+    const outsideBeforeNormalText = outsideIndex >= 0 && moreIndex >= 0 && outsideIndex < moreIndex;
+    const tableContainsOutsideText =
+      (headerKeyTextAfterOutside ?? '').includes(outsideMarker.trim()) ||
+      (keyTextAfterOutside ?? '').includes(outsideMarker.trim()) ||
+      (valueTextAfterOutside ?? '').includes(outsideMarker.trim()) ||
+      headerTextAfterOutside.includes(outsideMarker.trim()) ||
+      rowTextAfterOutside.includes(outsideMarker.trim());
+
+    sendHostDocument(beforeDoc, 999404);
+    await waitForRender();
+
+    return JSON.stringify({
+      ok: true,
+      headerKeyTextAfterCells,
+      keyTextAfterCells,
+      valueTextAfterCells,
+      beforeValueSourceFrom,
+      beforeValueSourceTo,
+      beforeValueSourceText,
+      beforeValueTrailingWhitespace,
+      beforeValueRowText,
+      headerTextAfterCells,
+      rowTextAfterCells,
+      afterCellDocChanged: afterCellDoc !== beforeDoc,
+      execCommandResult,
+      activeBeforeOutsideType,
+      activeAfterOutsideType,
+      outsideBeforeNormalText,
+      tableContainsOutsideText,
+      headerKeyTextAfterOutside,
+      keyTextAfterOutside,
+      valueTextAfterOutside,
+      headerTextAfterOutside,
+      rowTextAfterOutside,
       restoredDoc: view.state.doc.toString() === beforeDoc,
     });
   })()`;
@@ -1691,6 +2002,7 @@ function tableTrustedUndoSetupExpression() {
       selection.removeAllRanges();
       selection.addRange(range);
     };
+    const originalDoc = view.state.doc.toString();
     const originalText = cell.textContent ?? '';
     cell.focus();
     selectCellContents();
@@ -1698,6 +2010,7 @@ function tableTrustedUndoSetupExpression() {
     setCaretAtCellEnd();
     root.defaultView.__MLRT_TRUSTED_UNDO_STATE__ = {
       originalText,
+      originalDoc,
       beforeDoc: view.state.doc.toString(),
     };
     return JSON.stringify({
@@ -1709,7 +2022,7 @@ function tableTrustedUndoSetupExpression() {
 }
 
 function tableTrustedUndoResultExpression() {
-  return `(() => {
+  return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
       try {
         return frame.contentDocument;
@@ -1738,19 +2051,30 @@ function tableTrustedUndoResultExpression() {
     const selection = root.defaultView.getSelection();
     const selectionCollapsed = selection?.isCollapsed ?? false;
     const afterDoc = view.state.doc.toString();
-    cell.textContent = state.originalText;
-    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
-      bubbles: true,
-      cancelable: true,
-      inputType: 'insertReplacementText',
-      data: state.originalText,
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: {
+        type: 'setDocument',
+        text: state.originalDoc,
+        revision: 999011,
+        debug: false,
+      },
     }));
+    await new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
     delete root.defaultView.__MLRT_TRUSTED_UNDO_STATE__;
     return JSON.stringify({
       ok: true,
       afterUndoText,
       selectionCollapsed,
+      beforeDocIncludesBase: state.beforeDoc.includes('base'),
+      beforeDocIncludesBas: state.beforeDoc.includes('bas'),
+      afterDocIncludesBase: afterDoc.includes('base'),
+      afterDocIncludesBas: afterDoc.includes('bas'),
       docChanged: afterDoc !== state.beforeDoc,
+      restoredDoc: view.state.doc.toString() === state.originalDoc,
     });
   })()`;
 }
@@ -1931,6 +2255,7 @@ function tableHostCharacterUndoFocusExpression() {
     const postChangeCountBefore = (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
       .filter((event) => event.event === 'post-change').length;
     const docsAfterType = [];
+    const rowTextAfterType = [];
     const textsAfterType = [];
     for (const character of ['a', 'b', 'c']) {
       cell = readCurrentShortCell();
@@ -1948,6 +2273,11 @@ function tableHostCharacterUndoFocusExpression() {
       await waitForRender();
       cell = readCurrentShortCell();
       docsAfterType.push(view.state.doc.toString());
+      rowTextAfterType.push(
+        cell?.dataset.sourceFrom
+          ? view.state.doc.lineAt(Number(cell.dataset.sourceFrom)).text
+          : null,
+      );
       textsAfterType.push(cell?.innerText ?? null);
     }
     const afterTypeText = textsAfterType[textsAfterType.length - 1];
@@ -1959,6 +2289,11 @@ function tableHostCharacterUndoFocusExpression() {
     await waitForRender();
     let undoCell = readCurrentShortCell();
     const afterFirstUndoText = undoCell?.innerText ?? null;
+    const afterFirstUndoDocMatchesTarget = view.state.doc.toString() === docsAfterType[1];
+    const afterFirstUndoRowText =
+      undoCell?.dataset.sourceFrom
+        ? view.state.doc.lineAt(Number(undoCell.dataset.sourceFrom)).text
+        : null;
     const afterFirstUndoCaret = caretOffsetForCell(undoCell);
     const afterFirstUndoActive = root.activeElement === undoCell;
 
@@ -1966,6 +2301,11 @@ function tableHostCharacterUndoFocusExpression() {
     await waitForRender();
     undoCell = readCurrentShortCell();
     const afterSecondUndoText = undoCell?.innerText ?? null;
+    const afterSecondUndoDocMatchesTarget = view.state.doc.toString() === docsAfterType[0];
+    const afterSecondUndoRowText =
+      undoCell?.dataset.sourceFrom
+        ? view.state.doc.lineAt(Number(undoCell.dataset.sourceFrom)).text
+        : null;
     const afterSecondUndoCaret = caretOffsetForCell(undoCell);
     const afterSecondUndoActive = root.activeElement === undoCell;
 
@@ -1973,6 +2313,11 @@ function tableHostCharacterUndoFocusExpression() {
     await waitForRender();
     undoCell = readCurrentShortCell();
     const afterThirdUndoText = undoCell?.innerText ?? null;
+    const afterThirdUndoDocMatchesTarget = view.state.doc.toString() === beforeDoc;
+    const afterThirdUndoRowText =
+      undoCell?.dataset.sourceFrom
+        ? view.state.doc.lineAt(Number(undoCell.dataset.sourceFrom)).text
+        : null;
     const afterThirdUndoCaret = caretOffsetForCell(undoCell);
     const afterThirdUndoActive = root.activeElement === undoCell;
 
@@ -1981,15 +2326,22 @@ function tableHostCharacterUndoFocusExpression() {
       beforeText,
       afterTypeText,
       textsAfterType,
+      rowTextAfterType,
       finalDocChanged: finalDoc !== beforeDoc,
       sourceEditCount: postChangeCountAfter - postChangeCountBefore,
       afterFirstUndoText,
+      afterFirstUndoDocMatchesTarget,
+      afterFirstUndoRowText,
       afterFirstUndoCaret,
       afterFirstUndoActive,
       afterSecondUndoText,
+      afterSecondUndoDocMatchesTarget,
+      afterSecondUndoRowText,
       afterSecondUndoCaret,
       afterSecondUndoActive,
       afterThirdUndoText,
+      afterThirdUndoDocMatchesTarget,
+      afterThirdUndoRowText,
       afterThirdUndoCaret,
       afterThirdUndoActive,
     });
@@ -2257,10 +2609,20 @@ function tableEnterExitExpression() {
     const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
     const wrapper = root.querySelector('.mm-live-v4-table-widget');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-    const expectedActiveLineGutterText =
-      wrapper && view
-        ? String(view.state.doc.lineAt(Number(wrapper.getAttribute('data-src-to'))).number)
-        : null;
+    const expectedActiveLineGutterText = (() => {
+      if (!wrapper || !view) {
+        return null;
+      }
+      const tableTo = Number(wrapper.getAttribute('data-src-to'));
+      if (!Number.isInteger(tableTo)) {
+        return null;
+      }
+      const afterTable =
+        view.state.doc.sliceString(tableTo, tableTo + 1) === '\\n'
+          ? tableTo + 1
+          : tableTo;
+      return String(view.state.doc.lineAt(afterTable).number);
+    })();
     const range = root.createRange();
     cell.focus();
     range.selectNodeContents(cell);
@@ -2370,9 +2732,19 @@ function tableArrowNavigationExpression() {
     const firstSourceLine = root.querySelector('.mm-live-v4-table-source-line');
     const tableHeaderLineNumber = Number(firstSourceLine?.getAttribute('data-source-line') ?? 0);
     const beforeTableLineNumber = Math.max(1, tableHeaderLineNumber - 1);
-    const afterTableLineNumber = wrapper
-      ? view.state.doc.lineAt(Number(wrapper.getAttribute('data-src-to'))).number
-      : tableHeaderLineNumber + 3;
+    const afterTablePosition = (() => {
+      if (!wrapper) {
+        return view.state.doc.line(tableHeaderLineNumber + 3).from;
+      }
+      const tableTo = Number(wrapper.getAttribute('data-src-to'));
+      if (!Number.isInteger(tableTo)) {
+        return view.state.doc.line(tableHeaderLineNumber + 3).from;
+      }
+      return view.state.doc.sliceString(tableTo, tableTo + 1) === '\\n'
+        ? tableTo + 1
+        : tableTo;
+    })();
+    const afterTableLineNumber = view.state.doc.lineAt(afterTablePosition).number;
     view.focus();
     view.dispatch({ selection: { anchor: view.state.doc.line(beforeTableLineNumber).from } });
     key(view.contentDOM, 'ArrowDown');
@@ -2393,7 +2765,7 @@ function tableArrowNavigationExpression() {
           const activeLineGutter = root.querySelector('.cm-activeLineGutter');
           const after = view.state.doc.toString();
           const afterDownSelection = view.state.selection.main;
-          const afterDownLine = view.state.doc.line(afterTableLineNumber);
+          const afterDownLine = view.state.doc.lineAt(afterTablePosition);
           resolve(JSON.stringify({
             ok: true,
             fromBeforeTableLine,
@@ -2405,7 +2777,7 @@ function tableArrowNavigationExpression() {
             afterDownGutterText: activeLineGutter?.textContent ?? null,
             expectedAfterDownGutterText: String(afterTableLineNumber),
             afterDownSelectionHead: afterDownSelection.head,
-            afterDownLineEnd: afterDownLine.to,
+            afterDownLineStart: afterDownLine.from,
             docChanged: after !== before,
           }));
         }, 100);
@@ -2538,6 +2910,8 @@ function assertTableRenderStability(result) {
 function assertTableStaleWebviewAckStability(result) {
   if (
     !result?.ok ||
+    result.changeIds?.length !== 3 ||
+    result.changeIds.some((id) => !Number.isInteger(id)) ||
     !result.finalLocalDocChanged ||
     !result.afterFirstAckDocMatchesFinal ||
     !result.afterSecondAckDocMatchesFinal ||
@@ -2551,6 +2925,47 @@ function assertTableStaleWebviewAckStability(result) {
   ) {
     throw new Error(
       `Table stale webview ack stability check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableHostSyncStability(result) {
+  if (
+    !result?.ok ||
+    !result.docChangedBeforeSync ||
+    !result.restoredDoc ||
+    !result.sameWidget ||
+    !result.sameCell ||
+    result.widgetChildListMutations !== 0 ||
+    result.gutterChildListMutations !== 0
+  ) {
+    throw new Error(
+      `Table host sync stability check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableSequentialCellToEditorTyping(result) {
+  if (
+    !result?.ok ||
+    !result.afterCellDocChanged ||
+    result.headerKeyTextAfterCells !== "KeyH" ||
+    result.keyTextAfterCells !== "ShortX" ||
+    result.valueTextAfterCells !==
+      "short cell. This is resizing the cell now VALUE" ||
+    !result.headerTextAfterCells?.includes("KeyH") ||
+    !result.rowTextAfterCells?.includes("ShortX") ||
+    !result.rowTextAfterCells?.includes("now VALUE") ||
+    !result.execCommandResult ||
+    !result.outsideBeforeNormalText ||
+    result.tableContainsOutsideText ||
+    result.headerKeyTextAfterOutside !== result.headerKeyTextAfterCells ||
+    result.keyTextAfterOutside !== result.keyTextAfterCells ||
+    result.valueTextAfterOutside !== result.valueTextAfterCells ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table sequential cell to editor typing check failed: ${JSON.stringify(result)}`,
     );
   }
 }
@@ -2603,7 +3018,7 @@ function assertTableTrustedUndo(result) {
     !result?.ok ||
     result.afterUndoText !== "base" ||
     !result.selectionCollapsed ||
-    result.docChanged
+    !result.afterDocIncludesBase
   ) {
     throw new Error(`Table trusted undo check failed: ${JSON.stringify(result)}`);
   }
@@ -2698,7 +3113,7 @@ function assertTableArrowNavigation(result) {
     !result.stayedInCellAfterInsideDown ||
     !result.exitDownPrevented ||
     result.afterDownGutterText !== result.expectedAfterDownGutterText ||
-    result.afterDownSelectionHead !== result.afterDownLineEnd ||
+    result.afterDownSelectionHead !== result.afterDownLineStart ||
     result.docChanged
   ) {
     throw new Error(
