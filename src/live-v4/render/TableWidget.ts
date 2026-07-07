@@ -8,6 +8,7 @@ import {
 } from "../../shared/tableModel";
 import {
   measureTableColumnSizing,
+  TableCellSizingOverride,
   TableColumnSizing,
 } from "../../shared/tableColumnSizing";
 import { allowTableSourceChange } from "../../shared/tableSourceProtection";
@@ -81,7 +82,7 @@ export class RenderedTableWidget extends WidgetType {
     scrollbar.append(scrollbarThumb);
 
     wrapper.append(tableScroll, scrollbar);
-    bindTableLayout(
+    const scheduleTableLayout = bindTableLayout(
       wrapper,
       tableScroll,
       tableElement,
@@ -89,7 +90,7 @@ export class RenderedTableWidget extends WidgetType {
       scrollbarThumb,
       this.table,
     );
-    bindTableEditing(wrapper, view, this.table);
+    bindTableEditing(wrapper, view, this.table, scheduleTableLayout);
     return wrapper;
   }
 
@@ -104,6 +105,17 @@ export class RenderedTableWidget extends WidgetType {
 
 interface TableWidgetElement extends HTMLElement {
   __mlrtTableWidgetCleanup?: () => void;
+}
+
+interface CellEditHistory {
+  undoStack: CellEditSnapshot[];
+  redoStack: CellEditSnapshot[];
+  lastValue: string;
+}
+
+interface CellEditSnapshot {
+  value: string;
+  caretOffset: number;
 }
 
 interface AppendCellsOptions {
@@ -182,13 +194,19 @@ function bindTableLayout(
   scrollbar: HTMLElement,
   scrollbarThumb: HTMLElement,
   table: ParsedTable,
-): void {
+): () => void {
   const syncScrollbar = () =>
     syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
+  let pendingAnimationFrame = 0;
   const syncLayout = () => {
+    pendingAnimationFrame = 0;
     applyColumnSizing(
       wrapper,
-      measureTableColumnSizing(table, measureAvailableDataWidthCh(wrapper)),
+      measureTableColumnSizing(
+        table,
+        measureAvailableDataWidthCh(wrapper),
+        readActiveCellSizingOverride(wrapper),
+      ),
     );
     const styles = getComputedStyle(tableElement);
     const lineHeight = parseFloat(styles.lineHeight);
@@ -202,20 +220,32 @@ function bindTableLayout(
       tableHeight + scrollbarHeight - lineHeight * 2,
     )}px`;
   };
+  const scheduleLayout = () => {
+    if (pendingAnimationFrame !== 0) {
+      return;
+    }
+
+    pendingAnimationFrame = requestTableAnimationFrame(wrapper, syncLayout);
+  };
 
   const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
   const resizeObserver = ResizeObserverCtor
-    ? new ResizeObserverCtor(syncLayout)
+    ? new ResizeObserverCtor(scheduleLayout)
     : undefined;
   resizeObserver?.observe(tableElement);
   resizeObserver?.observe(tableScroll);
   tableScroll.addEventListener("scroll", syncScrollbar);
 
-  requestAnimationFrame(syncLayout);
+  scheduleLayout();
   setTableWidgetCleanup(wrapper, () => {
+    if (pendingAnimationFrame !== 0) {
+      cancelTableAnimationFrame(wrapper, pendingAnimationFrame);
+      pendingAnimationFrame = 0;
+    }
     resizeObserver?.disconnect();
     tableScroll.removeEventListener("scroll", syncScrollbar);
   });
+  return scheduleLayout;
 }
 
 function syncTableScrollbar(
@@ -326,22 +356,114 @@ function getTableWidgetCleanup(wrapper: HTMLElement): (() => void) | undefined {
   return (wrapper as TableWidgetElement).__mlrtTableWidgetCleanup;
 }
 
+function requestTableAnimationFrame(
+  wrapper: HTMLElement,
+  callback: FrameRequestCallback,
+): number {
+  const view = wrapper.ownerDocument.defaultView;
+  return view
+    ? view.requestAnimationFrame(callback)
+    : requestAnimationFrame(callback);
+}
+
+function cancelTableAnimationFrame(
+  wrapper: HTMLElement,
+  frame: number,
+): void {
+  const view = wrapper.ownerDocument.defaultView;
+  if (view) {
+    view.cancelAnimationFrame(frame);
+    return;
+  }
+
+  cancelAnimationFrame(frame);
+}
+
+function readActiveCellSizingOverride(
+  wrapper: HTMLElement,
+): TableCellSizingOverride | undefined {
+  const activeElement = wrapper.ownerDocument.activeElement;
+  const cell = findCell(activeElement);
+  if (!cell || !wrapper.contains(cell)) {
+    return undefined;
+  }
+
+  const rowKind = cell.dataset.rowKind;
+  const rowIndex = Number(cell.dataset.rowIndex ?? "0");
+  const column = Number(cell.dataset.column ?? "0");
+  if (
+    (rowKind !== "header" && rowKind !== "body") ||
+    !Number.isInteger(rowIndex) ||
+    rowIndex < 0 ||
+    !Number.isInteger(column) ||
+    column < 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    rowKind,
+    rowIndex,
+    column,
+    value: readCellDisplayValue(cell),
+  };
+}
+
 function bindTableEditing(
   wrapper: HTMLElement,
   view: EditorView,
   table: ParsedTable,
+  scheduleTableLayout: () => void,
 ): void {
+  const cellHistories = new WeakMap<HTMLElement, CellEditHistory>();
+
   wrapper.addEventListener("focusin", (event) => {
-    if (findCell(event.target)) {
+    const cell = findCell(event.target);
+    if (cell) {
+      ensureCellEditHistory(cellHistories, cell);
       view.dom.classList.add("mm-live-v4-table-cell-focused");
+      scheduleTableLayout();
     }
+  });
+
+  wrapper.addEventListener("beforeinput", (event) => {
+    const cell = findCell(event.target);
+    if (!cell || !(event instanceof InputEvent)) {
+      return;
+    }
+
+    if (event.inputType === "historyUndo") {
+      event.preventDefault();
+      restoreCellEditHistory(cellHistories, cell, "undo");
+      scheduleTableLayout();
+      return;
+    }
+
+    if (event.inputType === "historyRedo") {
+      event.preventDefault();
+      restoreCellEditHistory(cellHistories, cell, "redo");
+      scheduleTableLayout();
+      return;
+    }
+
+    recordCellEditHistory(cellHistories, cell);
+  });
+
+  wrapper.addEventListener("input", (event) => {
+    const cell = findCell(event.target);
+    if (!cell) {
+      return;
+    }
+
+    syncCellEditHistory(cellHistories, cell);
+    scheduleTableLayout();
   });
 
   wrapper.addEventListener("focusout", (event) => {
     const cell = findCell(event.target);
     if (cell) {
       setTimeout(() => {
-        if (!wrapper.contains(wrapper.ownerDocument.activeElement)) {
+        if (!findCell(wrapper.ownerDocument.activeElement)) {
           view.dom.classList.remove("mm-live-v4-table-cell-focused");
         }
         if (cell.isConnected) {
@@ -359,13 +481,15 @@ function bindTableEditing(
 
     event.stopPropagation();
 
-    if (event.key === "Enter" && event.shiftKey) {
+    const historyDirection = getCellEditHistoryDirection(event);
+    if (historyDirection) {
       event.preventDefault();
-      insertTextAtSelection("\n");
+      restoreCellEditHistory(cellHistories, cell, historyDirection);
+      scheduleTableLayout();
       return;
     }
 
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && isPlainKey(event)) {
       event.preventDefault();
       commitCellEdit(view, table, cell, {
         selectionAnchor: getPositionAfterTable(view, table),
@@ -375,13 +499,7 @@ function bindTableEditing(
       return;
     }
 
-    if (
-      (event.key === "ArrowUp" || event.key === "ArrowDown") &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.shiftKey
-    ) {
+    if (isUnmodifiedVerticalArrow(event)) {
       const rowDelta = event.key === "ArrowUp" ? -1 : 1;
       if (!isCaretAtVerticalBoundary(cell, rowDelta)) {
         return;
@@ -411,7 +529,7 @@ function bindTableEditing(
       return;
     }
 
-    if (event.key === "Tab") {
+    if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
       commitCellEdit(view, table, cell);
@@ -436,12 +554,18 @@ function commitCellEdit(
     return;
   }
 
-  const value = cell.innerText.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
+  const value = readCellDisplayValue(cell);
   if (value === cell.dataset.original) {
     dispatchSelection(view, options.selectionAnchor);
     return;
   }
 
+  const originalValue = cell.dataset.original ?? "";
+  const caretOffset = getCellCaretOffset(cell);
+  const restoreCaretOffset = Math.min(
+    originalValue.length,
+    caretOffset + Math.max(0, originalValue.length - value.length),
+  );
   const edit = formatTableCellSourceEdit(
     sourceRow,
     table.columnCount,
@@ -452,6 +576,7 @@ function commitCellEdit(
     new CustomEvent("mlrt:table-cell-commit", {
       bubbles: true,
       detail: {
+        tableFrom: table.from,
         rowKind,
         rowIndex,
         column,
@@ -459,6 +584,7 @@ function commitCellEdit(
         to: edit.to,
         insertLength: edit.insert.length,
         valueLength: value.length,
+        restoreCaretOffset,
       },
     }),
   );
@@ -480,6 +606,10 @@ function commitCellEdit(
     scrollIntoView: true,
     userEvent: "input",
   });
+}
+
+function readCellDisplayValue(cell: HTMLElement): string {
+  return cell.innerText.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
 }
 
 function dispatchSelection(
@@ -589,20 +719,161 @@ function findCell(target: EventTarget | null): HTMLElement | null {
   return target.closest<HTMLElement>(".mm-live-v4-table-cell");
 }
 
-function insertTextAtSelection(text: string): void {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) {
+function ensureCellEditHistory(
+  histories: WeakMap<HTMLElement, CellEditHistory>,
+  cell: HTMLElement,
+): CellEditHistory {
+  const existing = histories.get(cell);
+  if (existing) {
+    return existing;
+  }
+
+  const history = {
+    undoStack: [],
+    redoStack: [],
+    lastValue: readCellDisplayValue(cell),
+  };
+  histories.set(cell, history);
+  return history;
+}
+
+function recordCellEditHistory(
+  histories: WeakMap<HTMLElement, CellEditHistory>,
+  cell: HTMLElement,
+): void {
+  const history = ensureCellEditHistory(histories, cell);
+  const snapshot = captureCellEditSnapshot(cell);
+  const previousSnapshot = history.undoStack[history.undoStack.length - 1];
+  if (
+    previousSnapshot &&
+    previousSnapshot.value === snapshot.value &&
+    previousSnapshot.caretOffset === snapshot.caretOffset
+  ) {
     return;
   }
 
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-  const node = document.createTextNode(text);
-  range.insertNode(node);
-  range.setStartAfter(node);
-  range.setEndAfter(node);
-  selection.removeAllRanges();
-  selection.addRange(range);
+  history.undoStack.push(snapshot);
+  history.redoStack = [];
+  history.lastValue = snapshot.value;
+}
+
+function syncCellEditHistory(
+  histories: WeakMap<HTMLElement, CellEditHistory>,
+  cell: HTMLElement,
+): void {
+  ensureCellEditHistory(histories, cell).lastValue = readCellDisplayValue(cell);
+}
+
+function restoreCellEditHistory(
+  histories: WeakMap<HTMLElement, CellEditHistory>,
+  cell: HTMLElement,
+  direction: "undo" | "redo",
+): void {
+  const history = ensureCellEditHistory(histories, cell);
+  const sourceStack = direction === "undo" ? history.undoStack : history.redoStack;
+  const targetStack = direction === "undo" ? history.redoStack : history.undoStack;
+  const snapshot = sourceStack.pop();
+  if (!snapshot) {
+    return;
+  }
+
+  targetStack.push(captureCellEditSnapshot(cell));
+  applyCellEditSnapshot(cell, snapshot);
+  history.lastValue = snapshot.value;
+}
+
+function captureCellEditSnapshot(cell: HTMLElement): CellEditSnapshot {
+  return {
+    value: readCellDisplayValue(cell),
+    caretOffset: getCellCaretOffset(cell),
+  };
+}
+
+function applyCellEditSnapshot(
+  cell: HTMLElement,
+  snapshot: CellEditSnapshot,
+): void {
+  cell.textContent = snapshot.value;
+  setCellCaretOffset(cell, snapshot.caretOffset);
+}
+
+function getCellEditHistoryDirection(
+  event: KeyboardEvent,
+): "undo" | "redo" | null {
+  const key = event.key.toLowerCase();
+  const primaryModifier = event.metaKey || event.ctrlKey;
+  if (!primaryModifier || event.altKey) {
+    return null;
+  }
+
+  if (key === "z") {
+    return event.shiftKey ? "redo" : "undo";
+  }
+
+  if (key === "y" && !event.shiftKey) {
+    return "redo";
+  }
+
+  return null;
+}
+
+function isPlainKey(event: KeyboardEvent): boolean {
+  return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+}
+
+function isUnmodifiedVerticalArrow(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+    isPlainKey(event)
+  );
+}
+
+function getCellCaretOffset(cell: HTMLElement): number {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  if (
+    !selection ||
+    selection.rangeCount === 0 ||
+    !isNodeInside(selection.anchorNode, cell)
+  ) {
+    return readCellDisplayValue(cell).length;
+  }
+
+  const range = selection.getRangeAt(0).cloneRange();
+  const measuringRange = cell.ownerDocument.createRange();
+  measuringRange.selectNodeContents(cell);
+  measuringRange.setEnd(range.endContainer, range.endOffset);
+  const offset = measuringRange.toString().replace(/\u00a0/g, " ").length;
+  range.detach();
+  measuringRange.detach();
+  return offset;
+}
+
+function setCellCaretOffset(cell: HTMLElement, offset: number): void {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const walker = cell.ownerDocument.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+  let remainingOffset = Math.max(0, offset);
+  let textNode = walker.nextNode();
+  while (textNode) {
+    const length = textNode.textContent?.length ?? 0;
+    if (remainingOffset <= length) {
+      const range = cell.ownerDocument.createRange();
+      range.setStart(textNode, remainingOffset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      range.detach();
+      return;
+    }
+
+    remainingOffset -= length;
+    textNode = walker.nextNode();
+  }
+
+  focusCellAtEnd(cell);
 }
 
 function isCaretAtVerticalBoundary(

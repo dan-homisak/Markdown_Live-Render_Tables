@@ -1,4 +1,4 @@
-import { ChangeSet, EditorState } from "@codemirror/state";
+import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createLiveRuntime } from "../live-v4/LiveRuntime";
 import { allowTableSourceChange } from "../shared/tableSourceProtection";
@@ -36,6 +36,31 @@ interface DebugEvent {
   timestamp: number;
 }
 
+interface TableCellCommitDetail {
+  tableFrom: number;
+  rowKind: string;
+  rowIndex: number;
+  column: number;
+  from: number;
+  to: number;
+  restoreCaretOffset: number;
+}
+
+interface PendingHostUndoFocus {
+  beforeText: string;
+  restore: HostUndoRestoreTarget;
+}
+
+type HostUndoRestoreTarget =
+  | {
+      kind: "editor";
+      anchor: number;
+    }
+  | {
+      kind: "tableCell";
+      detail: TableCellCommitDetail;
+    };
+
 interface EditorOptions {
   lineWrapping: boolean;
 }
@@ -51,6 +76,8 @@ let applyingFromHost = false;
 let debugEnabled = window.__MLRT_DEBUG__ === true;
 let hostRevision = 0;
 let view: EditorView;
+let lastTableCellCommit: TableCellCommitDetail | null = null;
+const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
 
 try {
   const runtime = createLiveRuntime(readEditorOptions());
@@ -77,6 +104,16 @@ try {
             });
           }
           if (update.docChanged && !applyingFromHost) {
+            pendingHostUndoFocusStack.push({
+              beforeText: update.startState.doc.toString(),
+              restore: lastTableCellCommit
+                ? { kind: "tableCell", detail: lastTableCellCommit }
+                : {
+                    kind: "editor",
+                    anchor: update.startState.selection.main.head,
+                  },
+            });
+            lastTableCellCommit = null;
             postDocumentChanges(
               update.changes,
               update.state.doc.toString(),
@@ -114,6 +151,12 @@ function setEditorDocument(text: string, source: string): void {
     return;
   }
 
+  const undoFocus = popPendingHostUndoFocus(text);
+  const fallbackSelection = clampEditorPosition(
+    view.state.selection.main.head,
+    text.length,
+  );
+
   applyingFromHost = true;
   view.dispatch({
     changes: {
@@ -121,9 +164,44 @@ function setEditorDocument(text: string, source: string): void {
       to: currentText.length,
       insert: text,
     },
+    selection: undoFocus
+      ? selectionForHostUndoRestore(undoFocus.restore, text.length)
+      : EditorSelection.cursor(fallbackSelection, 1),
     annotations: allowTableSourceChange.of(true),
   });
   applyingFromHost = false;
+
+  if (undoFocus?.restore.kind === "tableCell") {
+    focusTableCellAfterRender(undoFocus.restore.detail);
+  }
+}
+
+function popPendingHostUndoFocus(text: string): PendingHostUndoFocus | null {
+  const lastIndex = pendingHostUndoFocusStack.length - 1;
+  if (lastIndex < 0) {
+    return null;
+  }
+
+  const pendingFocus = pendingHostUndoFocusStack[lastIndex];
+  if (pendingFocus.beforeText !== text) {
+    return null;
+  }
+
+  pendingHostUndoFocusStack.pop();
+  return pendingFocus;
+}
+
+function selectionForHostUndoRestore(
+  restore: HostUndoRestoreTarget,
+  documentLength: number,
+): ReturnType<typeof EditorSelection.cursor> {
+  const anchor =
+    restore.kind === "tableCell" ? restore.detail.from : restore.anchor;
+  return EditorSelection.cursor(clampEditorPosition(anchor, documentLength), 1);
+}
+
+function clampEditorPosition(position: number, documentLength: number): number {
+  return Math.min(documentLength, Math.max(0, position));
 }
 
 function updateStatus(text: string, source: string): void {
@@ -210,6 +288,9 @@ function installCursorDebugListeners(root: HTMLElement): void {
   });
 
   root.addEventListener("mlrt:table-cell-commit", (event) => {
+    if (event instanceof CustomEvent && isTableCellCommitDetail(event.detail)) {
+      lastTableCellCommit = event.detail;
+    }
     recordDebug("table-cell-commit", {
       detail: event instanceof CustomEvent ? event.detail : null,
       selection: summarizeDomSelection(),
@@ -217,6 +298,75 @@ function installCursorDebugListeners(root: HTMLElement): void {
       activeElement: summarizeTarget(document.activeElement),
     });
   });
+}
+
+function focusTableCellAfterRender(detail: TableCellCommitDetail): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const tableSelector = `.mm-live-v4-table-cell[data-table-from="${detail.tableFrom}"]`;
+      const selector = [
+        tableSelector,
+        `[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
+        `[data-row-index="${detail.rowIndex}"]`,
+        `[data-column="${detail.column}"]`,
+      ].join("");
+      const cell =
+        document.querySelector<HTMLElement>(selector) ??
+        document.querySelector<HTMLElement>(
+          [
+            `.mm-live-v4-table-cell[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
+            `[data-row-index="${detail.rowIndex}"]`,
+            `[data-column="${detail.column}"]`,
+          ].join(""),
+        );
+      if (!cell) {
+        return;
+      }
+
+      cell.focus();
+      setElementCaretOffset(cell, detail.restoreCaretOffset);
+    });
+  });
+}
+
+function setElementCaretOffset(element: HTMLElement, offset: number): void {
+  const selection = element.ownerDocument.defaultView?.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const walker = element.ownerDocument.createTreeWalker(
+    element,
+    NodeFilter.SHOW_TEXT,
+  );
+  let remainingOffset = Math.max(0, offset);
+  let textNode = walker.nextNode();
+  while (textNode) {
+    const length = textNode.textContent?.length ?? 0;
+    if (remainingOffset <= length) {
+      const range = element.ownerDocument.createRange();
+      range.setStart(textNode, remainingOffset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      range.detach();
+      return;
+    }
+
+    remainingOffset -= length;
+    textNode = walker.nextNode();
+  }
+
+  const range = element.ownerDocument.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  range.detach();
+}
+
+function cssEscapeAttribute(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function recordDebug(event: string, details: Record<string, unknown>): void {
@@ -320,5 +470,24 @@ function isHostSetDocumentMessage(
     (message as Record<string, unknown>).type === "setDocument" &&
     typeof (message as Record<string, unknown>).text === "string" &&
     typeof (message as Record<string, unknown>).revision === "number"
+  );
+}
+
+function isTableCellCommitDetail(
+  detail: unknown,
+): detail is TableCellCommitDetail {
+  if (!detail || typeof detail !== "object") {
+    return false;
+  }
+
+  const record = detail as Record<string, unknown>;
+  return (
+    typeof record.tableFrom === "number" &&
+    typeof record.rowKind === "string" &&
+    typeof record.rowIndex === "number" &&
+    typeof record.column === "number" &&
+    typeof record.from === "number" &&
+    typeof record.to === "number" &&
+    typeof record.restoreCaretOffset === "number"
   );
 }

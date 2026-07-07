@@ -255,6 +255,50 @@ assert.ok(
   `expected compact columns to stay below 12ch, got ${compactOverflowSizing.columns.map((column) => column.widthCh).join(", ")}`,
 );
 
+const liveEditSource = [
+  "| Key | Value |",
+  "| --- | --- |",
+  "| Short | tiny |",
+].join("\n");
+const liveEditTable = parseMarkdownTables(liveEditSource)[0];
+const initialLiveEditSizing = measureTableColumnSizing(liveEditTable, 80);
+const expandedLiveEditSizing = measureTableColumnSizing(liveEditTable, 80, {
+  rowKind: "body",
+  rowIndex: 0,
+  column: 1,
+  value: "tiny value that should widen while the user is still typing",
+});
+assert.ok(
+  expandedLiveEditSizing.columns[1].widthCh >
+    initialLiveEditSizing.columns[1].widthCh,
+  `expected transient cell text to widen the edited column from ${initialLiveEditSizing.columns[1].widthCh}ch, got ${expandedLiveEditSizing.columns[1].widthCh}ch`,
+);
+assert.equal(
+  rowToDisplayValues(liveEditTable.body[0], liveEditTable.columnCount)[1],
+  "tiny",
+  "expected transient sizing override to leave the parsed table model unchanged",
+);
+
+const headerPrioritySizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      "| Extremely Long Header Title That Should Not Dominate Short Data | Notes |",
+      "| --- | --- |",
+      "| A | This body content should remain the primary width driver for the table. |",
+    ].join("\n"),
+  )[0],
+  90,
+);
+assert.ok(
+  headerPrioritySizing.columns[0].preferredWidthCh <= 27,
+  `expected long headers to be capped below body-driven content widths, got ${headerPrioritySizing.columns[0].preferredWidthCh}ch`,
+);
+assert.ok(
+  headerPrioritySizing.columns[1].preferredWidthCh >
+    headerPrioritySizing.columns[0].preferredWidthCh,
+  `expected body content column to receive width priority over long header-only column, got ${headerPrioritySizing.columns.map((column) => column.preferredWidthCh).join(", ")}`,
+);
+
 const longTokenSizing = measureTableColumnSizing(
   parseMarkdownTables(
     [

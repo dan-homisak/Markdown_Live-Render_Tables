@@ -228,6 +228,66 @@ try {
     path.join(qaDir, "edh-table-responsive-scroll.png"),
   );
   await evaluateJson(liveClient, restoreTableResponsiveScrollPreviewExpression());
+  const liveResize = await evaluateJson(liveClient, tableLiveResizeExpression());
+  assertTableLiveResize(liveResize);
+  console.log("TABLE LIVE RESIZE CHECK:", liveResize);
+  const editShortcuts = await evaluateJson(
+    liveClient,
+    tableCellEditShortcutsExpression(),
+  );
+  assertTableCellEditShortcuts(editShortcuts);
+  console.log("TABLE CELL EDIT SHORTCUTS CHECK:", editShortcuts);
+  const trustedUndoSetup = await evaluateJson(
+    liveClient,
+    tableTrustedUndoSetupExpression(),
+  );
+  assertTableTrustedUndoSetup(trustedUndoSetup);
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+  });
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+  });
+  await sleep(100);
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    modifiers: 4,
+    key: "z",
+    code: "KeyZ",
+    windowsVirtualKeyCode: 90,
+  });
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    modifiers: 4,
+    key: "z",
+    code: "KeyZ",
+    windowsVirtualKeyCode: 90,
+  });
+  await sleep(150);
+  const trustedUndo = await evaluateJson(
+    liveClient,
+    tableTrustedUndoResultExpression(),
+  );
+  assertTableTrustedUndo(trustedUndo);
+  console.log("TABLE TRUSTED UNDO CHECK:", trustedUndo);
+  const hostUndoFocus = await evaluateJson(
+    liveClient,
+    tableHostUndoFocusExpression(),
+  );
+  assertTableHostUndoFocus(hostUndoFocus);
+  console.log("TABLE HOST UNDO FOCUS CHECK:", hostUndoFocus);
+  const mixedUndoFocus = await evaluateJson(
+    liveClient,
+    tableThenEditorUndoFocusExpression(),
+  );
+  assertTableThenEditorUndoFocus(mixedUndoFocus);
+  console.log("TABLE THEN EDITOR UNDO FOCUS CHECK:", mixedUndoFocus);
   const focusState = await evaluateJson(
     liveClient,
     tableCellFocusExpression(),
@@ -605,6 +665,547 @@ function restoreTableResponsiveScrollPreviewExpression() {
   })()`;
 }
 
+function tableLiveResizeExpression() {
+  return `new Promise((resolve) => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+      return;
+    }
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const table = widget?.querySelector('.mm-live-v4-table');
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const columns = Array.from(widget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!widget || !table || !cell || columns.length < 2 || !view) {
+      resolve(JSON.stringify({
+        ok: false,
+        reason: 'missing live resize targets',
+        hasWidget: Boolean(widget),
+        hasTable: Boolean(table),
+        hasCell: Boolean(cell),
+        columnCount: columns.length,
+        hasView: Boolean(view),
+      }));
+      return;
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    const beforeWidth = columns[1].getBoundingClientRect().width;
+    const beforeTableWidth = table.getBoundingClientRect().width;
+    const originalText = cell.textContent ?? '';
+    cell.focus();
+    cell.textContent = 'short cell with enough live typed text to expand the value column immediately';
+    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: ' immediately',
+    }));
+    root.defaultView.requestAnimationFrame(() => {
+      root.defaultView.requestAnimationFrame(() => {
+        const afterWidth = columns[1].getBoundingClientRect().width;
+        const afterTableWidth = table.getBoundingClientRect().width;
+        const afterDoc = view.state.doc.toString();
+        cell.textContent = originalText;
+        cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'deleteContentBackward',
+          data: null,
+        }));
+        resolve(JSON.stringify({
+          ok: true,
+          beforeWidth,
+          afterWidth,
+          widthDelta: afterWidth - beforeWidth,
+          beforeTableWidth,
+          afterTableWidth,
+          tableWidthDelta: afterTableWidth - beforeTableWidth,
+          docChanged: afterDoc !== beforeDoc,
+          activeElementClass: root.activeElement?.className ?? null,
+        }));
+      });
+    });
+  })`;
+}
+
+function tableCellEditShortcutsExpression() {
+  return `new Promise((resolve) => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+      return;
+    }
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!cell || !view) {
+      resolve(JSON.stringify({
+        ok: false,
+        reason: 'missing edit shortcut targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      }));
+      return;
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    const originalText = cell.textContent ?? '';
+    const selectCellContents = () => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const setCaretAtCellEnd = () => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const selectTextOffsets = (from, to) => {
+      const text = cell.firstChild;
+      if (!text || text.nodeType !== root.defaultView.Node.TEXT_NODE) {
+        return false;
+      }
+      const range = root.createRange();
+      range.setStart(text, from);
+      range.setEnd(text, to);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    };
+    const key = (options) => cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      ...options,
+    }));
+
+    cell.focus();
+    selectCellContents();
+    root.execCommand('insertText', false, 'base');
+    const selectedForDelete = selectTextOffsets(3, 4);
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'deleteContentBackward',
+      data: null,
+    }));
+    root.execCommand('delete');
+    const afterDeleteText = cell.innerText;
+    const undoDefaultAllowed = key({
+      key: 'z',
+      code: 'KeyZ',
+      metaKey: true,
+      keyCode: 90,
+      which: 90,
+    });
+    setTimeout(() => {
+      const afterUndoText = cell.innerText;
+      const selectionAfterUndo = root.defaultView.getSelection();
+      const undoSelectionCollapsed = selectionAfterUndo?.isCollapsed ?? false;
+      cell.textContent = 'base';
+      setCaretAtCellEnd();
+      const shiftEnterDefaultAllowed = key({
+        key: 'Enter',
+        code: 'Enter',
+        shiftKey: true,
+        keyCode: 13,
+        which: 13,
+      });
+      root.execCommand('insertLineBreak');
+      root.execCommand('insertText', false, 'next');
+      setTimeout(() => {
+        const afterShiftEnterText = cell.innerText;
+        const afterDoc = view.state.doc.toString();
+        cell.textContent = originalText;
+        cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertReplacementText',
+          data: originalText,
+        }));
+        resolve(JSON.stringify({
+          ok: true,
+          selectedForDelete,
+          undoDefaultAllowed,
+          shiftEnterDefaultAllowed,
+          afterDeleteText,
+          afterUndoText,
+          undoSelectionCollapsed,
+          afterShiftEnterText,
+          hasLineBreak: /\\n/.test(afterShiftEnterText),
+          docChanged: afterDoc !== beforeDoc,
+        }));
+      }, 100);
+    }, 100);
+  })`;
+}
+
+function tableTrustedUndoSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!cell || !view) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing trusted undo targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      });
+    }
+
+    const selectCellContents = () => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const setCaretAtCellEnd = () => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const originalText = cell.textContent ?? '';
+    cell.focus();
+    selectCellContents();
+    root.execCommand('insertText', false, 'base');
+    setCaretAtCellEnd();
+    root.defaultView.__MLRT_TRUSTED_UNDO_STATE__ = {
+      originalText,
+      beforeDoc: view.state.doc.toString(),
+    };
+    return JSON.stringify({
+      ok: true,
+      beforeText: cell.innerText,
+      activeElementClass: root.activeElement?.className ?? null,
+    });
+  })()`;
+}
+
+function tableTrustedUndoResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root?.querySelectorAll('.mm-live-v4-table-widget') ?? []);
+    const widget = widgets[widgets.length - 1];
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root?.defaultView.__MLRT_TRUSTED_UNDO_STATE__;
+    if (!root || !cell || !view || !state) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing trusted undo result state',
+        hasRoot: Boolean(root),
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+        hasState: Boolean(state),
+      });
+    }
+
+    const afterUndoText = cell.innerText;
+    const selection = root.defaultView.getSelection();
+    const selectionCollapsed = selection?.isCollapsed ?? false;
+    const afterDoc = view.state.doc.toString();
+    cell.textContent = state.originalText;
+    cell.dispatchEvent(new root.defaultView.InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertReplacementText',
+      data: state.originalText,
+    }));
+    delete root.defaultView.__MLRT_TRUSTED_UNDO_STATE__;
+    return JSON.stringify({
+      ok: true,
+      afterUndoText,
+      selectionCollapsed,
+      docChanged: afterDoc !== state.beforeDoc,
+    });
+  })()`;
+}
+
+function tableHostUndoFocusExpression() {
+  return `new Promise((resolve) => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+      return;
+    }
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!cell || !view) {
+      resolve(JSON.stringify({
+        ok: false,
+        reason: 'missing host undo focus targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      }));
+      return;
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    const beforeText = cell.innerText;
+    const textNode = Array.from(cell.childNodes).find((node) => node.nodeType === root.defaultView.Node.TEXT_NODE);
+    if (!textNode || !textNode.textContent) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing text node' }));
+      return;
+    }
+    const range = root.createRange();
+    range.setStart(textNode, Math.max(0, textNode.textContent.length - 1));
+    range.setEnd(textNode, textNode.textContent.length);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    cell.focus();
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'deleteContentBackward',
+      data: null,
+    }));
+    root.execCommand('delete');
+    const afterDeleteText = cell.innerText;
+    cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    }));
+    setTimeout(() => {
+      const afterCommitDoc = view.state.doc.toString();
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text: beforeDoc,
+          revision: 999001,
+          debug: false,
+        },
+      }));
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(() => {
+          const active = root.activeElement;
+          const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+          const currentWidget = currentWidgets[currentWidgets.length - 1];
+          const restoredCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+          const restoredSelection = root.defaultView.getSelection();
+          const restoredText = restoredCell?.innerText ?? null;
+          const caretOffset = (() => {
+            if (!restoredCell || !restoredSelection || restoredSelection.rangeCount === 0) {
+              return null;
+            }
+            const measure = root.createRange();
+            measure.selectNodeContents(restoredCell);
+            const caret = restoredSelection.getRangeAt(0);
+            measure.setEnd(caret.endContainer, caret.endOffset);
+            const offset = measure.toString().length;
+            measure.detach();
+            return offset;
+          })();
+          resolve(JSON.stringify({
+            ok: true,
+            beforeText,
+            afterDeleteText,
+            docChangedOnCommit: afterCommitDoc !== beforeDoc,
+            afterUndoDocMatches: view.state.doc.toString() === beforeDoc,
+            activeElementClass: active?.className ?? null,
+            activeIsRestoredCell: active === restoredCell,
+            restoredText,
+            selectionCollapsed: restoredSelection?.isCollapsed ?? false,
+            caretOffset,
+          }));
+        });
+      });
+    }, 100);
+  })`;
+}
+
+function tableThenEditorUndoFocusExpression() {
+  return `new Promise((resolve) => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
+      return;
+    }
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!cell || !view) {
+      resolve(JSON.stringify({
+        ok: false,
+        reason: 'missing mixed undo targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      }));
+      return;
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    const beforeText = cell.innerText;
+    const textNode = Array.from(cell.childNodes).find((node) => node.nodeType === root.defaultView.Node.TEXT_NODE);
+    if (!textNode || !textNode.textContent) {
+      resolve(JSON.stringify({ ok: false, reason: 'missing text node' }));
+      return;
+    }
+
+    const range = root.createRange();
+    range.setStart(textNode, Math.max(0, textNode.textContent.length - 1));
+    range.setEnd(textNode, textNode.textContent.length);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    cell.focus();
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'deleteContentBackward',
+      data: null,
+    }));
+    root.execCommand('delete');
+    const afterDeleteText = cell.innerText;
+    cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    setTimeout(() => {
+      const afterTableCommitDoc = view.state.doc.toString();
+      const marker = '\\nnormal undo marker';
+      const normalInsertFrom = afterTableCommitDoc.length;
+      view.dispatch({ selection: { anchor: normalInsertFrom } });
+      view.dispatch({
+        changes: { from: normalInsertFrom, insert: marker },
+        selection: { anchor: normalInsertFrom + marker.length },
+      });
+      const afterNormalEditDoc = view.state.doc.toString();
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text: afterTableCommitDoc,
+          revision: 999101,
+          debug: false,
+        },
+      }));
+      root.defaultView.requestAnimationFrame(() => {
+        const afterNormalUndoSelection = view.state.selection.main;
+        const afterNormalUndoDoc = view.state.doc.toString();
+        root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+          data: {
+            type: 'setDocument',
+            text: beforeDoc,
+            revision: 999102,
+            debug: false,
+          },
+        }));
+        root.defaultView.requestAnimationFrame(() => {
+          root.defaultView.requestAnimationFrame(() => {
+            const active = root.activeElement;
+            const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+            const currentWidget = currentWidgets[currentWidgets.length - 1];
+            const restoredCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+            const restoredSelection = root.defaultView.getSelection();
+            const restoredText = restoredCell?.innerText ?? null;
+            const caretOffset = (() => {
+              if (!restoredCell || !restoredSelection || restoredSelection.rangeCount === 0) {
+                return null;
+              }
+              const measure = root.createRange();
+              measure.selectNodeContents(restoredCell);
+              const caret = restoredSelection.getRangeAt(0);
+              measure.setEnd(caret.endContainer, caret.endOffset);
+              const offset = measure.toString().length;
+              measure.detach();
+              return offset;
+            })();
+            resolve(JSON.stringify({
+              ok: true,
+              beforeText,
+              afterDeleteText,
+              normalInsertFrom,
+              afterNormalEditDocChanged: afterNormalEditDoc !== afterTableCommitDoc,
+              afterNormalUndoDocMatches: afterNormalUndoDoc === afterTableCommitDoc,
+              afterNormalUndoSelectionFrom: afterNormalUndoSelection.from,
+              afterNormalUndoSelectionTo: afterNormalUndoSelection.to,
+              afterFinalUndoDocMatches: view.state.doc.toString() === beforeDoc,
+              activeElementClass: active?.className ?? null,
+              activeIsRestoredCell: active === restoredCell,
+              restoredText,
+              selectionCollapsed: restoredSelection?.isCollapsed ?? false,
+              caretOffset,
+            }));
+          });
+        });
+      });
+    }, 100);
+  })`;
+}
+
 function tableCellFocusExpression() {
   return `(() => {
     function findLiveRoot() {
@@ -935,6 +1536,93 @@ function assertTableResponsiveScroll(result) {
   ) {
     throw new Error(
       `Table responsive scroll check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableLiveResize(result) {
+  if (
+    !result?.ok ||
+    result.docChanged ||
+    result.widthDelta <= pixelTolerance ||
+    result.tableWidthDelta <= pixelTolerance
+  ) {
+    throw new Error(
+      `Table live resize check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableCellEditShortcuts(result) {
+  if (
+    !result?.ok ||
+    result.docChanged ||
+    !result.selectedForDelete ||
+    result.undoDefaultAllowed ||
+    !result.shiftEnterDefaultAllowed ||
+    result.afterDeleteText !== "bas" ||
+    result.afterUndoText !== "base" ||
+    !result.undoSelectionCollapsed ||
+    !result.hasLineBreak ||
+    !result.afterShiftEnterText.includes("next")
+  ) {
+    throw new Error(
+      `Table cell edit shortcuts check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableTrustedUndoSetup(result) {
+  if (!result?.ok || result.beforeText !== "base") {
+    throw new Error(
+      `Table trusted undo setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableTrustedUndo(result) {
+  if (
+    !result?.ok ||
+    result.afterUndoText !== "base" ||
+    !result.selectionCollapsed ||
+    result.docChanged
+  ) {
+    throw new Error(`Table trusted undo check failed: ${JSON.stringify(result)}`);
+  }
+}
+
+function assertTableHostUndoFocus(result) {
+  if (
+    !result?.ok ||
+    !result.docChangedOnCommit ||
+    !result.afterUndoDocMatches ||
+    !result.activeIsRestoredCell ||
+    result.restoredText !== result.beforeText ||
+    !result.selectionCollapsed ||
+    result.caretOffset !== result.beforeText.length
+  ) {
+    throw new Error(
+      `Table host undo focus check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableThenEditorUndoFocus(result) {
+  if (
+    !result?.ok ||
+    !result.afterNormalEditDocChanged ||
+    !result.afterNormalUndoDocMatches ||
+    result.afterNormalUndoSelectionFrom !== result.normalInsertFrom ||
+    result.afterNormalUndoSelectionTo !== result.normalInsertFrom ||
+    result.afterNormalUndoSelectionFrom === 0 ||
+    !result.afterFinalUndoDocMatches ||
+    !result.activeIsRestoredCell ||
+    result.restoredText !== result.beforeText ||
+    !result.selectionCollapsed ||
+    result.caretOffset !== result.beforeText.length
+  ) {
+    throw new Error(
+      `Table then editor undo focus check failed: ${JSON.stringify(result)}`,
     );
   }
 }

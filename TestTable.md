@@ -21,7 +21,7 @@ More text.
 
 | Key | Value |
 |---|---|
-| Short | short cell |
+| Short | short cell. This is resizing the cell now |
 
 26
 

@@ -17,6 +17,19 @@ export interface TableColumnMeasurement {
   widthCh: number;
 }
 
+export interface TableCellSizingOverride {
+  rowKind: "header" | "body";
+  rowIndex: number;
+  column: number;
+  value: string;
+}
+
+interface RowMeasurementSource {
+  row: ParsedRow;
+  rowKind: "header" | "body";
+  rowIndex: number;
+}
+
 const CELL_HORIZONTAL_PADDING_CH = 2;
 const CELL_COMFORT_CH = 1;
 const TOKEN_COMFORT_CH = 0.5;
@@ -25,15 +38,25 @@ const READABLE_COLUMN_WIDTH_CH = 12;
 const READABLE_LINE_LENGTH_THRESHOLD_CH = 32;
 const MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
 const MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
+const HEADER_PREFERRED_WIDTH_CAP_CH = 24;
+const HEADER_TOKEN_WIDTH_CAP_CH = 24;
 const WIDTH_STEP_CH = 0.5;
 
 export function measureTableColumnSizing(
   table: ParsedTable,
   availableDataWidthCh?: number,
+  cellOverride?: TableCellSizingOverride,
 ): TableColumnSizing {
-  const rows = [table.header, ...table.body];
+  const rows: RowMeasurementSource[] = [
+    { row: table.header, rowKind: "header", rowIndex: 0 },
+    ...table.body.map((row, rowIndex) => ({
+      row,
+      rowKind: "body" as const,
+      rowIndex,
+    })),
+  ];
   const columns = Array.from({ length: table.columnCount }, (_value, column) =>
-    measureColumn(rows, table.columnCount, column),
+    measureColumn(rows, table.columnCount, column, cellOverride),
   );
   const totalPreferredWidth = columns.reduce(
     (total, column) => total + column.preferredWidthCh,
@@ -69,37 +92,65 @@ export function measureTableColumnSizing(
 }
 
 function measureColumn(
-  rows: ParsedRow[],
+  rows: RowMeasurementSource[],
   columnCount: number,
   column: number,
+  cellOverride: TableCellSizingOverride | undefined,
 ): TableColumnMeasurement {
   let longestLine = 0;
   let longestToken = 0;
+  let longestBodyLine = 0;
+  let longestBodyToken = 0;
+  let longestHeaderLine = 0;
+  let longestHeaderToken = 0;
+  let hasBodyRow = false;
   const cellLineLengths: number[] = [];
 
-  for (const row of rows) {
-    const value = rowToDisplayValues(row, columnCount)[column] ?? "";
+  for (const source of rows) {
+    const value = getCellDisplayValue(source, columnCount, column, cellOverride);
     for (const line of splitDisplayLines(value)) {
-      cellLineLengths.push(line.length);
-      longestLine = Math.max(longestLine, line.length);
-      longestToken = Math.max(longestToken, measureLongestToken(line));
+      const lineLength = line.length;
+      const tokenLength = measureLongestToken(line);
+      cellLineLengths.push(lineLength);
+      longestLine = Math.max(longestLine, lineLength);
+      longestToken = Math.max(longestToken, tokenLength);
+      if (source.rowKind === "body") {
+        hasBodyRow = true;
+        longestBodyLine = Math.max(longestBodyLine, lineLength);
+        longestBodyToken = Math.max(longestBodyToken, tokenLength);
+      } else {
+        longestHeaderLine = Math.max(longestHeaderLine, lineLength);
+        longestHeaderToken = Math.max(longestHeaderToken, tokenLength);
+      }
     }
   }
 
+  const sizingLine = hasBodyRow
+    ? Math.max(
+        longestBodyLine,
+        Math.min(longestHeaderLine, HEADER_PREFERRED_WIDTH_CAP_CH),
+      )
+    : longestLine;
+  const sizingToken = hasBodyRow
+    ? Math.max(
+        longestBodyToken,
+        Math.min(longestHeaderToken, HEADER_TOKEN_WIDTH_CAP_CH),
+      )
+    : longestToken;
   const hasProseLikeContent = cellLineLengths.some(
     (lineLength) => lineLength >= READABLE_LINE_LENGTH_THRESHOLD_CH,
   );
   const readableMinWidthCh = hasProseLikeContent ? READABLE_COLUMN_WIDTH_CH : 0;
   const minWidthCh = clamp(
     Math.max(
-      longestToken + CELL_HORIZONTAL_PADDING_CH + TOKEN_COMFORT_CH,
+      sizingToken + CELL_HORIZONTAL_PADDING_CH + TOKEN_COMFORT_CH,
       readableMinWidthCh,
     ),
     MIN_COLUMN_WIDTH_CH,
     MAX_UNBROKEN_TOKEN_WIDTH_CH,
   );
   const preferredWidthCh = clamp(
-    longestLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
+    sizingLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
     minWidthCh,
     MAX_PREFERRED_COLUMN_WIDTH_CH,
   );
@@ -110,6 +161,24 @@ function measureColumn(
     preferredWidthCh,
     widthCh: preferredWidthCh,
   };
+}
+
+function getCellDisplayValue(
+  source: RowMeasurementSource,
+  columnCount: number,
+  column: number,
+  cellOverride: TableCellSizingOverride | undefined,
+): string {
+  if (
+    cellOverride &&
+    cellOverride.rowKind === source.rowKind &&
+    cellOverride.rowIndex === source.rowIndex &&
+    cellOverride.column === column
+  ) {
+    return cellOverride.value;
+  }
+
+  return rowToDisplayValues(source.row, columnCount)[column] ?? "";
 }
 
 function allocateColumnWidths(
