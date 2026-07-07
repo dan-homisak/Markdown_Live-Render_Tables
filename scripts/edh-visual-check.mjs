@@ -249,6 +249,12 @@ try {
   );
   assertTableRenderStability(tableRenderStability);
   console.log("TABLE RENDER STABILITY CHECK:", tableRenderStability);
+  const staleAckStability = await evaluateJson(
+    liveClient,
+    tableStaleWebviewAckStabilityExpression(),
+  );
+  assertTableStaleWebviewAckStability(staleAckStability);
+  console.log("TABLE STALE WEBVIEW ACK STABILITY CHECK:", staleAckStability);
   const whitespaceDeletion = await evaluateJson(
     liveClient,
     tableWhitespaceDeletionExpression(),
@@ -998,6 +1004,154 @@ function tableRenderStabilityExpression() {
       afterScrollTop: scroller.scrollTop,
       blankFrames,
       frames,
+    });
+  })()`;
+}
+
+function tableStaleWebviewAckStabilityExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const sendHostDocument = (text, revision, source) => {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text,
+          revision,
+          debug: false,
+          source,
+        },
+      }));
+    };
+    const setCaretAtEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const readShortCell = () => {
+      const cells = Array.from(root.querySelectorAll('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]'));
+      return cells.find((candidate) => candidate.textContent.includes('short cell')) ?? cells[cells.length - 1] ?? null;
+    };
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const widget = root.querySelector('.mm-live-v4-table-widget');
+    const content = root.querySelector('.cm-content');
+    const gutter = root.querySelector('.cm-lineNumbers');
+    let cell = readShortCell();
+    if (!view || !widget || !content || !gutter || !cell) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing stale ack stability targets',
+        hasView: Boolean(view),
+        hasWidget: Boolean(widget),
+        hasContent: Boolean(content),
+        hasGutter: Boolean(gutter),
+        hasCell: Boolean(cell),
+      });
+    }
+
+    const beforeDoc = view.state.doc.toString();
+    cell.focus();
+    setCaretAtEnd(cell);
+    await waitForRender();
+
+    const docsAfterType = [];
+    const textsAfterType = [];
+    for (const character of ['a', 'b', 'c']) {
+      cell = readShortCell();
+      cell.focus();
+      setCaretAtEnd(cell);
+      cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: character,
+      }));
+      docsAfterType.push(view.state.doc.toString());
+      textsAfterType.push(cell.textContent);
+    }
+    await waitForRender();
+
+    const finalLocalDoc = view.state.doc.toString();
+    const finalLocalText = readShortCell()?.textContent ?? null;
+    let contentChildListMutations = 0;
+    let widgetChildListMutations = 0;
+    let gutterChildListMutations = 0;
+    const contentObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          contentChildListMutations++;
+        }
+      }
+    });
+    const widgetObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          widgetChildListMutations++;
+        }
+      }
+    });
+    const gutterObserver = new root.defaultView.MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          gutterChildListMutations++;
+        }
+      }
+    });
+    contentObserver.observe(content, { childList: true, subtree: true });
+    widgetObserver.observe(widget, { childList: true, subtree: true });
+    gutterObserver.observe(gutter, { childList: true, subtree: true });
+
+    sendHostDocument(docsAfterType[0], 999301, 'webviewAck');
+    await waitForRender();
+    const afterFirstAckDoc = view.state.doc.toString();
+    const afterFirstAckText = readShortCell()?.textContent ?? null;
+    sendHostDocument(docsAfterType[1], 999302, 'webviewAck');
+    await waitForRender();
+    const afterSecondAckDoc = view.state.doc.toString();
+    const afterSecondAckText = readShortCell()?.textContent ?? null;
+
+    contentObserver.disconnect();
+    widgetObserver.disconnect();
+    gutterObserver.disconnect();
+    const sameWidget = root.querySelector('.mm-live-v4-table-widget') === widget;
+    const sameCell = readShortCell() === cell;
+
+    sendHostDocument(beforeDoc, 999303, 'host');
+    await waitForRender();
+
+    return JSON.stringify({
+      ok: true,
+      textsAfterType,
+      finalLocalText,
+      finalLocalDocChanged: finalLocalDoc !== beforeDoc,
+      afterFirstAckDocMatchesFinal: afterFirstAckDoc === finalLocalDoc,
+      afterSecondAckDocMatchesFinal: afterSecondAckDoc === finalLocalDoc,
+      afterFirstAckText,
+      afterSecondAckText,
+      afterSecondAckTextMatchesFinal: afterSecondAckText === finalLocalText,
+      sameWidget,
+      sameCell,
+      contentChildListMutations,
+      widgetChildListMutations,
+      gutterChildListMutations,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
     });
   })()`;
 }
@@ -2377,6 +2531,26 @@ function assertTableRenderStability(result) {
   ) {
     throw new Error(
       `Table render stability check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableStaleWebviewAckStability(result) {
+  if (
+    !result?.ok ||
+    !result.finalLocalDocChanged ||
+    !result.afterFirstAckDocMatchesFinal ||
+    !result.afterSecondAckDocMatchesFinal ||
+    !result.afterSecondAckTextMatchesFinal ||
+    !result.sameWidget ||
+    !result.sameCell ||
+    result.contentChildListMutations !== 0 ||
+    result.widgetChildListMutations !== 0 ||
+    result.gutterChildListMutations !== 0 ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table stale webview ack stability check failed: ${JSON.stringify(result)}`,
     );
   }
 }

@@ -105,13 +105,16 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     let applyQueue: Promise<void> = Promise.resolve();
     let documentRevision = 0;
 
-    const postDocument = (): void => {
+    const postDocument = (
+      source: HostSetDocumentMessage["source"] = "host",
+    ): void => {
       documentRevision++;
       void webview.postMessage({
         type: "setDocument",
         text: document.getText(),
         revision: documentRevision,
         debug: isDebugEnabled(),
+        source,
       } satisfies HostSetDocumentMessage);
     };
 
@@ -147,7 +150,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
               "Markdown live editor changes were applied, but the editor document is out of sync.",
             );
           }
-          postDocument();
+          postDocument("webviewAck");
         })
         .catch((error: unknown) => {
           applyingFromWebview = false;
@@ -416,6 +419,7 @@ interface HostSetDocumentMessage {
   text: string;
   revision: number;
   debug: boolean;
+  source?: "host" | "webviewAck";
 }
 
 function isReadyMessage(message: unknown): message is ReadyMessage {

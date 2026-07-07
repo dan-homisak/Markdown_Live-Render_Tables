@@ -27,6 +27,7 @@ interface HostSetDocumentMessage {
   text: string;
   revision: number;
   debug: boolean;
+  source?: "host" | "webviewAck";
 }
 
 interface DocumentChangeMessage {
@@ -74,6 +75,7 @@ let debugEnabled = window.__MLRT_DEBUG__ === true;
 let hostRevision = 0;
 let view: EditorView;
 let lastTableCellCommit: TableCellCommitDetail | null = null;
+const pendingWebviewEchoTexts: string[] = [];
 const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
 
 try {
@@ -145,6 +147,12 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 
   hostRevision = message.revision;
   debugEnabled = message.debug;
+  if (
+    message.source === "webviewAck" &&
+    acknowledgeWebviewEcho(message.text, `host revision ${message.revision}`)
+  ) {
+    return;
+  }
   setEditorDocument(message.text, `host revision ${message.revision}`);
 });
 
@@ -180,6 +188,23 @@ function setEditorDocument(text: string, source: string): void {
   if (undoFocus?.restore.kind === "tableCell") {
     focusTableCellAfterRender(undoFocus.restore.detail);
   }
+}
+
+function acknowledgeWebviewEcho(text: string, source: string): boolean {
+  const acknowledgedIndex = pendingWebviewEchoTexts.indexOf(text);
+  if (acknowledgedIndex === -1) {
+    return false;
+  }
+
+  pendingWebviewEchoTexts.splice(0, acknowledgedIndex + 1);
+  updateStatus(view.state.doc.toString(), `${source} acknowledged`);
+  recordDebug("ack-webview-echo", {
+    acknowledgedIndex,
+    pendingEchoCount: pendingWebviewEchoTexts.length,
+    echoedTextLength: text.length,
+    currentTextLength: view.state.doc.length,
+  });
+  return true;
 }
 
 function popPendingHostUndoFocus(text: string): PendingHostUndoFocus | null {
@@ -288,6 +313,10 @@ function postDocumentChanges(
     changes: documentChanges,
     changeGroups: commitSequence?.steps.map((step) => [step.change]),
   });
+  pendingWebviewEchoTexts.push(text);
+  if (pendingWebviewEchoTexts.length > 100) {
+    pendingWebviewEchoTexts.splice(0, pendingWebviewEchoTexts.length - 100);
+  }
   vscode.postMessage({
     type: "change",
     text,
