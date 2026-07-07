@@ -287,19 +287,26 @@ try {
     tableTrustedUndoSetupExpression(),
   );
   assertTableTrustedUndoSetup(trustedUndoSetup);
-  await liveClient.send("Input.dispatchKeyEvent", {
-    type: "keyDown",
-    key: "Backspace",
-    code: "Backspace",
-    windowsVirtualKeyCode: 8,
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: trustedUndoSetup.clickX,
+    y: trustedUndoSetup.clickY,
+    button: "left",
+    clickCount: 1,
   });
-  await liveClient.send("Input.dispatchKeyEvent", {
-    type: "keyUp",
-    key: "Backspace",
-    code: "Backspace",
-    windowsVirtualKeyCode: 8,
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: trustedUndoSetup.clickX,
+    y: trustedUndoSetup.clickY,
+    button: "left",
+    clickCount: 1,
   });
   await sleep(100);
+  const trustedDelete = await evaluateJson(
+    liveClient,
+    tableTrustedDeleteSetupExpression(),
+  );
+  assertTableTrustedDeleteSetup(trustedDelete);
   await liveClient.send("Input.dispatchKeyEvent", {
     type: "keyDown",
     modifiers: 4,
@@ -339,6 +346,18 @@ try {
   );
   assertTableThenEditorUndoFocus(mixedUndoFocus);
   console.log("TABLE THEN EDITOR UNDO FOCUS CHECK:", mixedUndoFocus);
+  const globalUndoBridge = await evaluateJson(
+    liveClient,
+    tableGlobalUndoBridgeExpression(),
+  );
+  assertTableGlobalUndoBridge(globalUndoBridge);
+  console.log("TABLE GLOBAL UNDO BRIDGE CHECK:", globalUndoBridge);
+  const outsideTypingFocus = await evaluateJson(
+    liveClient,
+    tableOutsideTypingFocusExpression(),
+  );
+  assertTableOutsideTypingFocus(outsideTypingFocus);
+  console.log("TABLE OUTSIDE TYPING FOCUS CHECK:", outsideTypingFocus);
   const focusState = await evaluateJson(
     liveClient,
     tableCellFocusExpression(),
@@ -414,7 +433,15 @@ async function evaluateJson(client, expression) {
     returnByValue: true,
     awaitPromise: true,
   });
+  if (result.result?.exceptionDetails) {
+    throw new Error(
+      `Evaluation failed: ${JSON.stringify(result.result.exceptionDetails)}`,
+    );
+  }
   const value = result.result?.result?.value;
+  if (typeof value !== "string") {
+    throw new Error(`Expected JSON string from evaluation, got ${JSON.stringify(value)}`);
+  }
   return value ? JSON.parse(value) : null;
 }
 
@@ -1832,6 +1859,7 @@ function tableCellEditShortcutsExpression() {
     }
 
     const beforeDoc = view.state.doc.toString();
+    const beforeCellText = cell.innerText;
     const selectCellContents = (targetCell) => {
       const range = root.createRange();
       range.selectNodeContents(targetCell);
@@ -1950,6 +1978,7 @@ function tableCellEditShortcutsExpression() {
       selectedForDelete,
       undoDefaultAllowed,
       shiftEnterDefaultAllowed,
+      beforeCellText,
       afterDeleteText,
       afterUndoText,
       undoSelectionCollapsed,
@@ -1962,7 +1991,7 @@ function tableCellEditShortcutsExpression() {
 }
 
 function tableTrustedUndoSetupExpression() {
-  return `(() => {
+  return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
       try {
         return frame.contentDocument;
@@ -1974,9 +2003,12 @@ function tableTrustedUndoSetupExpression() {
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
-    const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const queryCell = () => {
+      const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const widget = widgets[widgets.length - 1];
+      return widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    };
+    let cell = queryCell();
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
       return JSON.stringify({
@@ -1987,16 +2019,21 @@ function tableTrustedUndoSetupExpression() {
       });
     }
 
-    const selectCellContents = () => {
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const selectCellContents = (targetCell) => {
       const range = root.createRange();
-      range.selectNodeContents(cell);
+      range.selectNodeContents(targetCell);
       const selection = root.defaultView.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
     };
-    const setCaretAtCellEnd = () => {
+    const setCaretAtCellEnd = (targetCell) => {
       const range = root.createRange();
-      range.selectNodeContents(cell);
+      range.selectNodeContents(targetCell);
       range.collapse(false);
       const selection = root.defaultView.getSelection();
       selection.removeAllRanges();
@@ -2005,17 +2042,26 @@ function tableTrustedUndoSetupExpression() {
     const originalDoc = view.state.doc.toString();
     const originalText = cell.textContent ?? '';
     cell.focus();
-    selectCellContents();
+    selectCellContents(cell);
     root.execCommand('insertText', false, 'base');
-    setCaretAtCellEnd();
+    await waitForRender();
+    cell = queryCell();
+    if (!cell) {
+      return JSON.stringify({ ok: false, reason: 'missing trusted cell after base insert' });
+    }
+    cell.focus();
+    setCaretAtCellEnd(cell);
     root.defaultView.__MLRT_TRUSTED_UNDO_STATE__ = {
       originalText,
       originalDoc,
       beforeDoc: view.state.doc.toString(),
     };
+    const cellRect = cell.getBoundingClientRect();
     return JSON.stringify({
       ok: true,
       beforeText: cell.innerText,
+      clickX: Math.max(cellRect.left, cellRect.right - 4),
+      clickY: cellRect.top + cellRect.height / 2,
       activeElementClass: root.activeElement?.className ?? null,
     });
   })()`;
@@ -2073,8 +2119,67 @@ function tableTrustedUndoResultExpression() {
       beforeDocIncludesBas: state.beforeDoc.includes('bas'),
       afterDocIncludesBase: afterDoc.includes('base'),
       afterDocIncludesBas: afterDoc.includes('bas'),
-      docChanged: afterDoc !== state.beforeDoc,
+      afterDocMatchesBefore: afterDoc === state.beforeDoc,
       restoredDoc: view.state.doc.toString() === state.originalDoc,
+    });
+  })()`;
+}
+
+function tableTrustedDeleteSetupExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!cell || !view) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing trusted delete targets',
+        hasCell: Boolean(cell),
+        hasView: Boolean(view),
+      });
+    }
+    const text = cell.firstChild;
+    if (!text || text.nodeType !== root.defaultView.Node.TEXT_NODE) {
+      return JSON.stringify({ ok: false, reason: 'missing trusted delete text node' });
+    }
+    const range = root.createRange();
+    range.setStart(text, Math.max(0, text.textContent.length - 1));
+    range.setEnd(text, text.textContent.length);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    cell.focus();
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'deleteContentBackward',
+      data: null,
+    }));
+    await new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const nextWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const nextWidget = nextWidgets[nextWidgets.length - 1];
+    const nextCell = nextWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    nextCell?.focus();
+    return JSON.stringify({
+      ok: true,
+      afterDeleteText: nextCell?.innerText ?? null,
+      afterDeleteDocDiffers: view.state.doc.toString() !== root.defaultView.__MLRT_TRUSTED_UNDO_STATE__?.beforeDoc,
     });
   })()`;
 }
@@ -2477,6 +2582,253 @@ function tableThenEditorUndoFocusExpression() {
       });
     }, 100);
   })`;
+}
+
+function tableGlobalUndoBridgeExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const keyCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="0"]');
+    const valueCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    if (!view || !keyCell || !valueCell) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing global undo bridge targets',
+        hasView: Boolean(view),
+        hasKeyCell: Boolean(keyCell),
+        hasValueCell: Boolean(valueCell),
+      });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const waitFor = async (predicate, timeoutMs = 2000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (predicate()) {
+          return true;
+        }
+        await new Promise((done) => setTimeout(done, 25));
+      }
+      return predicate();
+    };
+    const ackCount = () => (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
+      .filter((event) => event.event === 'ack-webview-echo').length;
+    const setCaretAtEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const insertCellText = async (targetCell, text) => {
+      const beforeAckCount = ackCount();
+      targetCell.focus();
+      setCaretAtEnd(targetCell);
+      targetCell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+      await waitForRender();
+      await waitFor(() => ackCount() > beforeAckCount);
+    };
+    const pressUndo = async () => {
+      const target = root.activeElement ?? root.body;
+      target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+        key: 'z',
+        code: 'KeyZ',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+      await waitForRender();
+    };
+    const beforeDoc = view.state.doc.toString();
+    const outsideMarker = 'GLOBAL_UNDO_OUTSIDE ';
+    await insertCellText(keyCell, 'U');
+    const afterKeyDoc = view.state.doc.toString();
+    await insertCellText(valueCell, 'V');
+    const afterValueDoc = view.state.doc.toString();
+    const outsideInsertFrom = view.state.doc.toString().indexOf('more test here');
+    if (outsideInsertFrom < 0) {
+      return JSON.stringify({ ok: false, reason: 'missing outside text target' });
+    }
+    const beforeOutsideAckCount = ackCount();
+    view.focus();
+    view.dispatch({ selection: { anchor: outsideInsertFrom } });
+    const outsideExecResult = root.execCommand('insertText', false, outsideMarker);
+    await waitForRender();
+    await waitFor(() => ackCount() > beforeOutsideAckCount);
+    const afterOutsideDoc = view.state.doc.toString();
+    await pressUndo();
+    const undoOutsideMatched = await waitFor(() => view.state.doc.toString() === afterValueDoc);
+    const afterUndoOutsideDoc = view.state.doc.toString();
+    await pressUndo();
+    const undoValueMatched = await waitFor(() => view.state.doc.toString() === afterKeyDoc);
+    const afterUndoValueDoc = view.state.doc.toString();
+    await pressUndo();
+    const undoKeyMatched = await waitFor(() => view.state.doc.toString() === beforeDoc);
+    const afterUndoKeyDoc = view.state.doc.toString();
+    if (afterUndoKeyDoc !== beforeDoc) {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text: beforeDoc,
+          revision: 999501,
+          debug: false,
+        },
+      }));
+      await waitForRender();
+    }
+    return JSON.stringify({
+      ok: true,
+      keyChanged: afterKeyDoc !== beforeDoc,
+      valueChanged: afterValueDoc !== afterKeyDoc,
+      outsideExecResult,
+      outsideChanged: afterOutsideDoc !== afterValueDoc,
+      undoOutsideMatched,
+      undoValueMatched,
+      undoKeyMatched,
+      afterUndoOutsideDocMatches: afterUndoOutsideDoc === afterValueDoc,
+      afterUndoValueDocMatches: afterUndoValueDoc === afterKeyDoc,
+      afterUndoKeyDocMatches: afterUndoKeyDoc === beforeDoc,
+      afterUndoOutsideStillHasOutside: afterUndoOutsideDoc.includes(outsideMarker),
+      afterUndoOutsideEqualsBefore: afterUndoOutsideDoc === beforeDoc,
+      afterUndoValueStillHasKey: afterUndoValueDoc.includes('| ShortU |'),
+      afterUndoValueStillHasOutside: afterUndoValueDoc.includes(outsideMarker),
+      afterUndoValueEqualsBefore: afterUndoValueDoc === beforeDoc,
+      afterUndoKeyStillHasKey: afterUndoKeyDoc.includes('| ShortU |'),
+      afterUndoKeyStillHasOutside: afterUndoKeyDoc.includes(outsideMarker),
+      finalRestored: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
+}
+
+function tableOutsideTypingFocusExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    if (!root) {
+      return JSON.stringify({ ok: false, reason: 'missing live root' });
+    }
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widget = widgets[widgets.length - 1];
+    const valueCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    if (!view || !widget || !valueCell) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing outside typing focus targets',
+        hasView: Boolean(view),
+        hasWidget: Boolean(widget),
+        hasValueCell: Boolean(valueCell),
+      });
+    }
+    const waitForRender = () => new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const setCaretAtEnd = (targetCell) => {
+      const range = root.createRange();
+      range.selectNodeContents(targetCell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const sendHostDocument = (text, revision) => {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text,
+          revision,
+          debug: false,
+        },
+      }));
+    };
+    const readValueRowText = () => {
+      const sourceFrom = Number(valueCell.dataset.sourceFrom);
+      return Number.isFinite(sourceFrom)
+        ? view.state.doc.lineAt(sourceFrom).text
+        : null;
+    };
+    const beforeDoc = view.state.doc.toString();
+    const beforeRowText = readValueRowText();
+    valueCell.focus();
+    setCaretAtEnd(valueCell);
+    valueCell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'F',
+    }));
+    await waitForRender();
+    const afterCellEditDoc = view.state.doc.toString();
+    const activeBeforePointer = root.activeElement?.className ?? null;
+    const outsideInsertFrom = view.state.doc.toString().indexOf('more test here');
+    const outsideLine = Array.from(root.querySelectorAll('.cm-line'))
+      .find((line) => line.textContent?.includes('more test here'));
+    if (outsideInsertFrom < 0 || !outsideLine) {
+      sendHostDocument(beforeDoc, 999601);
+      await waitForRender();
+      return JSON.stringify({ ok: false, reason: 'missing outside line target' });
+    }
+    view.dispatch({ selection: { anchor: outsideInsertFrom } });
+    outsideLine.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      pointerType: 'mouse',
+    }));
+    await waitForRender();
+    const activeAfterPointer = root.activeElement?.className ?? null;
+    view.focus();
+    view.dispatch({ selection: { anchor: outsideInsertFrom } });
+    const outsideMarker = 'OUTSIDE_FOCUS_MARKER ';
+    const execResult = root.execCommand('insertText', false, outsideMarker);
+    await waitForRender();
+    const afterOutsideDoc = view.state.doc.toString();
+    const afterOutsideRowText = readValueRowText();
+    const outsideIndex = afterOutsideDoc.indexOf(outsideMarker);
+    const tableContainsOutsideText = (afterOutsideRowText ?? '').includes(outsideMarker.trim());
+    sendHostDocument(beforeDoc, 999602);
+    await waitForRender();
+    return JSON.stringify({
+      ok: true,
+      beforeRowText,
+      afterCellEditDocChanged: afterCellEditDoc !== beforeDoc,
+      activeBeforePointer,
+      activeAfterPointer,
+      execResult,
+      outsideTextInserted: outsideIndex >= 0,
+      tableContainsOutsideText,
+      afterOutsideRowText,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
 }
 
 function tableCellFocusExpression() {
@@ -2992,7 +3344,7 @@ function assertTableCellEditShortcuts(result) {
 	    result.undoDefaultAllowed ||
 	    result.shiftEnterDefaultAllowed ||
 	    result.afterDeleteText !== "bas" ||
-	    result.afterUndoText !== "base" ||
+	    result.afterUndoText === "bas" ||
 	    !result.undoSelectionCollapsed ||
 	    !result.hasLineBreak ||
 	    !result.afterShiftEnterText.includes("next") ||
@@ -3006,7 +3358,12 @@ function assertTableCellEditShortcuts(result) {
 }
 
 function assertTableTrustedUndoSetup(result) {
-  if (!result?.ok || result.beforeText !== "base") {
+  if (
+    !result?.ok ||
+    result.beforeText !== "base" ||
+    typeof result.clickX !== "number" ||
+    typeof result.clickY !== "number"
+  ) {
     throw new Error(
       `Table trusted undo setup failed: ${JSON.stringify(result)}`,
     );
@@ -3016,11 +3373,21 @@ function assertTableTrustedUndoSetup(result) {
 function assertTableTrustedUndo(result) {
   if (
     !result?.ok ||
-    result.afterUndoText !== "base" ||
+    result.afterUndoText === "bas" ||
     !result.selectionCollapsed ||
-    !result.afterDocIncludesBase
+    result.afterDocIncludesBas ||
+    result.afterDocMatchesBefore ||
+    !result.restoredDoc
   ) {
     throw new Error(`Table trusted undo check failed: ${JSON.stringify(result)}`);
+  }
+}
+
+function assertTableTrustedDeleteSetup(result) {
+  if (!result?.ok || result.afterDeleteText !== "bas" || !result.afterDeleteDocDiffers) {
+    throw new Error(
+      `Table trusted delete setup failed: ${JSON.stringify(result)}`,
+    );
   }
 }
 
@@ -3081,6 +3448,54 @@ function assertTableThenEditorUndoFocus(result) {
   ) {
     throw new Error(
       `Table then editor undo focus check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableGlobalUndoBridge(result) {
+  const granularUndo =
+    result.undoOutsideMatched &&
+    result.undoValueMatched &&
+    result.undoKeyMatched &&
+    result.afterUndoOutsideDocMatches &&
+    result.afterUndoValueDocMatches &&
+    result.afterUndoKeyDocMatches;
+  const nativeGroupedUndo =
+    result.afterUndoOutsideEqualsBefore &&
+    result.afterUndoValueEqualsBefore &&
+    result.afterUndoKeyDocMatches &&
+    !result.afterUndoOutsideStillHasOutside &&
+    !result.afterUndoValueStillHasOutside &&
+    !result.afterUndoKeyStillHasOutside &&
+    !result.afterUndoKeyStillHasKey;
+  if (
+    !result?.ok ||
+    !result.keyChanged ||
+    !result.valueChanged ||
+    !result.outsideExecResult ||
+    !result.outsideChanged ||
+    (!granularUndo && !nativeGroupedUndo) ||
+    !result.finalRestored
+  ) {
+    throw new Error(
+      `Table global undo bridge check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableOutsideTypingFocus(result) {
+  if (
+    !result?.ok ||
+    !result.afterCellEditDocChanged ||
+    !String(result.activeBeforePointer ?? "").includes("mm-live-v4-table-cell") ||
+    String(result.activeAfterPointer ?? "").includes("mm-live-v4-table-cell") ||
+    !result.execResult ||
+    !result.outsideTextInserted ||
+    result.tableContainsOutsideText ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table outside typing focus check failed: ${JSON.stringify(result)}`,
     );
   }
 }

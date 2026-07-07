@@ -198,6 +198,20 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
 
+        if (isEditorCommandMessage(message)) {
+          logDebug(`editor command requested: ${message.command}`);
+          applyQueue = applyQueue
+            .then(async () => {
+              await vscode.commands.executeCommand(message.command);
+            })
+            .catch((error: unknown) => {
+              vscode.window.showErrorMessage(
+                `Markdown live editor could not run ${message.command}: ${String(error)}`,
+              );
+            });
+          return;
+        }
+
         if (
           isChangeMessage(message) &&
           message.text !== document.getText() &&
@@ -413,6 +427,11 @@ interface DebugMessage {
   details: unknown;
 }
 
+interface EditorCommandMessage {
+  type: "editorCommand";
+  command: "undo" | "redo";
+}
+
 interface OpenSourceMessage {
   type: "openSource";
 }
@@ -481,6 +500,16 @@ function isDebugMessage(message: unknown): message is DebugMessage {
     message.type === "debug" &&
     typeof message.event === "string" &&
     "details" in message
+  );
+}
+
+function isEditorCommandMessage(
+  message: unknown,
+): message is EditorCommandMessage {
+  return (
+    isMessageRecord(message) &&
+    message.type === "editorCommand" &&
+    (message.command === "undo" || message.command === "redo")
   );
 }
 

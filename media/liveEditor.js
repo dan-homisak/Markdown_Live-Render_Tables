@@ -25901,6 +25901,7 @@
     });
     window.__MLRT_EDITOR_VIEW__ = view;
     updateStatus(initialDocument, "embedded");
+    installEditorCommandBridge(app);
     installCursorDebugListeners(app);
   } catch (error) {
     app.replaceChildren(renderStartupError(error));
@@ -25981,6 +25982,91 @@
       return;
     }
     activeElement.closest(".mm-live-v4-table-cell")?.blur();
+  }
+  function installEditorCommandBridge(root) {
+    const ownerDocument = root.ownerDocument;
+    ownerDocument.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.target instanceof Element) {
+          if (event.target.closest(".mm-live-v4-table-cell")) {
+            return;
+          }
+          if (!root.contains(event.target)) {
+            return;
+          }
+        }
+        blurActiveTableCell();
+      },
+      true
+    );
+    ownerDocument.addEventListener(
+      "keydown",
+      (event) => {
+        const command = getUndoRedoCommand(event);
+        if (!command) {
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        postEditorCommand(command);
+      },
+      true
+    );
+    ownerDocument.addEventListener(
+      "beforeinput",
+      (event) => {
+        if (!(event instanceof InputEvent)) {
+          return;
+        }
+        const command = event.inputType === "historyUndo" ? "undo" : event.inputType === "historyRedo" ? "redo" : null;
+        if (!command) {
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        postEditorCommand(command);
+      },
+      true
+    );
+  }
+  function getUndoRedoCommand(event) {
+    const key = event.key.toLowerCase();
+    const hasPrimaryModifier = event.metaKey || event.ctrlKey;
+    if (!hasPrimaryModifier || event.altKey) {
+      return null;
+    }
+    if (key === "z") {
+      return event.shiftKey ? "redo" : "undo";
+    }
+    if (key === "y" && !event.shiftKey) {
+      return "redo";
+    }
+    return null;
+  }
+  function pushTableCellCommitUndoFocus(beforeText, commitSequence) {
+    let currentText = beforeText;
+    for (const step of commitSequence.steps) {
+      pendingHostUndoFocusStack.push({
+        beforeText: currentText,
+        restore: {
+          kind: "tableCell",
+          detail: step.restore
+        }
+      });
+      currentText = applyDocumentChange(currentText, step.change);
+    }
+  }
+  function postEditorCommand(command) {
+    recordDebug("post-editor-command", {
+      command,
+      activeElement: summarizeTarget(document.activeElement),
+      editorSelection: summarizeEditorSelection(view)
+    });
+    vscode.postMessage({
+      type: "editorCommand",
+      command
+    });
   }
   function computeMinimalTextChange(currentText, nextText) {
     let from = 0;
@@ -26063,19 +26149,6 @@
       }
     }
     return void 0;
-  }
-  function pushTableCellCommitUndoFocus(beforeText, commitSequence) {
-    let currentText = beforeText;
-    for (const step of commitSequence.steps) {
-      pendingHostUndoFocusStack.push({
-        beforeText: currentText,
-        restore: {
-          kind: "tableCell",
-          detail: step.restore
-        }
-      });
-      currentText = applyDocumentChange(currentText, step.change);
-    }
   }
   function applyDocumentChange(text, change) {
     return `${text.slice(0, change.from)}${change.text}${text.slice(change.to)}`;
