@@ -1,5 +1,9 @@
 import * as fs from "fs";
 import * as vscode from "vscode";
+import {
+  mapNormalizedDocumentChangesToHost,
+  normalizeDocumentText,
+} from "./shared/documentChangeMapping";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 const DEBUG_SETTING = "debug";
@@ -126,7 +130,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
             applyingFromWebview = false;
           }
 
-          if (document.getText() !== message.text) {
+          if (normalizeDocumentText(document.getText()) !== message.text) {
             vscode.window.showWarningMessage(
               "Markdown live editor changes were applied, but the editor document is out of sync.",
             );
@@ -355,12 +359,15 @@ async function applyDocumentChanges(
   }
 
   const edit = new vscode.WorkspaceEdit();
-  for (const change of changes) {
+  for (const change of mapNormalizedDocumentChangesToHost(
+    document.getText(),
+    changes,
+  )) {
     edit.replace(
       document.uri,
       new vscode.Range(
-        document.positionAt(change.from),
-        document.positionAt(change.to),
+        new vscode.Position(change.from.line, change.from.character),
+        new vscode.Position(change.to.line, change.to.character),
       ),
       change.text,
     );

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  mapNormalizedDocumentChangesToHost,
+  normalizeDocumentText,
+} from "../shared/documentChangeMapping";
 import { measureTableColumnSizing } from "../shared/tableColumnSizing";
 import {
   formatMarkdownCell,
@@ -527,6 +531,41 @@ const crlfColumnSource = applyStructureEdit(
 );
 assert.ok(crlfColumnSource.includes("| A | B |  |\r\n"));
 assert.equal(parseMarkdownTables(crlfColumnSource)[0].columnCount, 3);
+
+// Webview edits are expressed against CodeMirror's LF-normalized document.
+// Host application must map those offsets by line/character so CRLF files on
+// Windows do not apply edits to an earlier table row.
+const hostCrlfEditSource = [
+  "| A | B |",
+  "| --- | --- |",
+  "| 1 | 2 |",
+  "plain row",
+].join("\r\n");
+const webviewLfEditSource = normalizeDocumentText(hostCrlfEditSource);
+const plainRowFrom = webviewLfEditSource.indexOf("plain");
+const mappedHostChanges = mapNormalizedDocumentChangesToHost(
+  hostCrlfEditSource,
+  [{ from: plainRowFrom, to: plainRowFrom + "plain".length, text: "edited" }],
+);
+assert.deepEqual(mappedHostChanges, [
+  {
+    from: { line: 3, character: 0 },
+    to: { line: 3, character: 5 },
+    text: "edited",
+  },
+]);
+
+const mappedHostNewlineChanges = mapNormalizedDocumentChangesToHost(
+  hostCrlfEditSource,
+  [
+    {
+      from: webviewLfEditSource.length,
+      to: webviewLfEditSource.length,
+      text: "\nnext",
+    },
+  ],
+);
+assert.equal(mappedHostNewlineChanges[0].text, "\r\nnext");
 
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
