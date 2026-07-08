@@ -27,11 +27,36 @@ const repoRoot = path.resolve(
   "..",
 );
 const codeBin = "/Applications/Visual Studio Code.app/Contents/MacOS/Electron";
-const port = 9400 + Math.floor(Math.random() * 400);
+const port = await findFreePort(9800, 200);
 const userDataDir = mkdtempSync(path.join(os.tmpdir(), "mlrt-edh-controls-"));
 const qaDir = path.join(repoRoot, "qa");
 await mkdir(qaDir, { recursive: true });
 console.log(`Using Electron DevTools port ${port}`);
+
+async function findFreePort(start, count) {
+  for (let offset = 0; offset < count; offset++) {
+    const port = start + offset;
+    if (await looksIdle(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No free DevTools port found in ${start}-${start + count - 1}`);
+}
+
+async function looksIdle(port) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 250);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json`, {
+      signal: controller.signal,
+    });
+    return !response.ok;
+  } catch {
+    return true;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 const child = spawn(
   codeBin,
@@ -45,9 +70,18 @@ const child = spawn(
     "--skip-welcome",
     path.join(repoRoot, "TestTable.md"),
   ],
-  { stdio: "ignore", env: createElectronEnv() },
+  { stdio: ["ignore", "pipe", "pipe"], env: createElectronEnv() },
 );
 let childExit = null;
+let childOutput = "";
+const captureChildOutput = (chunk) => {
+  childOutput += chunk.toString();
+  if (childOutput.length > 12000) {
+    childOutput = childOutput.slice(-12000);
+  }
+};
+child.stdout?.on("data", captureChildOutput);
+child.stderr?.on("data", captureChildOutput);
 child.on("exit", (code, signal) => {
   childExit = { code, signal };
 });
@@ -185,7 +219,7 @@ try {
     throw new Error(
       `Workbench target not found. childExit=${JSON.stringify(childExit)} targets=${JSON.stringify(
         lastTargets.map((target) => ({ type: target.type, url: target.url })),
-      )}`,
+      )} output=${JSON.stringify(childOutput)}`,
     );
   }
 

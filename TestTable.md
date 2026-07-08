@@ -19,11 +19,12 @@ More text.
 
 20
 
-| Key | Value |
-|---|---|
-|  |  |
-| Short | short cell. This is resizing the cell now |
-|  |  |
+| Key | Value |  |
+|---|---| --- |
+|  |  |  |
+| Short | short cell. This is resizing the cell now |  |
+|  |  |  |
+|  |  | test |
 
 26
 

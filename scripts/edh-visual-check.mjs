@@ -1358,8 +1358,12 @@ function tableSequentialCellToEditorTypingExpression() {
     const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
     const headerKeyCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="header"][data-column="0"]');
-    const keyCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="0"]');
-    const valueCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+    const keyCell = Array.from(widget?.querySelectorAll('.mlrt-table-cell[data-row-kind="body"][data-column="0"]') ?? [])
+      .find((cell) => cell.textContent === 'Short');
+    const keyRowIndex = keyCell?.dataset.rowIndex;
+    const valueCell = keyRowIndex == null
+      ? null
+      : widget?.querySelector(\`.mlrt-table-cell[data-row-kind="body"][data-row-index="\${keyRowIndex}"][data-column="1"]\`);
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!widget || !headerKeyCell || !keyCell || !valueCell || !view) {
       return JSON.stringify({
@@ -2200,7 +2204,15 @@ function tableHostUndoFocusExpression() {
     }
     const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+    const readShortValueCell = (targetWidget) => {
+      const keyCell = Array.from(targetWidget?.querySelectorAll('.mlrt-table-cell[data-row-kind="body"][data-column="0"]') ?? [])
+        .find((candidate) => candidate.textContent === 'Short');
+      const rowIndex = keyCell?.dataset.rowIndex;
+      return rowIndex == null
+        ? null
+        : targetWidget?.querySelector(\`.mlrt-table-cell[data-row-kind="body"][data-row-index="\${rowIndex}"][data-column="1"]\`);
+    };
+    const cell = readShortValueCell(widget);
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
       resolve(JSON.stringify({
@@ -2256,7 +2268,7 @@ function tableHostUndoFocusExpression() {
           const active = root.activeElement;
           const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
           const currentWidget = currentWidgets[currentWidgets.length - 1];
-          const restoredCell = currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+          const restoredCell = readShortValueCell(currentWidget);
           const restoredSelection = root.defaultView.getSelection();
           const restoredText = restoredCell?.innerText ?? null;
           const caretOffset = (() => {
@@ -2305,7 +2317,12 @@ function tableHostCharacterUndoFocusExpression() {
     const readCurrentShortCell = () => {
       const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
       const currentWidget = currentWidgets[currentWidgets.length - 1];
-      return currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+      const keyCell = Array.from(currentWidget?.querySelectorAll('.mlrt-table-cell[data-row-kind="body"][data-column="0"]') ?? [])
+        .find((candidate) => candidate.textContent === 'Short');
+      const rowIndex = keyCell?.dataset.rowIndex;
+      return rowIndex == null
+        ? null
+        : currentWidget?.querySelector(\`.mlrt-table-cell[data-row-kind="body"][data-row-index="\${rowIndex}"][data-column="1"]\`);
     };
     const waitForRender = () => new Promise((done) => {
       root.defaultView.requestAnimationFrame(() => {
@@ -2469,7 +2486,15 @@ function tableThenEditorUndoFocusExpression() {
     }
     const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+    const readShortValueCell = (targetWidget) => {
+      const keyCell = Array.from(targetWidget?.querySelectorAll('.mlrt-table-cell[data-row-kind="body"][data-column="0"]') ?? [])
+        .find((candidate) => candidate.textContent === 'Short');
+      const rowIndex = keyCell?.dataset.rowIndex;
+      return rowIndex == null
+        ? null
+        : targetWidget?.querySelector(\`.mlrt-table-cell[data-row-kind="body"][data-row-index="\${rowIndex}"][data-column="1"]\`);
+    };
+    const cell = readShortValueCell(widget);
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
       resolve(JSON.stringify({
@@ -2546,7 +2571,7 @@ function tableThenEditorUndoFocusExpression() {
             const active = root.activeElement;
             const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
             const currentWidget = currentWidgets[currentWidgets.length - 1];
-            const restoredCell = currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+            const restoredCell = readShortValueCell(currentWidget);
             const restoredSelection = root.defaultView.getSelection();
             const restoredText = restoredCell?.innerText ?? null;
             const caretOffset = (() => {
