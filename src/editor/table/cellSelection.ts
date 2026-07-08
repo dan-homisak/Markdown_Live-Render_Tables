@@ -38,11 +38,7 @@ export function setCellPlainText(cell: HTMLElement, value: string): void {
   const needsSentinel = value.endsWith("\n");
   const nodes = cell.childNodes;
 
-  if (
-    !needsSentinel &&
-    nodes.length === 1 &&
-    cell.firstChild instanceof Text
-  ) {
+  if (!needsSentinel && nodes.length === 1 && cell.firstChild instanceof Text) {
     if (cell.firstChild.data !== value) {
       cell.firstChild.data = value;
     }
@@ -140,7 +136,11 @@ export function getCellSelectionOffsets(
   }
 
   return {
-    anchor: getCellNodeOffset(cell, selection.anchorNode, selection.anchorOffset),
+    anchor: getCellNodeOffset(
+      cell,
+      selection.anchorNode,
+      selection.anchorOffset,
+    ),
     head: getCellNodeOffset(cell, selection.focusNode, selection.focusOffset),
   };
 }
@@ -152,7 +152,10 @@ export function setCellCaretOffset(cell: HTMLElement, offset: number): void {
     return;
   }
 
-  const walker = cell.ownerDocument.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+  const walker = cell.ownerDocument.createTreeWalker(
+    cell,
+    NodeFilter.SHOW_TEXT,
+  );
   let remainingOffset = Math.max(0, offset);
   let textNode = walker.nextNode();
   while (textNode) {
@@ -266,7 +269,9 @@ function getCellNodeOffset(
   const measuringRange = cell.ownerDocument.createRange();
   measuringRange.selectNodeContents(cell);
   measuringRange.setEnd(node, offset);
-  const measuredOffset = measuringRange.toString().replace(/\u00a0/g, " ").length;
+  const measuredOffset = measuringRange
+    .toString()
+    .replace(/\u00a0/g, " ").length;
   measuringRange.detach();
   return measuredOffset;
 }
@@ -337,7 +342,10 @@ function getCellLineBounds(
       firstTop: Math.min(bounds.firstTop, rect.top),
       lastBottom: Math.max(bounds.lastBottom, rect.bottom),
     }),
-    { firstTop: Number.POSITIVE_INFINITY, lastBottom: Number.NEGATIVE_INFINITY },
+    {
+      firstTop: Number.POSITIVE_INFINITY,
+      lastBottom: Number.NEGATIVE_INFINITY,
+    },
   );
 }
 

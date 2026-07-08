@@ -1,8 +1,4 @@
-import {
-  ParsedRow,
-  ParsedTable,
-  rowToDisplayValues,
-} from "./tableModel";
+import { ParsedRow, ParsedTable, rowToDisplayValues } from "./tableModel";
 
 export interface TableColumnSizing {
   columns: TableColumnMeasurement[];
@@ -122,7 +118,12 @@ function measureColumn(
   const cellLineLengths: number[] = [];
 
   for (const source of rows) {
-    const value = getCellDisplayValue(source, columnCount, column, cellOverride);
+    const value = getCellDisplayValue(
+      source,
+      columnCount,
+      column,
+      cellOverride,
+    );
     for (const line of splitDisplayLines(value)) {
       const lineLength = line.length;
       const tokenLength = measureLongestToken(line);
@@ -262,10 +263,7 @@ function distributeWidthSteps(
     }
 
     const column = columns[bestColumnIndex];
-    column.widthCh = Math.min(
-      limitOf(column),
-      column.widthCh + WIDTH_STEP_CH,
-    );
+    column.widthCh = Math.min(limitOf(column), column.widthCh + WIDTH_STEP_CH);
     remainingSteps--;
   }
 }

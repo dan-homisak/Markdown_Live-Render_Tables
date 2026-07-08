@@ -65,7 +65,12 @@ assert.equal(markdownCellToDisplayText(" a<br>b &#124; c "), "a\nb | c");
 assert.equal(formatMarkdownCell("a\nb | c"), "a<br>b &#124; c");
 assert.equal(formatMarkdownRow(["A", "", "B | C"]), "| A |  | B &#124; C |");
 
-const edited = formatTableCellEdit(noOuterTables[0].body[0], 3, 2, "new\nvalue");
+const edited = formatTableCellEdit(
+  noOuterTables[0].body[0],
+  3,
+  2,
+  "new\nvalue",
+);
 assert.equal(edited, "| Alpha |  | new<br>value |");
 const sourceEdit = formatTableCellSourceEdit(
   noOuterTables[0].body[0],
@@ -87,7 +92,8 @@ assert.equal(
   ),
 );
 
-const spacedSource = "| Key  | Value     |\n| ---- | --------- |\n| Long | keep this |";
+const spacedSource =
+  "| Key  | Value     |\n| ---- | --------- |\n| Long | keep this |";
 const spacedTable = parseMarkdownTables(spacedSource)[0];
 const spacedEdit = formatTableCellSourceEdit(
   spacedTable.body[0],
@@ -111,9 +117,11 @@ assert.equal(
   noOuterPipes.slice(0, emptyCellEdit.from) +
     emptyCellEdit.insert +
     noOuterPipes.slice(emptyCellEdit.to),
-  ["Name | Empty | Notes", "--- | --- | ---", "Alpha | filled | wraps<br>inside"].join(
-    "\n",
-  ),
+  [
+    "Name | Empty | Notes",
+    "--- | --- | ---",
+    "Alpha | filled | wraps<br>inside",
+  ].join("\n"),
 );
 
 const fenced = [
@@ -140,10 +148,7 @@ const memoDoc = {
 assert.equal(getParsedTables(memoDoc), getParsedTables(memoDoc));
 assert.notEqual(getParsedTables(memoDoc), getParsedTables({ ...memoDoc }));
 assert.equal(getParsedTables(memoDoc).length, 1);
-assert.equal(
-  getParsedTables(memoDoc)[0].from,
-  standard.indexOf("| Name |"),
-);
+assert.equal(getParsedTables(memoDoc)[0].from, standard.indexOf("| Name |"));
 assert.equal(getParsedTables(memoDoc)[0].startLine, 2);
 assert.equal(getParsedTables(memoDoc)[0].endLine, 5);
 
@@ -163,7 +168,8 @@ assert.ok(
   `expected compact tables to fit content, got ${compactSizing.dataWidthCh}ch`,
 );
 assert.ok(
-  compactSizing.columns[0].widthCh >= 4.5 && compactSizing.columns[0].widthCh < 12,
+  compactSizing.columns[0].widthCh >= 4.5 &&
+    compactSizing.columns[0].widthCh < 12,
   `expected numeric ID column to stay compact while preserving two-digit values, got ${compactSizing.columns[0].widthCh}ch`,
 );
 
@@ -361,7 +367,12 @@ const packageJson = JSON.parse(
 ) as {
   contributes?: {
     commands?: Array<{ command?: string }>;
-    keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
+    keybindings?: Array<{
+      command?: string;
+      key?: string;
+      mac?: string;
+      when?: string;
+    }>;
     menus?: { "editor/title"?: Array<{ command?: string; when?: string }> };
     customEditors?: Array<{
       viewType?: string;

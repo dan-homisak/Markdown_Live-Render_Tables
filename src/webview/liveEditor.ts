@@ -316,7 +316,9 @@ function installEditorCommandBridge(root: HTMLElement): void {
   );
 }
 
-function getUndoRedoCommand(event: KeyboardEvent): EditorCommandMessage["command"] | null {
+function getUndoRedoCommand(
+  event: KeyboardEvent,
+): EditorCommandMessage["command"] | null {
   const key = event.key.toLowerCase();
   const hasPrimaryModifier = event.metaKey || event.ctrlKey;
   if (!hasPrimaryModifier || event.altKey) {
@@ -487,8 +489,7 @@ function applyDocumentChange(
 }
 
 function updateStatus(text: string, source: string): void {
-  document.documentElement.dataset.mlrtDocumentStatus =
-    `${text.length} characters loaded from ${source}`;
+  document.documentElement.dataset.mlrtDocumentStatus = `${text.length} characters loaded from ${source}`;
 }
 
 function readInitialDocument(): string {
@@ -547,7 +548,14 @@ function postDocumentChanges(
 }
 
 function installCursorDebugListeners(root: HTMLElement): void {
-  for (const eventName of ["focusin", "focusout", "mousedown", "mouseup", "click", "keydown"]) {
+  for (const eventName of [
+    "focusin",
+    "focusout",
+    "mousedown",
+    "mouseup",
+    "click",
+    "keydown",
+  ]) {
     root.addEventListener(
       eventName,
       (event) => {
@@ -649,7 +657,9 @@ function recordDebug(event: string, details: Record<string, unknown>): void {
   }
 }
 
-function summarizeEditorSelection(editorView: EditorView): Record<string, unknown> {
+function summarizeEditorSelection(
+  editorView: EditorView,
+): Record<string, unknown> {
   return {
     ranges: editorView.state.selection.ranges.map((range) => ({
       from: range.from,
@@ -682,14 +692,16 @@ function summarizeNodePosition(
   }
 
   const element =
-    node instanceof HTMLElement ? node : node.parentElement ?? undefined;
+    node instanceof HTMLElement ? node : (node.parentElement ?? undefined);
   return {
     target: summarizeTarget(element ?? node),
     offset,
   };
 }
 
-function summarizeTarget(target: EventTarget | null): Record<string, unknown> | null {
+function summarizeTarget(
+  target: EventTarget | null,
+): Record<string, unknown> | null {
   if (!(target instanceof Element)) {
     return null;
   }

@@ -202,9 +202,7 @@ export function formatMarkdownCell(
   value: string,
   options: { trim?: boolean } = {},
 ): string {
-  const normalized = value
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u00a0/g, " ");
+  const normalized = value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
   return (options.trim === false ? normalized : normalized.trim())
     .replace(/\n/g, "<br>")
     .replace(/\|/g, "&#124;");
@@ -236,8 +234,9 @@ export function formatTableCellSourceEdit(
     };
   }
 
-  const { leadingWhitespace, trailingWhitespace } =
-    getCellPaddingWhitespace(cell.raw);
+  const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+    cell.raw,
+  );
 
   return {
     from: cell.start,
@@ -307,7 +306,9 @@ function parseRow(line: SourceLine): ParsedRow {
   const hasTrailingPipe =
     lastPipe !== undefined && line.text.slice(lastPipe + 1).trim() === "";
   const contentStart = hasLeadingPipe ? (firstPipe ?? -1) + 1 : 0;
-  const contentEnd = hasTrailingPipe ? lastPipe ?? line.text.length : line.text.length;
+  const contentEnd = hasTrailingPipe
+    ? (lastPipe ?? line.text.length)
+    : line.text.length;
   const separatorPipes = pipes.filter(
     (pipe) => pipe >= contentStart && pipe < contentEnd,
   );

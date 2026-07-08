@@ -7,10 +7,7 @@ import {
 import { measureTableColumnSizing } from "../../shared/tableColumnSizing";
 import { setCellPlainText } from "./cellSelection";
 import { bindTableEditing } from "./tableCellEditing";
-import {
-  queryCell,
-  syncCellSourceMetadata,
-} from "./tableCellMetadata";
+import { queryCell, syncCellSourceMetadata } from "./tableCellMetadata";
 import {
   appendColumnSizing,
   applyColumnSizing,
@@ -237,7 +234,13 @@ function appendCells(options: AppendCellsOptions): void {
     cell.dataset.rowKind = options.rowKind;
     cell.dataset.rowIndex = String(options.rowIndex);
     cell.dataset.column = String(column);
-    syncCellSourceMetadata(cell, options.table, options.sourceRow, column, value);
+    syncCellSourceMetadata(
+      cell,
+      options.table,
+      options.sourceRow,
+      column,
+      value,
+    );
     options.tableRow.append(cell);
   });
 }

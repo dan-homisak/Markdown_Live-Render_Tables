@@ -433,8 +433,7 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
       (Array.isArray(message.changeGroups) &&
         message.changeGroups.every(
           (changeGroup) =>
-            Array.isArray(changeGroup) &&
-            changeGroup.every(isDocumentChange),
+            Array.isArray(changeGroup) && changeGroup.every(isDocumentChange),
         ))) &&
     typeof message.baseRevision === "number"
   );

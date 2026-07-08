@@ -1,7 +1,5 @@
 import { ParsedRow, ParsedTable } from "../../shared/tableModel";
-import {
-  TableCellSizingOverride,
-} from "../../shared/tableColumnSizing";
+import { TableCellSizingOverride } from "../../shared/tableColumnSizing";
 import { findCell, readCellDisplayValue } from "./cellSelection";
 
 export const TABLE_WIDGET_SELECTOR = ".mlrt-table-widget";

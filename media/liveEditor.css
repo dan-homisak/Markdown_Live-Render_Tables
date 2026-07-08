@@ -133,7 +133,10 @@ body,
 .mlrt-table-scrollbar-thumb {
   height: 6px;
   border-radius: 999px;
-  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  background: var(
+    --vscode-scrollbarSlider-background,
+    rgba(121, 121, 121, 0.4)
+  );
 }
 
 .mlrt-table-scrollbar[hidden] {
@@ -143,9 +146,7 @@ body,
 .mlrt-table {
   position: relative;
   width: calc(var(--mlrt-live-gutter-width) + var(--mlrt-table-data-width));
-  min-width: calc(
-    var(--mlrt-live-gutter-width) + var(--mlrt-table-data-width)
-  );
+  min-width: calc(var(--mlrt-live-gutter-width) + var(--mlrt-table-data-width));
   box-sizing: border-box;
   border-collapse: separate;
   border-spacing: 0;

@@ -62,9 +62,9 @@ export function applyColumnSizing(
   wrapper
     .querySelectorAll<HTMLTableColElement>(".mlrt-table-sized-col")
     .forEach((col, column) => {
-      col.style.width = `${(
-        columnSizing.columns[column]?.widthCh ?? 1
-      ).toFixed(4)}ch`;
+      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(
+        4,
+      )}ch`;
     });
 }
 

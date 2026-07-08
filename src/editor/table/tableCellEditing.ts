@@ -115,10 +115,18 @@ export function bindTableEditing(
     }
 
     const currentTable = getCurrentTable();
-    if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
+    if (
+      event.inputType === "historyUndo" ||
+      event.inputType === "historyRedo"
+    ) {
       const direction = event.inputType === "historyUndo" ? "undo" : "redo";
       if (!restoreCellEditHistory(cell, direction)) {
-        scheduleNativeHistoryFallback(view, currentTable, cell, scheduleTableLayout);
+        scheduleNativeHistoryFallback(
+          view,
+          currentTable,
+          cell,
+          scheduleTableLayout,
+        );
         return;
       }
       event.preventDefault();
@@ -183,7 +191,12 @@ export function bindTableEditing(
     const historyDirection = getCellEditHistoryDirection(event);
     if (historyDirection) {
       if (!restoreCellEditHistory(cell, historyDirection)) {
-        scheduleNativeHistoryFallback(view, currentTable, cell, scheduleTableLayout);
+        scheduleNativeHistoryFallback(
+          view,
+          currentTable,
+          cell,
+          scheduleTableLayout,
+        );
         return;
       }
       event.preventDefault();
@@ -314,7 +327,7 @@ function commitCellEdit(
   }
 
   const sourceRow =
-    rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
+    rowKind === "header" ? table.header : (table.body[rowIndex] ?? null);
   if (!sourceRow || !Number.isInteger(column) || column < 0) {
     dispatchSelection(view, options.selectionAnchor);
     return;
@@ -434,7 +447,7 @@ function applyLiveCellEdit(
   }
 
   const sourceRow =
-    rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
+    rowKind === "header" ? table.header : (table.body[rowIndex] ?? null);
   if (!sourceRow) {
     return false;
   }
@@ -458,8 +471,7 @@ function applyLiveCellEdit(
       table.columnCount,
       column,
       value,
-    ) ??
-    formatTableCellSourceEdit(sourceRow, table.columnCount, column, value);
+    ) ?? formatTableCellSourceEdit(sourceRow, table.columnCount, column, value);
   const restore = {
     tableFrom: table.from,
     rowKind,
@@ -554,8 +566,9 @@ function formatLiveTableCellSourceEdit(
     return formatTableCellSourceEdit(currentRow, columnCount, column, value);
   }
 
-  const { leadingWhitespace, trailingWhitespace } =
-    getCellPaddingWhitespace(sourceCell.raw);
+  const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+    sourceCell.raw,
+  );
   return {
     from: sourceCell.start,
     to: sourceCell.end,

@@ -41,7 +41,9 @@ export function createTableCellFocusClassSync(): Extension {
       private sync(): void {
         queueMicrotask(() => {
           const ownerDocument = this.view.dom.ownerDocument;
-          const hasTableCellFocus = Boolean(findCell(ownerDocument.activeElement));
+          const hasTableCellFocus = Boolean(
+            findCell(ownerDocument.activeElement),
+          );
           if (
             !hasTableCellFocus &&
             ownerDocument.documentElement.dataset.mlrtApplyingHostDocument ===

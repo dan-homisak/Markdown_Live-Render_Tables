@@ -70,7 +70,10 @@ export function createTableSourceSelectionGuard(
 
       public update(update: ViewUpdate): void {
         if (update.selectionSet || update.docChanged || update.focusChanged) {
-          this.scheduleIfNeeded(update.view, update.startState.selection.main.head);
+          this.scheduleIfNeeded(
+            update.view,
+            update.startState.selection.main.head,
+          );
         }
       }
 
@@ -101,7 +104,10 @@ export function createTableSourceSelectionGuard(
             return;
           }
 
-          const refreshedTarget = findSafeSelectionAnchor(view.state, previousHead);
+          const refreshedTarget = findSafeSelectionAnchor(
+            view.state,
+            previousHead,
+          );
           if (refreshedTarget === undefined) {
             return;
           }
@@ -155,8 +161,9 @@ function rangeTouchesTableSource(
     return isPositionInTableSource(state, range.head, table);
   }
 
-  return range.from < getTableReplacementTo(state, table) &&
-    range.to > table.from;
+  return (
+    range.from < getTableReplacementTo(state, table) && range.to > table.from
+  );
 }
 
 function changeTouchesTableSource(
@@ -169,8 +176,7 @@ function changeTouchesTableSource(
     return isPositionInTableSource(state, from, table);
   }
 
-  return from < getTableReplacementTo(state, table) &&
-    to > table.from;
+  return from < getTableReplacementTo(state, table) && to > table.from;
 }
 
 function isPositionInTableSource(
@@ -178,7 +184,9 @@ function isPositionInTableSource(
   position: number,
   table: ParsedTable,
 ): boolean {
-  return position >= table.from && position < getTableReplacementTo(state, table);
+  return (
+    position >= table.from && position < getTableReplacementTo(state, table)
+  );
 }
 
 function resolveOutsideTableSource(
@@ -216,10 +224,7 @@ function resolveOutsideTableSource(
   return Math.min(state.doc.length, Math.max(0, table.to));
 }
 
-function getTableReplacementTo(
-  state: EditorState,
-  table: ParsedTable,
-): number {
+function getTableReplacementTo(state: EditorState, table: ParsedTable): number {
   return positionAfterTable(state.doc, table);
 }
 
