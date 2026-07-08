@@ -25881,9 +25881,6 @@
   var DOT_THICKNESS = 13;
   var EDGE_GROW_ZONE = 22;
   var EDGE_APPROACH_ZONE = 26;
-  var APPEND_PROXIMITY = 36;
-  var APPEND_RAIL_THICKNESS = 10;
-  var APPEND_RAIL_GAP = 2;
   var MIN_INDICATOR_LENGTH = 12;
   var lastPointerPosition = null;
   function bindTableStructureControls(options) {
@@ -25959,14 +25956,10 @@
         item.setAttribute("role", "menuitem");
         item.dataset.action = entry.action;
         item.disabled = entry.disabled === true;
-        const emoji = doc2.createElement("span");
-        emoji.className = "mlrt-table-structure-menu-emoji";
-        emoji.setAttribute("aria-hidden", "true");
-        emoji.textContent = entry.emoji;
         const label = doc2.createElement("span");
         label.className = "mlrt-table-structure-menu-label";
         label.textContent = entry.label;
-        item.append(emoji, label);
+        item.append(createStructureMenuIcon(doc2, entry.icon), label);
         item.addEventListener("mousedown", preventFocusSteal);
         item.addEventListener("click", (event) => {
           event.preventDefault();
@@ -26010,7 +26003,7 @@
       const canDelete = currentTable().columnCount > 1;
       openMenu(anchor, [
         {
-          emoji: "\u2B05\uFE0F",
+          icon: "insert-column-left",
           label: "Insert column left",
           action: "insert-column-left",
           apply: () => applyStructureEdit(
@@ -26019,7 +26012,7 @@
           )
         },
         {
-          emoji: "\u27A1\uFE0F",
+          icon: "insert-column-right",
           label: "Insert column right",
           action: "insert-column-right",
           apply: () => applyStructureEdit(
@@ -26028,7 +26021,7 @@
           )
         },
         {
-          emoji: "\u{1F5D1}\uFE0F",
+          icon: "delete",
           label: "Delete column",
           action: "delete-column",
           disabled: !canDelete,
@@ -26047,7 +26040,7 @@
       if (rowKind === "header") {
         openMenu(anchor, [
           {
-            emoji: "\u2B07\uFE0F",
+            icon: "insert-row-below",
             label: "Insert row below",
             action: "insert-row-below",
             apply: () => applyStructureEdit(
@@ -26060,7 +26053,7 @@
       }
       openMenu(anchor, [
         {
-          emoji: "\u2B06\uFE0F",
+          icon: "insert-row-above",
           label: "Insert row above",
           action: "insert-row-above",
           apply: () => applyStructureEdit(
@@ -26069,7 +26062,7 @@
           )
         },
         {
-          emoji: "\u2B07\uFE0F",
+          icon: "insert-row-below",
           label: "Insert row below",
           action: "insert-row-below",
           apply: () => applyStructureEdit(
@@ -26078,7 +26071,7 @@
           )
         },
         {
-          emoji: "\u{1F5D1}\uFE0F",
+          icon: "delete",
           label: "Delete row",
           action: "delete-row",
           apply: () => applyStructureEdit(
@@ -26131,38 +26124,6 @@
     focusRowIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-row-indicator";
     focusRowIndicator.hidden = true;
     layer.append(focusRowIndicator);
-    const appendColumnRail = createAppendRail(doc2, "mlrt-table-append-column");
-    appendColumnRail.setAttribute("aria-label", "Add column");
-    appendColumnRail.title = "Add column";
-    appendColumnRail.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      applyStructureEdit(
-        (current) => insertTableColumnEdit(current, current.columnCount),
-        (current) => ({
-          rowKind: "header",
-          rowIndex: 0,
-          column: current.columnCount
-        })
-      );
-    });
-    layer.append(appendColumnRail);
-    const appendRowRail = createAppendRail(doc2, "mlrt-table-append-row");
-    appendRowRail.setAttribute("aria-label", "Add row");
-    appendRowRail.title = "Add row";
-    appendRowRail.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      applyStructureEdit(
-        (current) => insertTableRowEdit(current, current.body.length),
-        (current) => ({
-          rowKind: "body",
-          rowIndex: current.body.length,
-          column: 0
-        })
-      );
-    });
-    layer.append(appendRowRail);
     const minColumnIndicatorLengthPx = () => Math.max(
       MIN_INDICATOR_LENGTH,
       MIN_COLUMN_WIDTH_CH * measureChWidth(tableElement)
@@ -26247,8 +26208,6 @@
         rowIndicator.hidden = true;
         focusColumnIndicator.hidden = true;
         focusRowIndicator.hidden = true;
-        appendColumnRail.hidden = true;
-        appendRowRail.hidden = true;
         return;
       }
       const dataLeftX = wrapperRect.left;
@@ -26264,8 +26223,6 @@
       let mouseColumnState = "line";
       let mouseRow = null;
       let mouseRowState = "line";
-      let showAppendColumn = false;
-      let showAppendRow = false;
       if (pointer) {
         const { x, y } = pointer;
         if (y >= tableRect.top - EDGE_APPROACH_ZONE && y <= tableRect.bottom && x >= dataLeftX && x <= dataRightX) {
@@ -26276,8 +26233,6 @@
           mouseRow = findRowAt(rows, y);
           mouseRowState = x <= dataLeftX + EDGE_GROW_ZONE ? "dots" : "line";
         }
-        showAppendColumn = x >= dataRightX - EDGE_GROW_ZONE && x <= dataRightX + APPEND_PROXIMITY && y >= tableRect.top - 4 && y <= tableRect.bottom + APPEND_PROXIMITY;
-        showAppendRow = y >= tableRect.bottom - EDGE_GROW_ZONE && y <= tableRect.bottom + APPEND_PROXIMITY && x >= dataLeftX - 4 && x <= dataRightX + APPEND_PROXIMITY;
       }
       const activeCell = findFocusedCell(doc2, wrapper);
       let focusColumn = null;
@@ -26346,27 +26301,6 @@
       } else {
         focusRowIndicator.hidden = true;
       }
-      const tableTop = tableRect.top - wrapperRect.top;
-      const tableBottom = tableRect.bottom - wrapperRect.top;
-      const dataRight = dataRightX - wrapperRect.left;
-      if (showAppendColumn) {
-        appendColumnRail.hidden = false;
-        appendColumnRail.style.left = `${dataRight + APPEND_RAIL_GAP}px`;
-        appendColumnRail.style.top = `${tableTop}px`;
-        appendColumnRail.style.width = `${APPEND_RAIL_THICKNESS}px`;
-        appendColumnRail.style.height = `${tableRect.height}px`;
-      } else {
-        appendColumnRail.hidden = true;
-      }
-      if (showAppendRow) {
-        appendRowRail.hidden = false;
-        appendRowRail.style.left = `0px`;
-        appendRowRail.style.top = `${tableBottom + APPEND_RAIL_GAP}px`;
-        appendRowRail.style.width = `${Math.max(MIN_INDICATOR_LENGTH, dataRight)}px`;
-        appendRowRail.style.height = `${APPEND_RAIL_THICKNESS}px`;
-      } else {
-        appendRowRail.hidden = true;
-      }
     };
     const scheduleUpdate = () => {
       if (pendingFrame !== 0) {
@@ -26433,22 +26367,44 @@
     button.append(dots);
     return button;
   }
-  function createAppendRail(doc2, className) {
-    const rail = doc2.createElement("button");
-    rail.type = "button";
-    rail.tabIndex = -1;
-    rail.className = `mlrt-table-append-rail ${className}`;
-    rail.hidden = true;
-    rail.addEventListener("mousedown", preventFocusSteal);
-    const plus2 = doc2.createElement("span");
-    plus2.className = "mlrt-table-append-rail-plus";
-    plus2.setAttribute("aria-hidden", "true");
-    plus2.textContent = "+";
-    rail.append(plus2);
-    return rail;
-  }
   function preventFocusSteal(event) {
     event.preventDefault();
+  }
+  function createStructureMenuIcon(doc2, icon) {
+    const svg = doc2.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("mlrt-table-structure-menu-icon");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const appendPath = (d) => {
+      const path = doc2.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    };
+    switch (icon) {
+      case "insert-column-left":
+        appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
+        appendPath("M2 4h1v8H2V4Zm4 3h2V5h1v2h2v1H9v2H8V8H6V7Z");
+        break;
+      case "insert-column-right":
+        appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
+        appendPath("M13 4h1v8h-1V4ZM6 7h2V5h1v2h2v1H9v2H8V8H6V7Z");
+        break;
+      case "insert-row-above":
+        appendPath("M2 4h12v8H2V4Zm1 1v6h10V5H3Z");
+        appendPath("M4 2h8v1H4V2Zm3 4h2V4h1v2h2v1h-2v2H9V7H7V6Z");
+        break;
+      case "insert-row-below":
+        appendPath("M2 4h12v8H2V4Zm1 1v6h10V5H3Z");
+        appendPath("M4 13h8v1H4v-1Zm3-6h2V5h1v2h2v1h-2v2H9V8H7V7Z");
+        break;
+      case "delete":
+        appendPath("M6 2h4l1 1h3v1H2V3h3l1-1Zm-2 3h8l-.5 9h-7L4 5Zm1.1 1 .39 7h5.02l.39-7H5.1Z");
+        break;
+    }
+    return svg;
   }
   function findColumnAt(headerCells, x) {
     for (let column = 0; column < headerCells.length; column++) {

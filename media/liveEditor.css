@@ -250,8 +250,8 @@ body,
  * the controls never participate in (or disturb) table layout. Visibility is
  * proximity-driven from tableStructureControls.ts: one pointer-following
  * indicator per axis (hairline on the border that grows into a three-dot
- * handle near the edge), persistent accent hairlines for the focused cell,
- * and thin "+" rails outside the right and bottom edges.
+ * handle near the edge), plus persistent accent hairlines for the focused
+ * cell.
  */
 .mlrt-table-controls-layer {
   position: absolute;
@@ -291,8 +291,7 @@ body,
 
 .mlrt-table-col-indicator[hidden],
 .mlrt-table-row-indicator[hidden],
-.mlrt-table-focus-indicator[hidden],
-.mlrt-table-append-rail[hidden] {
+.mlrt-table-focus-indicator[hidden] {
   display: none;
 }
 
@@ -346,36 +345,6 @@ body,
   pointer-events: none;
 }
 
-/* Thin "+" rails just outside the right and bottom table edges. */
-.mlrt-table-append-rail {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--vscode-editorWidget-border, #454545);
-  border-radius: 3px;
-  background: var(--vscode-editorWidget-background, #252526);
-  color: var(--vscode-icon-foreground, #c5c5c5);
-  opacity: 0.85;
-  cursor: pointer;
-}
-
-.mlrt-table-append-rail:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
-  color: var(--vscode-foreground, #cccccc);
-  opacity: 1;
-}
-
-.mlrt-table-append-rail-plus {
-  font-family: var(--vscode-font-family, system-ui, sans-serif);
-  font-size: 11px;
-  line-height: 0;
-  pointer-events: none;
-}
-
 .mlrt-table-structure-menu {
   position: absolute;
   z-index: 40;
@@ -414,10 +383,12 @@ body,
   cursor: pointer;
 }
 
-.mlrt-table-structure-menu-emoji {
+.mlrt-table-structure-menu-icon {
   flex: 0 0 auto;
-  font-size: 11px;
-  line-height: 1;
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  color: var(--vscode-icon-foreground, currentColor);
 }
 
 .mlrt-table-structure-menu-item:hover:not(:disabled) {
