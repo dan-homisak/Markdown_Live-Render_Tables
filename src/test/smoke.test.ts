@@ -14,6 +14,12 @@ import {
   positionBeforeTable,
   rowToDisplayValues,
 } from "../shared/tableModel";
+import {
+  deleteTableColumnEdit,
+  deleteTableRowEdit,
+  insertTableColumnEdit,
+  insertTableRowEdit,
+} from "../shared/tableStructureEdits";
 
 const standard = [
   "# Heading",
@@ -361,6 +367,166 @@ assert.ok(
   longTokenSizing.columns[1].widthCh <= 36,
   `expected long token guardrail to cap the token column, got ${longTokenSizing.columns[1].widthCh}ch`,
 );
+
+// --- Table structure edits (insert/delete rows and columns) ---
+
+function applyStructureEdit(
+  source: string,
+  edit: { from: number; to: number; insert: string } | null,
+): string {
+  assert.ok(edit, "expected a structure edit");
+  return source.slice(0, edit.from) + edit.insert + source.slice(edit.to);
+}
+
+const structurePrefix = "Intro\n\n";
+const structureLines = [
+  "| A | B |",
+  "| :--- | ---: |",
+  "| a1 | b1 |",
+  "| a2 | b2 |",
+];
+const structureSource = `${structurePrefix}${structureLines.join("\n")}\n\nOutro`;
+const structureTable = parseMarkdownTables(structureSource)[0];
+
+// Append a column to the right edge.
+const appendedColumnSource = applyStructureEdit(
+  structureSource,
+  insertTableColumnEdit(structureTable, structureTable.columnCount),
+);
+const appendedColumnTable = parseMarkdownTables(appendedColumnSource)[0];
+assert.equal(appendedColumnTable.columnCount, 3);
+assert.deepEqual(appendedColumnTable.alignments, ["left", "right", "left"]);
+assert.deepEqual(rowToDisplayValues(appendedColumnTable.header, 3), [
+  "A",
+  "B",
+  "",
+]);
+assert.deepEqual(rowToDisplayValues(appendedColumnTable.body[1], 3), [
+  "a2",
+  "b2",
+  "",
+]);
+assert.ok(appendedColumnSource.startsWith(structurePrefix));
+assert.ok(appendedColumnSource.endsWith("\n\nOutro"));
+
+// Insert a column left of the first column, preserving alignments.
+const insertLeftSource = applyStructureEdit(
+  structureSource,
+  insertTableColumnEdit(structureTable, 0),
+);
+const insertLeftTable = parseMarkdownTables(insertLeftSource)[0];
+assert.equal(insertLeftTable.columnCount, 3);
+assert.deepEqual(insertLeftTable.alignments, ["left", "left", "right"]);
+assert.deepEqual(rowToDisplayValues(insertLeftTable.body[0], 3), [
+  "",
+  "a1",
+  "b1",
+]);
+
+// Insert a column between existing columns; existing raw padding is kept.
+const insertMiddleSource = applyStructureEdit(
+  structureSource,
+  insertTableColumnEdit(structureTable, 1),
+);
+const insertMiddleTable = parseMarkdownTables(insertMiddleSource)[0];
+assert.deepEqual(rowToDisplayValues(insertMiddleTable.header, 3), [
+  "A",
+  "",
+  "B",
+]);
+assert.ok(insertMiddleSource.includes("| a1 |  | b1 |"));
+
+// Delete the first column.
+const deleteColumnSource = applyStructureEdit(
+  structureSource,
+  deleteTableColumnEdit(structureTable, 0),
+);
+const deleteColumnTable = parseMarkdownTables(deleteColumnSource)[0];
+assert.equal(deleteColumnTable.columnCount, 1);
+assert.deepEqual(deleteColumnTable.alignments, ["right"]);
+assert.deepEqual(rowToDisplayValues(deleteColumnTable.body[0], 1), ["b1"]);
+
+// The final remaining column cannot be deleted.
+assert.equal(deleteTableColumnEdit(deleteColumnTable, 0), null);
+assert.equal(deleteTableColumnEdit(structureTable, 2), null);
+assert.equal(deleteTableColumnEdit(structureTable, -1), null);
+assert.equal(insertTableColumnEdit(structureTable, 3), null);
+
+// Insert a row above the first body row without touching other lines.
+const insertRowAboveSource = applyStructureEdit(
+  structureSource,
+  insertTableRowEdit(structureTable, 0),
+);
+const insertRowAboveTable = parseMarkdownTables(insertRowAboveSource)[0];
+assert.equal(insertRowAboveTable.body.length, 3);
+assert.deepEqual(rowToDisplayValues(insertRowAboveTable.body[0], 2), ["", ""]);
+assert.deepEqual(rowToDisplayValues(insertRowAboveTable.body[1], 2), [
+  "a1",
+  "b1",
+]);
+assert.ok(insertRowAboveSource.includes("| :--- | ---: |\n|  |  |\n| a1 |"));
+
+// Insert a row below the last body row (append to the bottom edge).
+const appendRowSource = applyStructureEdit(
+  structureSource,
+  insertTableRowEdit(structureTable, structureTable.body.length),
+);
+const appendRowTable = parseMarkdownTables(appendRowSource)[0];
+assert.equal(appendRowTable.body.length, 3);
+assert.deepEqual(rowToDisplayValues(appendRowTable.body[2], 2), ["", ""]);
+assert.ok(appendRowSource.includes("| a2 | b2 |\n|  |  |\n\nOutro"));
+
+// Delete a body row; the remaining rows keep their exact source text.
+const deleteRowSource = applyStructureEdit(
+  structureSource,
+  deleteTableRowEdit(structureTable, 0),
+);
+const deleteRowTable = parseMarkdownTables(deleteRowSource)[0];
+assert.equal(deleteRowTable.body.length, 1);
+assert.deepEqual(rowToDisplayValues(deleteRowTable.body[0], 2), ["a2", "b2"]);
+assert.ok(deleteRowSource.includes("| :--- | ---: |\n| a2 | b2 |"));
+
+// Deleting every body row leaves a valid header-only table.
+const headerOnlySource = applyStructureEdit(
+  deleteRowSource,
+  deleteTableRowEdit(deleteRowTable, 0),
+);
+const headerOnlyTable = parseMarkdownTables(headerOnlySource)[0];
+assert.equal(headerOnlyTable.body.length, 0);
+assert.equal(headerOnlyTable.columnCount, 2);
+assert.equal(deleteTableRowEdit(headerOnlyTable, 0), null);
+assert.equal(deleteTableRowEdit(structureTable, 2), null);
+assert.equal(insertTableRowEdit(structureTable, 3), null);
+
+// Ragged rows and rows without outer pipes are normalized with empty cells.
+const raggedColumnSource = applyStructureEdit(
+  noOuterPipes,
+  insertTableColumnEdit(noOuterTables[0], 3),
+);
+const raggedColumnTable = parseMarkdownTables(raggedColumnSource)[0];
+assert.equal(raggedColumnTable.columnCount, 4);
+assert.deepEqual(rowToDisplayValues(raggedColumnTable.body[0], 4), [
+  "Alpha",
+  "",
+  "wraps\ninside",
+  "",
+]);
+
+// CRLF tables keep their line separator when inserting rows and columns.
+const crlfSource = structureLines.join("\r\n");
+const crlfTable = parseMarkdownTables(crlfSource)[0];
+const crlfRowSource = applyStructureEdit(
+  crlfSource,
+  insertTableRowEdit(crlfTable, 1),
+);
+assert.ok(crlfRowSource.includes("| a1 | b1 |\r\n|  |  |\r\n| a2 |"));
+assert.equal(parseMarkdownTables(crlfRowSource)[0].body.length, 3);
+const crlfColumnSource = applyStructureEdit(
+  crlfSource,
+  insertTableColumnEdit(crlfTable, 2),
+);
+assert.ok(crlfColumnSource.includes("| A | B |  |\r\n"));
+assert.equal(parseMarkdownTables(crlfColumnSource)[0].columnCount, 3);
 
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),

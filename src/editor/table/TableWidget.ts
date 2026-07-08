@@ -14,9 +14,11 @@ import {
   applyCurrentColumnSizing,
   bindTableLayout,
 } from "./tableLayout";
+import { bindTableStructureControls } from "./tableStructureControls";
 import {
   getTableWidgetCleanup,
   isTablePreservedForLiveEdit,
+  setTableWidgetCleanup,
   setTableWidgetTable,
 } from "./tableWidgetState";
 
@@ -117,6 +119,18 @@ export class RenderedTableWidget extends WidgetType {
       this.table,
     );
     bindTableEditing(wrapper, view, this.table, scheduleTableLayout);
+    const layoutCleanup = getTableWidgetCleanup(wrapper);
+    const structureControlsCleanup = bindTableStructureControls({
+      wrapper,
+      view,
+      tableScroll,
+      tableElement,
+      table: this.table,
+    });
+    setTableWidgetCleanup(wrapper, () => {
+      layoutCleanup?.();
+      structureControlsCleanup();
+    });
     return wrapper;
   }
 
@@ -142,6 +156,14 @@ interface AppendCellsOptions {
  * Whether the mounted widget DOM has the same rendered shape as the parsed
  * table: one header row, matching body row count, matching column count, and
  * a full set of editable cells in every row.
+ *
+ * Shape alone is not identity: when decorations rebuild, CodeMirror may offer
+ * one table's detached DOM to another table's widget of the same shape. That
+ * is fine for inactive DOM (the patch rewrites every cell), but a focused
+ * cell keeps its text through patches, so adopting a DOM whose focused cell
+ * disagrees with this table's value would desync the cell's display from its
+ * source metadata and corrupt the next commit. Reject the patch in that case
+ * so the widget is rebuilt instead.
  */
 function canPatchTableDOM(dom: HTMLElement, table: ParsedTable): boolean {
   if (!dom.classList.contains("mlrt-table-widget")) {
@@ -166,7 +188,43 @@ function canPatchTableDOM(dom: HTMLElement, table: ParsedTable): boolean {
     }
   }
 
-  return true;
+  return canPatchActiveCell(dom, table);
+}
+
+/**
+ * The active-cell identity guard described on `canPatchTableDOM`. Host
+ * document application is exempt because that path updates active cell text
+ * through the patch as well.
+ */
+function canPatchActiveCell(dom: HTMLElement, table: ParsedTable): boolean {
+  if (
+    dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument ===
+    "true"
+  ) {
+    return true;
+  }
+
+  const activeCell = dom.ownerDocument.activeElement;
+  if (
+    !(activeCell instanceof HTMLElement) ||
+    !dom.contains(activeCell) ||
+    !activeCell.classList.contains("mlrt-table-cell")
+  ) {
+    return true;
+  }
+
+  const rowKind = activeCell.dataset.rowKind;
+  const rowIndex = Number(activeCell.dataset.rowIndex ?? "0");
+  const column = Number(activeCell.dataset.column ?? "0");
+  const sourceRow =
+    rowKind === "header" ? table.header : (table.body[rowIndex] ?? null);
+  if (!sourceRow || !Number.isInteger(column) || column < 0) {
+    return false;
+  }
+
+  const expectedValue =
+    rowToDisplayValues(sourceRow, table.columnCount)[column] ?? "";
+  return (activeCell.dataset.sourceValue ?? "") === expectedValue;
 }
 
 function patchTableDOM(dom: HTMLElement, table: ParsedTable): void {

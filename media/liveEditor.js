@@ -25805,6 +25805,456 @@
     return resolved;
   }
 
+  // src/shared/tableStructureEdits.ts
+  var EMPTY_DATA_CELL_RAW = "  ";
+  var EMPTY_DELIMITER_CELL_RAW = " --- ";
+  function insertTableColumnEdit(table, columnIndex) {
+    if (!Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex > table.columnCount) {
+      return null;
+    }
+    return replaceTableLines(table, (rawCells, emptyCellRaw) => {
+      const next = [...rawCells];
+      next.splice(columnIndex, 0, emptyCellRaw);
+      return next;
+    });
+  }
+  function deleteTableColumnEdit(table, columnIndex) {
+    if (table.columnCount <= 1 || !Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex >= table.columnCount) {
+      return null;
+    }
+    return replaceTableLines(table, (rawCells) => {
+      const next = [...rawCells];
+      next.splice(columnIndex, 1);
+      return next;
+    });
+  }
+  function insertTableRowEdit(table, bodyIndex) {
+    if (!Number.isInteger(bodyIndex) || bodyIndex < 0 || bodyIndex > table.body.length) {
+      return null;
+    }
+    const previousRow = bodyIndex === 0 ? table.delimiter : table.body[bodyIndex - 1];
+    const rowText = formatMarkdownRow(
+      Array.from({ length: table.columnCount }, () => "")
+    );
+    return {
+      from: previousRow.to,
+      to: previousRow.to,
+      insert: `${getTableLineSeparator(table)}${rowText}`
+    };
+  }
+  function deleteTableRowEdit(table, bodyIndex) {
+    if (!Number.isInteger(bodyIndex) || bodyIndex < 0) {
+      return null;
+    }
+    const row = table.body[bodyIndex];
+    if (!row) {
+      return null;
+    }
+    const previousRow = bodyIndex === 0 ? table.delimiter : table.body[bodyIndex - 1];
+    return { from: previousRow.to, to: row.to, insert: "" };
+  }
+  function replaceTableLines(table, mutateRawCells) {
+    const lines = [table.header, table.delimiter, ...table.body].map((row) => {
+      const emptyCellRaw = row === table.delimiter ? EMPTY_DELIMITER_CELL_RAW : EMPTY_DATA_CELL_RAW;
+      return `|${mutateRawCells(paddedRawCells(row, table.columnCount, emptyCellRaw), emptyCellRaw).join("|")}|`;
+    });
+    return {
+      from: table.from,
+      to: table.to,
+      insert: lines.join(getTableLineSeparator(table))
+    };
+  }
+  function paddedRawCells(row, columnCount, emptyCellRaw) {
+    return Array.from(
+      { length: columnCount },
+      (_, column) => row.cells[column]?.raw ?? emptyCellRaw
+    );
+  }
+  function getTableLineSeparator(table) {
+    return table.delimiter.from - table.header.to === 2 ? "\r\n" : "\n";
+  }
+
+  // src/editor/table/tableStructureControls.ts
+  var CONTROLS_OPEN_CLASS = "mlrt-table-controls-open";
+  var HANDLE_ACTIVE_CLASS = "mlrt-table-handle-active";
+  var COLUMN_HANDLE_HEIGHT = 11;
+  var COLUMN_HANDLE_OVERHANG = 6;
+  var ROW_HANDLE_WIDTH = 12;
+  var APPEND_BUTTON_SIZE = 15;
+  var APPEND_BUTTON_GAP = 3;
+  var MIN_VISIBLE_HANDLE_WIDTH = 14;
+  function bindTableStructureControls(options) {
+    const { wrapper, view: view2, tableScroll, tableElement, table } = options;
+    const doc2 = wrapper.ownerDocument;
+    const layer = doc2.createElement("div");
+    layer.className = "mlrt-table-controls-layer";
+    layer.contentEditable = "false";
+    let menu = null;
+    let menuAnchor = null;
+    const currentTable = () => {
+      const widgetTable = getTableWidgetTable(wrapper) ?? table;
+      return getParsedTables(view2.state.doc).find(
+        (candidate) => candidate.from === widgetTable.from
+      ) ?? widgetTable;
+    };
+    const applyStructureEdit = (makeEdit, makeFocusTarget) => {
+      const current = currentTable();
+      const edit = makeEdit(current);
+      closeMenu();
+      if (!edit) {
+        return;
+      }
+      const focusTarget = makeFocusTarget(current);
+      view2.dispatch({
+        changes: { from: edit.from, to: edit.to, insert: edit.insert },
+        annotations: [allowTableSourceChange.of(true)],
+        userEvent: "input"
+      });
+      if (focusTarget) {
+        focusCellAfterStructureEdit(doc2, current.from, focusTarget);
+      } else {
+        view2.focus();
+      }
+    };
+    const closeMenu = () => {
+      if (!menu) {
+        return;
+      }
+      menu.remove();
+      menu = null;
+      menuAnchor?.classList.remove(HANDLE_ACTIVE_CLASS);
+      menuAnchor = null;
+      wrapper.classList.remove(CONTROLS_OPEN_CLASS);
+      doc2.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      doc2.removeEventListener("keydown", onDocumentKeyDown, true);
+    };
+    const onDocumentPointerDown = (event) => {
+      if (menu && event.target instanceof Node && !menu.contains(event.target) && event.target !== menuAnchor && !(menuAnchor?.contains(event.target) ?? false)) {
+        closeMenu();
+      }
+    };
+    const onDocumentKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeMenu();
+      }
+    };
+    const openMenu = (anchor, entries) => {
+      closeMenu();
+      menu = doc2.createElement("div");
+      menu.className = "mlrt-table-structure-menu";
+      menu.setAttribute("role", "menu");
+      for (const entry of entries) {
+        const item = doc2.createElement("button");
+        item.type = "button";
+        item.className = "mlrt-table-structure-menu-item";
+        item.setAttribute("role", "menuitem");
+        item.textContent = entry.label;
+        item.disabled = entry.disabled === true;
+        item.addEventListener("mousedown", preventFocusSteal);
+        item.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          entry.apply();
+        });
+        menu.append(item);
+      }
+      menuAnchor = anchor;
+      anchor.classList.add(HANDLE_ACTIVE_CLASS);
+      wrapper.classList.add(CONTROLS_OPEN_CLASS);
+      wrapper.append(menu);
+      positionMenu(anchor);
+      doc2.addEventListener("pointerdown", onDocumentPointerDown, true);
+      doc2.addEventListener("keydown", onDocumentKeyDown, true);
+    };
+    const positionMenu = (anchor) => {
+      if (!menu) {
+        return;
+      }
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuWidth = menu.offsetWidth;
+      const isColumnAnchor = anchor.classList.contains("mlrt-table-col-handle");
+      let left;
+      let top2;
+      if (isColumnAnchor) {
+        left = anchorRect.left - wrapperRect.left;
+        top2 = anchorRect.bottom - wrapperRect.top + 2;
+      } else {
+        left = anchorRect.right - wrapperRect.left + 2;
+        top2 = anchorRect.top - wrapperRect.top;
+      }
+      const maxLeft = wrapperRect.width - menuWidth - 2;
+      menu.style.left = `${Math.max(Math.min(left, maxLeft), -ROW_HANDLE_WIDTH)}px`;
+      menu.style.top = `${top2}px`;
+    };
+    const openColumnMenu = (anchor, column) => {
+      const canDelete = currentTable().columnCount > 1;
+      openMenu(anchor, [
+        {
+          label: "Insert column left",
+          apply: () => applyStructureEdit(
+            (current) => insertTableColumnEdit(current, column),
+            () => ({ rowKind: "header", rowIndex: 0, column })
+          )
+        },
+        {
+          label: "Insert column right",
+          apply: () => applyStructureEdit(
+            (current) => insertTableColumnEdit(current, column + 1),
+            () => ({ rowKind: "header", rowIndex: 0, column: column + 1 })
+          )
+        },
+        {
+          label: "Delete column",
+          disabled: !canDelete,
+          apply: () => applyStructureEdit(
+            (current) => deleteTableColumnEdit(current, column),
+            (current) => ({
+              rowKind: "header",
+              rowIndex: 0,
+              column: Math.max(0, Math.min(column, current.columnCount - 2))
+            })
+          )
+        }
+      ]);
+    };
+    const openRowMenu = (anchor, rowKind, rowIndex) => {
+      if (rowKind === "header") {
+        openMenu(anchor, [
+          {
+            label: "Insert row below",
+            apply: () => applyStructureEdit(
+              (current) => insertTableRowEdit(current, 0),
+              () => ({ rowKind: "body", rowIndex: 0, column: 0 })
+            )
+          }
+        ]);
+        return;
+      }
+      openMenu(anchor, [
+        {
+          label: "Insert row above",
+          apply: () => applyStructureEdit(
+            (current) => insertTableRowEdit(current, rowIndex),
+            () => ({ rowKind: "body", rowIndex, column: 0 })
+          )
+        },
+        {
+          label: "Insert row below",
+          apply: () => applyStructureEdit(
+            (current) => insertTableRowEdit(current, rowIndex + 1),
+            () => ({ rowKind: "body", rowIndex: rowIndex + 1, column: 0 })
+          )
+        },
+        {
+          label: "Delete row",
+          apply: () => applyStructureEdit(
+            (current) => deleteTableRowEdit(current, rowIndex),
+            (current) => current.body.length > 1 ? {
+              rowKind: "body",
+              rowIndex: Math.min(rowIndex, current.body.length - 2),
+              column: 0
+            } : null
+          )
+        }
+      ]);
+    };
+    const columnHandles = [];
+    for (let column = 0; column < table.columnCount; column++) {
+      const handle = createHandleButton(doc2, "mlrt-table-col-handle");
+      handle.setAttribute("aria-label", `Column ${column + 1} actions`);
+      handle.title = "Column actions";
+      handle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (menuAnchor === handle) {
+          closeMenu();
+          return;
+        }
+        openColumnMenu(handle, column);
+      });
+      columnHandles.push(handle);
+      layer.append(handle);
+    }
+    const rowHandles = [];
+    const rowRefs = collectRenderedRows(tableElement);
+    for (const rowRef of rowRefs) {
+      const handle = createHandleButton(doc2, "mlrt-table-row-handle");
+      handle.setAttribute(
+        "aria-label",
+        rowRef.rowKind === "header" ? "Header row actions" : `Row ${rowRef.rowIndex + 1} actions`
+      );
+      handle.title = "Row actions";
+      handle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (menuAnchor === handle) {
+          closeMenu();
+          return;
+        }
+        openRowMenu(handle, rowRef.rowKind, rowRef.rowIndex);
+      });
+      rowHandles.push(handle);
+      layer.append(handle);
+    }
+    const appendColumnButton = createAppendButton(doc2, "mlrt-table-append-column");
+    appendColumnButton.setAttribute("aria-label", "Add column");
+    appendColumnButton.title = "Add column";
+    appendColumnButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyStructureEdit(
+        (current) => insertTableColumnEdit(current, current.columnCount),
+        (current) => ({
+          rowKind: "header",
+          rowIndex: 0,
+          column: current.columnCount
+        })
+      );
+    });
+    layer.append(appendColumnButton);
+    const appendRowButton = createAppendButton(doc2, "mlrt-table-append-row");
+    appendRowButton.setAttribute("aria-label", "Add row");
+    appendRowButton.title = "Add row";
+    appendRowButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyStructureEdit(
+        (current) => insertTableRowEdit(current, current.body.length),
+        (current) => ({
+          rowKind: "body",
+          rowIndex: current.body.length,
+          column: 0
+        })
+      );
+    });
+    layer.append(appendRowButton);
+    const syncControlPositions = () => {
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const tableRect = tableElement.getBoundingClientRect();
+      if (wrapperRect.width <= 0 || tableRect.height <= 0) {
+        return;
+      }
+      const tableTop = tableRect.top - wrapperRect.top;
+      const headerCells = tableElement.querySelectorAll(
+        `thead ${TABLE_CELL_SELECTOR}`
+      );
+      columnHandles.forEach((handle, column) => {
+        const cell = headerCells[column];
+        if (!cell) {
+          handle.hidden = true;
+          return;
+        }
+        const cellRect = cell.getBoundingClientRect();
+        const visibleLeft = Math.max(cellRect.left, wrapperRect.left);
+        const visibleRight = Math.min(cellRect.right, wrapperRect.right);
+        const width = visibleRight - visibleLeft;
+        if (width < MIN_VISIBLE_HANDLE_WIDTH) {
+          handle.hidden = true;
+          return;
+        }
+        handle.hidden = false;
+        handle.style.left = `${visibleLeft - wrapperRect.left + 1}px`;
+        handle.style.width = `${width - 2}px`;
+        handle.style.top = `${tableTop - COLUMN_HANDLE_OVERHANG}px`;
+        handle.style.height = `${COLUMN_HANDLE_HEIGHT}px`;
+      });
+      const rows = collectRenderedRows(tableElement);
+      rowHandles.forEach((handle, index) => {
+        const row = rows[index];
+        if (!row) {
+          handle.hidden = true;
+          return;
+        }
+        const rowRect = row.element.getBoundingClientRect();
+        handle.hidden = false;
+        handle.style.left = `${-ROW_HANDLE_WIDTH}px`;
+        handle.style.width = `${ROW_HANDLE_WIDTH}px`;
+        handle.style.top = `${rowRect.top - wrapperRect.top + 1}px`;
+        handle.style.height = `${Math.max(8, rowRect.height - 2)}px`;
+      });
+      const dataRight = Math.min(tableRect.right, wrapperRect.right) - wrapperRect.left;
+      appendColumnButton.style.left = `${Math.min(
+        dataRight + APPEND_BUTTON_GAP,
+        wrapperRect.width - APPEND_BUTTON_SIZE
+      )}px`;
+      appendColumnButton.style.top = `${tableTop + Math.max(0, (tableRect.height - APPEND_BUTTON_SIZE) / 2)}px`;
+      appendRowButton.style.left = `${Math.max(0, dataRight / 2 - APPEND_BUTTON_SIZE / 2)}px`;
+      appendRowButton.style.top = `${tableRect.bottom - wrapperRect.top - APPEND_BUTTON_SIZE / 2}px`;
+      if (menu && menuAnchor) {
+        positionMenu(menuAnchor);
+      }
+    };
+    const onWrapperMouseEnter = () => {
+      syncControlPositions();
+    };
+    wrapper.append(layer);
+    syncControlPositions();
+    const ResizeObserverCtor = doc2.defaultView?.ResizeObserver;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(syncControlPositions) : void 0;
+    resizeObserver?.observe(tableElement);
+    resizeObserver?.observe(tableScroll);
+    tableScroll.addEventListener("scroll", syncControlPositions);
+    wrapper.addEventListener("mouseenter", onWrapperMouseEnter);
+    return () => {
+      closeMenu();
+      resizeObserver?.disconnect();
+      tableScroll.removeEventListener("scroll", syncControlPositions);
+      wrapper.removeEventListener("mouseenter", onWrapperMouseEnter);
+      layer.remove();
+    };
+  }
+  function createHandleButton(doc2, className) {
+    const handle = doc2.createElement("button");
+    handle.type = "button";
+    handle.tabIndex = -1;
+    handle.className = className;
+    handle.addEventListener("mousedown", preventFocusSteal);
+    const bar = doc2.createElement("span");
+    bar.className = "mlrt-table-handle-bar";
+    handle.append(bar);
+    return handle;
+  }
+  function createAppendButton(doc2, className) {
+    const button = doc2.createElement("button");
+    button.type = "button";
+    button.tabIndex = -1;
+    button.className = `mlrt-table-append-button ${className}`;
+    button.textContent = "+";
+    button.addEventListener("mousedown", preventFocusSteal);
+    return button;
+  }
+  function preventFocusSteal(event) {
+    event.preventDefault();
+  }
+  function collectRenderedRows(tableElement) {
+    const rows = [];
+    const headerRow = tableElement.querySelector("thead tr");
+    if (headerRow) {
+      rows.push({ element: headerRow, rowKind: "header", rowIndex: 0 });
+    }
+    tableElement.querySelectorAll("tbody tr").forEach((element, rowIndex) => {
+      rows.push({ element, rowKind: "body", rowIndex });
+    });
+    return rows;
+  }
+  function focusCellAfterStructureEdit(doc2, tableFrom, target) {
+    setTimeout(() => {
+      const cell = doc2.querySelector(
+        [
+          `${TABLE_CELL_SELECTOR}[data-table-from="${tableFrom}"]`,
+          `[data-row-kind="${target.rowKind}"]`,
+          `[data-row-index="${target.rowIndex}"]`,
+          `[data-column="${target.column}"]`
+        ].join("")
+      );
+      if (cell) {
+        focusCellAtEnd(cell);
+      }
+    }, 0);
+  }
+
   // src/editor/table/TableWidget.ts
   var RenderedTableWidget = class _RenderedTableWidget extends WidgetType {
     constructor(table) {
@@ -25878,6 +26328,18 @@
         this.table
       );
       bindTableEditing(wrapper, view2, this.table, scheduleTableLayout);
+      const layoutCleanup = getTableWidgetCleanup(wrapper);
+      const structureControlsCleanup = bindTableStructureControls({
+        wrapper,
+        view: view2,
+        tableScroll,
+        tableElement,
+        table: this.table
+      });
+      setTableWidgetCleanup(wrapper, () => {
+        layoutCleanup?.();
+        structureControlsCleanup();
+      });
       return wrapper;
     }
     destroy(dom) {
@@ -25906,7 +26368,25 @@
         return false;
       }
     }
-    return true;
+    return canPatchActiveCell(dom, table);
+  }
+  function canPatchActiveCell(dom, table) {
+    if (dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
+      return true;
+    }
+    const activeCell = dom.ownerDocument.activeElement;
+    if (!(activeCell instanceof HTMLElement) || !dom.contains(activeCell) || !activeCell.classList.contains("mlrt-table-cell")) {
+      return true;
+    }
+    const rowKind = activeCell.dataset.rowKind;
+    const rowIndex = Number(activeCell.dataset.rowIndex ?? "0");
+    const column = Number(activeCell.dataset.column ?? "0");
+    const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex] ?? null;
+    if (!sourceRow || !Number.isInteger(column) || column < 0) {
+      return false;
+    }
+    const expectedValue = rowToDisplayValues(sourceRow, table.columnCount)[column] ?? "";
+    return (activeCell.dataset.sourceValue ?? "") === expectedValue;
   }
   function patchTableDOM(dom, table) {
     setTableWidgetTable(dom, table);
