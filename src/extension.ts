@@ -93,9 +93,10 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       ackId?: number,
     ): void => {
       documentRevision++;
+      const text = normalizeDocumentText(document.getText());
       void webview.postMessage({
         type: "setDocument",
-        text: document.getText(),
+        text,
         revision: documentRevision,
         debug: isDebugEnabled(),
         source,
@@ -130,7 +131,10 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
             applyingFromWebview = false;
           }
 
-          if (normalizeDocumentText(document.getText()) !== message.text) {
+          if (
+            normalizeDocumentText(document.getText()) !==
+            normalizeDocumentText(message.text)
+          ) {
             vscode.window.showWarningMessage(
               "Markdown live editor changes were applied, but the editor document is out of sync.",
             );
@@ -192,7 +196,10 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           isChangeMessage(message) &&
           message.baseRevision <= documentRevision
         ) {
-          if (message.text === document.getText()) {
+          if (
+            normalizeDocumentText(message.text) ===
+            normalizeDocumentText(document.getText())
+          ) {
             // Nothing to apply, but the webview still expects its optimistic
             // change to be acknowledged so it can settle its echo queue.
             postDocument("webviewAck", message.changeId);
@@ -207,7 +214,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       webview,
       scriptText,
       styleText,
-      document.getText(),
+      normalizeDocumentText(document.getText()),
       document.uri,
     );
 
@@ -362,6 +369,7 @@ async function applyDocumentChanges(
   for (const change of mapNormalizedDocumentChangesToHost(
     document.getText(),
     changes,
+    document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n",
   )) {
     edit.replace(
       document.uri,

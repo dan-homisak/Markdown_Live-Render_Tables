@@ -56,13 +56,13 @@ export function lineCharacterAtNormalizedOffset(
 export function mapNormalizedDocumentChangesToHost(
   hostText: string,
   changes: readonly DocumentChangeLike[],
+  hostLineSeparator: "\r\n" | "\n" = getHostLineSeparator(hostText),
 ): MappedDocumentChange[] {
   const normalizedHostText = normalizeDocumentText(hostText);
-  const lineSeparator = getHostLineSeparator(hostText);
 
   return changes.map((change) => ({
     from: lineCharacterAtNormalizedOffset(normalizedHostText, change.from),
     to: lineCharacterAtNormalizedOffset(normalizedHostText, change.to),
-    text: normalizeChangeTextLineEndings(change.text, lineSeparator),
+    text: normalizeChangeTextLineEndings(change.text, hostLineSeparator),
   }));
 }

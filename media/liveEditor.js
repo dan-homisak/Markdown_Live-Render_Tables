@@ -26756,6 +26756,11 @@
     ];
   }
 
+  // src/shared/documentChangeMapping.ts
+  function normalizeDocumentText(text) {
+    return text.replace(/\r\n?/g, "\n");
+  }
+
   // src/webview/liveEditor.ts
   var vscode = acquireVsCodeApi();
   var app = document.getElementById("app");
@@ -26964,11 +26969,7 @@
     );
   }
   function dispatchUndoRedo(command) {
-    if (isTableCellFocused2()) {
-      postEditorCommand(command);
-      return;
-    }
-    runHistoryCommand(command);
+    postEditorCommand(command);
   }
   function getUndoRedoCommand(event) {
     const key = event.key.toLowerCase();
@@ -27006,18 +27007,6 @@
       );
     }
   }
-  function runHistoryCommand(command) {
-    const applied = command === "undo" ? undo(view) : redo(view);
-    recordDebug("run-history-command", {
-      command,
-      applied,
-      activeElement: summarizeTarget(document.activeElement),
-      editorSelection: summarizeEditorSelection(view)
-    });
-    if (applied && !view.hasFocus) {
-      view.focus();
-    }
-  }
   function postEditorCommand(command) {
     recordDebug("post-editor-command", {
       command,
@@ -27028,10 +27017,6 @@
       type: "editorCommand",
       command
     });
-  }
-  function isTableCellFocused2() {
-    const active = view.dom.ownerDocument.activeElement;
-    return active instanceof Element && active.closest(TABLE_CELL_SELECTOR) !== null;
   }
   function computeMinimalTextChange(currentText, nextText) {
     let from = 0;
@@ -27067,7 +27052,7 @@
       return false;
     }
     const acknowledged = pendingWebviewEchoes[acknowledgedIndex];
-    if (acknowledged.text !== text) {
+    if (normalizeDocumentText(acknowledged.text) !== normalizeDocumentText(text)) {
       pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
       recordDebug("ignore-mismatched-webview-echo", {
         ackId,
