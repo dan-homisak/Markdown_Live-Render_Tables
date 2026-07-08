@@ -11956,10 +11956,10 @@
     let ran = /* @__PURE__ */ new Set();
     let runFor = (binding) => {
       if (binding) {
-        for (let cmd of binding.run)
-          if (!ran.has(cmd)) {
-            ran.add(cmd);
-            if (cmd(view2)) {
+        for (let cmd2 of binding.run)
+          if (!ran.has(cmd2)) {
+            ran.add(cmd2);
+            if (cmd2(view2)) {
               if (binding.stopPropagation)
                 stopPropagation = true;
               return true;
@@ -16074,6 +16074,266 @@
     auto: /* @__PURE__ */ Decoration.mark({ class: "cm-iso", inclusive: true, attributes: { dir: "auto" }, bidiIsolate: null })
   };
 
+  // node_modules/@codemirror/commands/dist/index.js
+  var fromHistory = /* @__PURE__ */ Annotation.define();
+  var isolateHistory = /* @__PURE__ */ Annotation.define();
+  var invertedEffects = /* @__PURE__ */ Facet.define();
+  var historyConfig = /* @__PURE__ */ Facet.define({
+    combine(configs) {
+      return combineConfig(configs, {
+        minDepth: 100,
+        newGroupDelay: 500,
+        joinToEvent: (_t, isAdjacent2) => isAdjacent2
+      }, {
+        minDepth: Math.max,
+        newGroupDelay: Math.min,
+        joinToEvent: (a, b) => (tr, adj) => a(tr, adj) || b(tr, adj)
+      });
+    }
+  });
+  var historyField_ = /* @__PURE__ */ StateField.define({
+    create() {
+      return HistoryState.empty;
+    },
+    update(state, tr) {
+      let config = tr.state.facet(historyConfig);
+      let fromHist = tr.annotation(fromHistory);
+      if (fromHist) {
+        let item = HistEvent.fromTransaction(tr, fromHist.selection), from = fromHist.side;
+        let other = from == 0 ? state.undone : state.done;
+        if (item)
+          other = updateBranch(other, other.length, config.minDepth, item);
+        else
+          other = addSelection(other, tr.startState.selection);
+        return new HistoryState(from == 0 ? fromHist.rest : other, from == 0 ? other : fromHist.rest);
+      }
+      let isolate = tr.annotation(isolateHistory);
+      if (isolate == "full" || isolate == "before")
+        state = state.isolate();
+      if (tr.annotation(Transaction.addToHistory) === false)
+        return !tr.changes.empty ? state.addMapping(tr.changes.desc) : state;
+      let event = HistEvent.fromTransaction(tr);
+      let time = tr.annotation(Transaction.time), userEvent = tr.annotation(Transaction.userEvent);
+      if (event)
+        state = state.addChanges(event, time, userEvent, config, tr);
+      else if (tr.selection)
+        state = state.addSelection(tr.startState.selection, time, userEvent, config.newGroupDelay);
+      if (isolate == "full" || isolate == "after")
+        state = state.isolate();
+      return state;
+    },
+    toJSON(value) {
+      return { done: value.done.map((e) => e.toJSON()), undone: value.undone.map((e) => e.toJSON()) };
+    },
+    fromJSON(json) {
+      return new HistoryState(json.done.map(HistEvent.fromJSON), json.undone.map(HistEvent.fromJSON));
+    }
+  });
+  function history(config = {}) {
+    return [
+      historyField_,
+      historyConfig.of(config),
+      EditorView.domEventHandlers({
+        beforeinput(e, view2) {
+          let command = e.inputType == "historyUndo" ? undo : e.inputType == "historyRedo" ? redo : null;
+          if (!command)
+            return false;
+          e.preventDefault();
+          return command(view2);
+        }
+      })
+    ];
+  }
+  function cmd(side, selection) {
+    return function({ state, dispatch }) {
+      if (!selection && state.readOnly)
+        return false;
+      let historyState = state.field(historyField_, false);
+      if (!historyState)
+        return false;
+      let tr = historyState.pop(side, state, selection);
+      if (!tr)
+        return false;
+      dispatch(tr);
+      return true;
+    };
+  }
+  var undo = /* @__PURE__ */ cmd(0, false);
+  var redo = /* @__PURE__ */ cmd(1, false);
+  var HistEvent = class _HistEvent {
+    constructor(changes, effects, mapped, startSelection, selectionsAfter) {
+      this.changes = changes;
+      this.effects = effects;
+      this.mapped = mapped;
+      this.startSelection = startSelection;
+      this.selectionsAfter = selectionsAfter;
+    }
+    setSelAfter(after) {
+      return new _HistEvent(this.changes, this.effects, this.mapped, this.startSelection, after);
+    }
+    toJSON() {
+      var _a2, _b, _c;
+      return {
+        changes: (_a2 = this.changes) === null || _a2 === void 0 ? void 0 : _a2.toJSON(),
+        mapped: (_b = this.mapped) === null || _b === void 0 ? void 0 : _b.toJSON(),
+        startSelection: (_c = this.startSelection) === null || _c === void 0 ? void 0 : _c.toJSON(),
+        selectionsAfter: this.selectionsAfter.map((s) => s.toJSON())
+      };
+    }
+    static fromJSON(json) {
+      return new _HistEvent(json.changes && ChangeSet.fromJSON(json.changes), [], json.mapped && ChangeDesc.fromJSON(json.mapped), json.startSelection && EditorSelection.fromJSON(json.startSelection), json.selectionsAfter.map(EditorSelection.fromJSON));
+    }
+    // This does not check `addToHistory` and such, it assumes the
+    // transaction needs to be converted to an item. Returns null when
+    // there are no changes or effects in the transaction.
+    static fromTransaction(tr, selection) {
+      let effects = none2;
+      for (let invert of tr.startState.facet(invertedEffects)) {
+        let result = invert(tr);
+        if (result.length)
+          effects = effects.concat(result);
+      }
+      if (!effects.length && tr.changes.empty)
+        return null;
+      return new _HistEvent(tr.changes.invert(tr.startState.doc), effects, void 0, selection || tr.startState.selection, none2);
+    }
+    static selection(selections) {
+      return new _HistEvent(void 0, none2, void 0, void 0, selections);
+    }
+  };
+  function updateBranch(branch, to, maxLen, newEvent) {
+    let start = to + 1 > maxLen + 20 ? to - maxLen - 1 : 0;
+    let newBranch = branch.slice(start, to);
+    newBranch.push(newEvent);
+    return newBranch;
+  }
+  function isAdjacent(a, b) {
+    let ranges = [], isAdjacent2 = false;
+    a.iterChangedRanges((f, t2) => ranges.push(f, t2));
+    b.iterChangedRanges((_f, _t, f, t2) => {
+      for (let i2 = 0; i2 < ranges.length; ) {
+        let from = ranges[i2++], to = ranges[i2++];
+        if (t2 >= from && f <= to)
+          isAdjacent2 = true;
+      }
+    });
+    return isAdjacent2;
+  }
+  function eqSelectionShape(a, b) {
+    return a.ranges.length == b.ranges.length && a.ranges.filter((r, i2) => r.empty != b.ranges[i2].empty).length === 0;
+  }
+  function conc(a, b) {
+    return !a.length ? b : !b.length ? a : a.concat(b);
+  }
+  var none2 = [];
+  var MaxSelectionsPerEvent = 200;
+  function addSelection(branch, selection) {
+    if (!branch.length) {
+      return [HistEvent.selection([selection])];
+    } else {
+      let lastEvent = branch[branch.length - 1];
+      let sels = lastEvent.selectionsAfter.slice(Math.max(0, lastEvent.selectionsAfter.length - MaxSelectionsPerEvent));
+      if (sels.length && sels[sels.length - 1].eq(selection))
+        return branch;
+      sels.push(selection);
+      return updateBranch(branch, branch.length - 1, 1e9, lastEvent.setSelAfter(sels));
+    }
+  }
+  function popSelection(branch) {
+    let last = branch[branch.length - 1];
+    let newBranch = branch.slice();
+    newBranch[branch.length - 1] = last.setSelAfter(last.selectionsAfter.slice(0, last.selectionsAfter.length - 1));
+    return newBranch;
+  }
+  function addMappingToBranch(branch, mapping) {
+    if (!branch.length)
+      return branch;
+    let length = branch.length, selections = none2;
+    while (length) {
+      let event = mapEvent(branch[length - 1], mapping, selections);
+      if (event.changes && !event.changes.empty || event.effects.length) {
+        let result = branch.slice(0, length);
+        result[length - 1] = event;
+        return result;
+      } else {
+        mapping = event.mapped;
+        length--;
+        selections = event.selectionsAfter;
+      }
+    }
+    return selections.length ? [HistEvent.selection(selections)] : none2;
+  }
+  function mapEvent(event, mapping, extraSelections) {
+    let selections = conc(event.selectionsAfter.length ? event.selectionsAfter.map((s) => s.map(mapping)) : none2, extraSelections);
+    if (!event.changes)
+      return HistEvent.selection(selections);
+    let mappedChanges = event.changes.map(mapping), before = mapping.mapDesc(event.changes, true);
+    let fullMapping = event.mapped ? event.mapped.composeDesc(before) : before;
+    return new HistEvent(mappedChanges, StateEffect.mapEffects(event.effects, mapping), fullMapping, event.startSelection.map(before), selections);
+  }
+  var joinableUserEvent = /^(input\.type|delete)($|\.)/;
+  var HistoryState = class _HistoryState {
+    constructor(done, undone, prevTime = 0, prevUserEvent = void 0) {
+      this.done = done;
+      this.undone = undone;
+      this.prevTime = prevTime;
+      this.prevUserEvent = prevUserEvent;
+    }
+    isolate() {
+      return this.prevTime ? new _HistoryState(this.done, this.undone) : this;
+    }
+    addChanges(event, time, userEvent, config, tr) {
+      let done = this.done, lastEvent = done[done.length - 1];
+      if (lastEvent && lastEvent.changes && !lastEvent.changes.empty && event.changes && (!userEvent || joinableUserEvent.test(userEvent)) && (!lastEvent.selectionsAfter.length && time - this.prevTime < config.newGroupDelay && config.joinToEvent(tr, isAdjacent(lastEvent.changes, event.changes)) || // For compose (but not compose.start) events, always join with previous event
+      userEvent == "input.type.compose")) {
+        done = updateBranch(done, done.length - 1, config.minDepth, new HistEvent(event.changes.compose(lastEvent.changes), conc(StateEffect.mapEffects(event.effects, lastEvent.changes), lastEvent.effects), lastEvent.mapped, lastEvent.startSelection, none2));
+      } else {
+        done = updateBranch(done, done.length, config.minDepth, event);
+      }
+      return new _HistoryState(done, none2, time, userEvent);
+    }
+    addSelection(selection, time, userEvent, newGroupDelay) {
+      let last = this.done.length ? this.done[this.done.length - 1].selectionsAfter : none2;
+      if (last.length > 0 && time - this.prevTime < newGroupDelay && userEvent == this.prevUserEvent && userEvent && /^select($|\.)/.test(userEvent) && eqSelectionShape(last[last.length - 1], selection))
+        return this;
+      return new _HistoryState(addSelection(this.done, selection), this.undone, time, userEvent);
+    }
+    addMapping(mapping) {
+      return new _HistoryState(addMappingToBranch(this.done, mapping), addMappingToBranch(this.undone, mapping), this.prevTime, this.prevUserEvent);
+    }
+    pop(side, state, onlySelection) {
+      let branch = side == 0 ? this.done : this.undone;
+      if (branch.length == 0)
+        return null;
+      let event = branch[branch.length - 1], selection = event.selectionsAfter[0] || (event.startSelection ? event.startSelection.map(event.changes.invertedDesc, 1) : state.selection);
+      if (onlySelection && event.selectionsAfter.length) {
+        return state.update({
+          selection: event.selectionsAfter[event.selectionsAfter.length - 1],
+          annotations: fromHistory.of({ side, rest: popSelection(branch), selection }),
+          userEvent: side == 0 ? "select.undo" : "select.redo",
+          scrollIntoView: true
+        });
+      } else if (!event.changes) {
+        return null;
+      } else {
+        let rest = branch.length == 1 ? none2 : branch.slice(0, branch.length - 1);
+        if (event.mapped)
+          rest = addMappingToBranch(rest, event.mapped);
+        return state.update({
+          changes: event.changes,
+          selection: event.startSelection,
+          effects: event.effects,
+          annotations: fromHistory.of({ side, rest, selection }),
+          filter: false,
+          userEvent: side == 0 ? "undo" : "redo",
+          scrollIntoView: true
+        });
+      }
+    }
+  };
+  HistoryState.empty = /* @__PURE__ */ new HistoryState(none2, none2);
+  var segmenter = typeof Intl != "undefined" && Intl.Segmenter ? /* @__PURE__ */ new Intl.Segmenter(void 0, { granularity: "word" }) : null;
+
   // node_modules/@codemirror/autocomplete/dist/index.js
   var CompletionContext = class {
     /**
@@ -17407,7 +17667,7 @@
     */
     addNode(block, from, to) {
       if (typeof block == "number")
-        block = new Tree(this.parser.nodeSet.types[block], none2, none2, (to !== null && to !== void 0 ? to : this.prevLineEnd()) - from);
+        block = new Tree(this.parser.nodeSet.types[block], none3, none3, (to !== null && to !== void 0 ? to : this.prevLineEnd()) - from);
       this.block.addChild(block, from - this.block.from);
     }
     /**
@@ -17644,14 +17904,14 @@
     let rest = resolveConfig(spec.slice(1));
     if (!rest || !conf)
       return conf || rest;
-    let conc = (a, b) => (a || none2).concat(b || none2);
+    let conc2 = (a, b) => (a || none3).concat(b || none3);
     let wrapA = conf.wrap, wrapB = rest.wrap;
     return {
-      props: conc(conf.props, rest.props),
-      defineNodes: conc(conf.defineNodes, rest.defineNodes),
-      parseBlock: conc(conf.parseBlock, rest.parseBlock),
-      parseInline: conc(conf.parseInline, rest.parseInline),
-      remove: conc(conf.remove, rest.remove),
+      props: conc2(conf.props, rest.props),
+      defineNodes: conc2(conf.defineNodes, rest.defineNodes),
+      parseBlock: conc2(conf.parseBlock, rest.parseBlock),
+      parseInline: conc2(conf.parseInline, rest.parseInline),
+      remove: conc2(conf.remove, rest.remove),
       wrap: !wrapA ? wrapB : !wrapB ? wrapA : (inner, input, fragments, ranges) => wrapA(wrapB(inner, input, fragments, ranges), input, fragments, ranges)
     };
   }
@@ -17670,7 +17930,7 @@
       top: name2 == "Document"
     });
   }
-  var none2 = [];
+  var none3 = [];
   var Buffer = class {
     constructor(nodeSet) {
       this.nodeSet = nodeSet;
@@ -17700,7 +17960,7 @@
     /**
     @internal
     */
-    constructor(type, from, to, children = none2) {
+    constructor(type, from, to, children = none3) {
       this.type = type;
       this.from = from;
       this.to = to;
@@ -17733,7 +17993,7 @@
       return this.tree.type.id;
     }
     get children() {
-      return none2;
+      return none3;
     }
     writeTo(buf, offset) {
       buf.nodes.push(this.tree);
@@ -23529,7 +23789,9 @@
         insert: formatTableCellEdit(row, columnCount, column, value)
       };
     }
-    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(cell.raw);
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+      cell.raw
+    );
     return {
       from: cell.start,
       to: cell.end,
@@ -23685,7 +23947,10 @@
         }
         update(update) {
           if (update.selectionSet || update.docChanged || update.focusChanged) {
-            this.scheduleIfNeeded(update.view, update.startState.selection.main.head);
+            this.scheduleIfNeeded(
+              update.view,
+              update.startState.selection.main.head
+            );
           }
         }
         scheduleIfNeeded(view2, previousHead = void 0) {
@@ -23702,7 +23967,10 @@
             if (isTableCellFocused(view2, options.tableCellSelector) || isApplyingHostDocument(view2)) {
               return;
             }
-            const refreshedTarget = findSafeSelectionAnchor(view2.state, previousHead);
+            const refreshedTarget = findSafeSelectionAnchor(
+              view2.state,
+              previousHead
+            );
             if (refreshedTarget === void 0) {
               return;
             }
@@ -23871,7 +24139,11 @@
       return null;
     }
     return {
-      anchor: getCellNodeOffset(cell, selection.anchorNode, selection.anchorOffset),
+      anchor: getCellNodeOffset(
+        cell,
+        selection.anchorNode,
+        selection.anchorOffset
+      ),
       head: getCellNodeOffset(cell, selection.focusNode, selection.focusOffset)
     };
   }
@@ -23880,7 +24152,10 @@
     if (!selection) {
       return;
     }
-    const walker = cell.ownerDocument.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+    const walker = cell.ownerDocument.createTreeWalker(
+      cell,
+      NodeFilter.SHOW_TEXT
+    );
     let remainingOffset = Math.max(0, offset);
     let textNode = walker.nextNode();
     while (textNode) {
@@ -23999,7 +24274,10 @@
         firstTop: Math.min(bounds.firstTop, rect.top),
         lastBottom: Math.max(bounds.lastBottom, rect.bottom)
       }),
-      { firstTop: Number.POSITIVE_INFINITY, lastBottom: Number.NEGATIVE_INFINITY }
+      {
+        firstTop: Number.POSITIVE_INFINITY,
+        lastBottom: Number.NEGATIVE_INFINITY
+      }
     );
   }
   function firstUsefulRect(rects) {
@@ -24363,7 +24641,9 @@
         sync() {
           queueMicrotask(() => {
             const ownerDocument = this.view.dom.ownerDocument;
-            const hasTableCellFocus = Boolean(findCell(ownerDocument.activeElement));
+            const hasTableCellFocus = Boolean(
+              findCell(ownerDocument.activeElement)
+            );
             if (!hasTableCellFocus && ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
               this.scheduleRecheck();
               return;
@@ -24458,7 +24738,12 @@
     let hasBodyRow = false;
     const cellLineLengths = [];
     for (const source of rows) {
-      const value = getCellDisplayValue(source, columnCount, column, cellOverride);
+      const value = getCellDisplayValue(
+        source,
+        columnCount,
+        column,
+        cellOverride
+      );
       for (const line of splitDisplayLines(value)) {
         const lineLength = line.length;
         const tokenLength = measureLongestToken(line);
@@ -24557,10 +24842,7 @@
         break;
       }
       const column = columns[bestColumnIndex];
-      column.widthCh = Math.min(
-        limitOf(column),
-        column.widthCh + WIDTH_STEP_CH
-      );
+      column.widthCh = Math.min(limitOf(column), column.widthCh + WIDTH_STEP_CH);
       remainingSteps--;
     }
   }
@@ -24660,7 +24942,12 @@
       if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
         const direction = event.inputType === "historyUndo" ? "undo" : "redo";
         if (!restoreCellEditHistory(cell, direction)) {
-          scheduleNativeHistoryFallback(view2, currentTable, cell, scheduleTableLayout);
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell,
+            scheduleTableLayout
+          );
           return;
         }
         event.preventDefault();
@@ -24714,7 +25001,12 @@
       const historyDirection = getCellEditHistoryDirection(event);
       if (historyDirection) {
         if (!restoreCellEditHistory(cell, historyDirection)) {
-          scheduleNativeHistoryFallback(view2, currentTable, cell, scheduleTableLayout);
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell,
+            scheduleTableLayout
+          );
           return;
         }
         event.preventDefault();
@@ -24994,7 +25286,9 @@
     if (!sourceCell) {
       return formatTableCellSourceEdit(currentRow, columnCount, column, value);
     }
-    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(sourceCell.raw);
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+      sourceCell.raw
+    );
     return {
       from: sourceCell.start,
       to: sourceCell.end,
@@ -25039,8 +25333,8 @@
       }
     }
   }
-  function buildCellCommitValueSteps(history, originalValue, finalValue, fallbackRestoreCaretOffset) {
-    const snapshots = history?.undoStack ?? [];
+  function buildCellCommitValueSteps(history2, originalValue, finalValue, fallbackRestoreCaretOffset) {
+    const snapshots = history2?.undoStack ?? [];
     const steps = [];
     let currentValue = originalValue;
     for (let index = 1; index < snapshots.length; index++) {
@@ -25180,13 +25474,13 @@
         cellEditHistories.delete(oldestKey);
       }
     }
-    const history = {
+    const history2 = {
       undoStack: [],
       redoStack: [],
       lastValue: readCellDisplayValue(cell)
     };
-    cellEditHistories.set(key, history);
-    return history;
+    cellEditHistories.set(key, history2);
+    return history2;
   }
   function getCellEditHistory(cell) {
     return cellEditHistories.get(getCellHistoryKey(cell));
@@ -25200,30 +25494,30 @@
     ].join(":");
   }
   function recordCellEditHistory(cell) {
-    const history = ensureCellEditHistory(cell);
+    const history2 = ensureCellEditHistory(cell);
     const snapshot = captureCellEditSnapshot(cell);
-    const previousSnapshot = history.undoStack[history.undoStack.length - 1];
+    const previousSnapshot = history2.undoStack[history2.undoStack.length - 1];
     if (previousSnapshot && previousSnapshot.value === snapshot.value && previousSnapshot.caretOffset === snapshot.caretOffset) {
       return;
     }
-    history.undoStack.push(snapshot);
-    history.redoStack = [];
-    history.lastValue = snapshot.value;
+    history2.undoStack.push(snapshot);
+    history2.redoStack = [];
+    history2.lastValue = snapshot.value;
   }
   function syncCellEditHistory(cell) {
     ensureCellEditHistory(cell).lastValue = readCellDisplayValue(cell);
   }
   function restoreCellEditHistory(cell, direction) {
-    const history = ensureCellEditHistory(cell);
-    const sourceStack = direction === "undo" ? history.undoStack : history.redoStack;
-    const targetStack = direction === "undo" ? history.redoStack : history.undoStack;
+    const history2 = ensureCellEditHistory(cell);
+    const sourceStack = direction === "undo" ? history2.undoStack : history2.redoStack;
+    const targetStack = direction === "undo" ? history2.redoStack : history2.undoStack;
     const snapshot = sourceStack.pop();
     if (!snapshot) {
       return false;
     }
     targetStack.push(captureCellEditSnapshot(cell));
     applyCellEditSnapshot(cell, snapshot);
-    history.lastValue = snapshot.value;
+    history2.lastValue = snapshot.value;
     return true;
   }
   function computeBeforeInputSnapshot(cell, event) {
@@ -25349,7 +25643,9 @@
       `${columnSizing.dataWidthCh.toFixed(4)}ch`
     );
     wrapper.querySelectorAll(".mlrt-table-sized-col").forEach((col, column) => {
-      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(4)}ch`;
+      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(
+        4
+      )}ch`;
     });
   }
   function applyCurrentColumnSizing(wrapper, table) {
@@ -25662,7 +25958,13 @@
       cell.dataset.rowKind = options.rowKind;
       cell.dataset.rowIndex = String(options.rowIndex);
       cell.dataset.column = String(column);
-      syncCellSourceMetadata(cell, options.table, options.sourceRow, column, value);
+      syncCellSourceMetadata(
+        cell,
+        options.table,
+        options.sourceRow,
+        column,
+        value
+      );
       options.tableRow.append(cell);
     });
   }
@@ -25747,6 +26049,11 @@
   // src/editor/liveEditorExtensions.ts
   function createLiveEditorExtensions(options) {
     return [
+      // CodeMirror owns the undo history so ⌘Z coalesces typing into
+      // word/whitespace groups and stops at the initially loaded document,
+      // matching the stock VS Code editor. Undo/redo are dispatched locally
+      // (see installEditorCommandBridge) rather than delegated to the host.
+      history(),
       createEditorTheme(),
       createTableBoundaryArrowNavigation(),
       highlightActiveLine(),
@@ -25884,7 +26191,14 @@
         clampEditorPosition(undoFocus.restore.anchor, text.length),
         1
       ) : void 0,
-      annotations: allowTableSourceChange.of(true)
+      annotations: [
+        allowTableSourceChange.of(true),
+        // Host-applied changes (external edits and the host-owned table cell
+        // undo path) must not enter the source editor's CodeMirror history, or
+        // the two undo stacks would fight. CodeMirror still maps its stored
+        // history through these changes so a later source undo stays consistent.
+        Transaction.addToHistory.of(false)
+      ]
     });
     applyingFromHost = false;
     if (undoFocus?.restore.kind === "tableCell") {
@@ -25943,7 +26257,7 @@
         }
         event.preventDefault();
         event.stopImmediatePropagation();
-        postEditorCommand(command);
+        dispatchUndoRedo(command);
       },
       true
     );
@@ -25959,10 +26273,17 @@
         }
         event.preventDefault();
         event.stopImmediatePropagation();
-        postEditorCommand(command);
+        dispatchUndoRedo(command);
       },
       true
     );
+  }
+  function dispatchUndoRedo(command) {
+    if (isTableCellFocused2()) {
+      postEditorCommand(command);
+      return;
+    }
+    runHistoryCommand(command);
   }
   function getUndoRedoCommand(event) {
     const key = event.key.toLowerCase();
@@ -26000,6 +26321,18 @@
       );
     }
   }
+  function runHistoryCommand(command) {
+    const applied = command === "undo" ? undo(view) : redo(view);
+    recordDebug("run-history-command", {
+      command,
+      applied,
+      activeElement: summarizeTarget(document.activeElement),
+      editorSelection: summarizeEditorSelection(view)
+    });
+    if (applied && !view.hasFocus) {
+      view.focus();
+    }
+  }
   function postEditorCommand(command) {
     recordDebug("post-editor-command", {
       command,
@@ -26010,6 +26343,10 @@
       type: "editorCommand",
       command
     });
+  }
+  function isTableCellFocused2() {
+    const active = view.dom.ownerDocument.activeElement;
+    return active instanceof Element && active.closest(TABLE_CELL_SELECTOR) !== null;
   }
   function computeMinimalTextChange(currentText, nextText) {
     let from = 0;
@@ -26138,7 +26475,14 @@
     });
   }
   function installCursorDebugListeners(root) {
-    for (const eventName of ["focusin", "focusout", "mousedown", "mouseup", "click", "keydown"]) {
+    for (const eventName of [
+      "focusin",
+      "focusout",
+      "mousedown",
+      "mouseup",
+      "click",
+      "keydown"
+    ]) {
       root.addEventListener(
         eventName,
         (event) => {

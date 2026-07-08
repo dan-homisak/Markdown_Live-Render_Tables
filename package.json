@@ -2,7 +2,7 @@
   "name": "markdown-live-render-tables",
   "displayName": "Markdown Live Editor",
   "description": "A VS Code extension for editing markdown in a live rendered editor.",
-  "version": "0.1.66",
+  "version": "0.1.67",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -82,6 +82,7 @@
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
+    "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/state": "^6.7.0",
     "@codemirror/view": "^6.43.4",

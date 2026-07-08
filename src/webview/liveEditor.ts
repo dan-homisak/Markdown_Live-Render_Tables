@@ -1,4 +1,10 @@
-import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state";
+import { redo, undo } from "@codemirror/commands";
+import {
+  ChangeSet,
+  EditorSelection,
+  EditorState,
+  Transaction,
+} from "@codemirror/state";
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { createLiveEditorExtensions } from "../editor/liveEditorExtensions";
 import {
@@ -218,7 +224,14 @@ function setEditorDocument(text: string, source: string): void {
             1,
           )
         : undefined,
-    annotations: allowTableSourceChange.of(true),
+    annotations: [
+      allowTableSourceChange.of(true),
+      // Host-applied changes (external edits and the host-owned table cell
+      // undo path) must not enter the source editor's CodeMirror history, or
+      // the two undo stacks would fight. CodeMirror still maps its stored
+      // history through these changes so a later source undo stays consistent.
+      Transaction.addToHistory.of(false),
+    ],
   });
   applyingFromHost = false;
 
@@ -286,7 +299,7 @@ function installEditorCommandBridge(root: HTMLElement): void {
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      postEditorCommand(command);
+      dispatchUndoRedo(command);
     },
     true,
   );
@@ -310,10 +323,26 @@ function installEditorCommandBridge(root: HTMLElement): void {
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      postEditorCommand(command);
+      dispatchUndoRedo(command);
     },
     true,
   );
+}
+
+/**
+ * Undo/redo routing:
+ * - While a rendered table cell is focused, keep the fine-grained per-cell
+ *   history that the table editing subsystem owns (delegated to the host).
+ * - Otherwise the source editor owns history through CodeMirror, which
+ *   coalesces typing into word/whitespace groups and stops at the initially
+ *   loaded document — matching the stock VS Code editor.
+ */
+function dispatchUndoRedo(command: EditorCommandMessage["command"]): void {
+  if (isTableCellFocused()) {
+    postEditorCommand(command);
+    return;
+  }
+  runHistoryCommand(command);
 }
 
 function getUndoRedoCommand(
@@ -363,6 +392,25 @@ function pushPendingHostUndoFocus(pendingFocus: PendingHostUndoFocus): void {
   }
 }
 
+/**
+ * Runs undo/redo against CodeMirror's own history (the source editor's single
+ * source of truth). This gives stock-VS Code-style grouping and stops at the
+ * initially loaded document, instead of walking the host document's
+ * per-keystroke undo stack.
+ */
+function runHistoryCommand(command: EditorCommandMessage["command"]): void {
+  const applied = command === "undo" ? undo(view) : redo(view);
+  recordDebug("run-history-command", {
+    command,
+    applied,
+    activeElement: summarizeTarget(document.activeElement),
+    editorSelection: summarizeEditorSelection(view),
+  });
+  if (applied && !view.hasFocus) {
+    view.focus();
+  }
+}
+
 function postEditorCommand(command: EditorCommandMessage["command"]): void {
   recordDebug("post-editor-command", {
     command,
@@ -373,6 +421,13 @@ function postEditorCommand(command: EditorCommandMessage["command"]): void {
     type: "editorCommand",
     command,
   } satisfies EditorCommandMessage);
+}
+
+function isTableCellFocused(): boolean {
+  const active = view.dom.ownerDocument.activeElement;
+  return (
+    active instanceof Element && active.closest(TABLE_CELL_SELECTOR) !== null
+  );
 }
 
 function computeMinimalTextChange(

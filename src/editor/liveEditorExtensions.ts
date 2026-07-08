@@ -1,3 +1,4 @@
+import { history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { Extension } from "@codemirror/state";
 import {
@@ -36,6 +37,11 @@ export function createLiveEditorExtensions(
   options: LiveEditorOptions,
 ): Extension[] {
   return [
+    // CodeMirror owns the undo history so ⌘Z coalesces typing into
+    // word/whitespace groups and stops at the initially loaded document,
+    // matching the stock VS Code editor. Undo/redo are dispatched locally
+    // (see installEditorCommandBridge) rather than delegated to the host.
+    history(),
     createEditorTheme(),
     createTableBoundaryArrowNavigation(),
     highlightActiveLine(),
