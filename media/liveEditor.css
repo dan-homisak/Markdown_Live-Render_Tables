@@ -247,8 +247,11 @@ body,
  *
  * The layer is a zero-size absolutely positioned host; every control inside
  * it is positioned in wrapper coordinates by tableStructureControls.ts, so
- * the controls never participate in (or disturb) table layout. Everything is
- * hidden until the widget is hovered or a flyout menu is open.
+ * the controls never participate in (or disturb) table layout. Visibility is
+ * proximity-driven from tableStructureControls.ts: one pointer-following
+ * indicator per axis (hairline on the border that grows into a three-dot
+ * handle near the edge), persistent accent hairlines for the focused cell,
+ * and thin "+" rails outside the right and bottom edges.
  */
 .mlrt-table-controls-layer {
   position: absolute;
@@ -258,82 +261,125 @@ body,
   width: 0;
   height: 0;
   overflow: visible;
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms ease;
 }
 
-.mlrt-table-widget:hover .mlrt-table-controls-layer,
-.mlrt-table-controls-open .mlrt-table-controls-layer {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.mlrt-table-col-handle,
-.mlrt-table-row-handle {
-  position: absolute;
-  display: flex;
-  box-sizing: border-box;
-  margin: 0;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
-.mlrt-table-col-handle {
-  padding: 4px 0;
-}
-
-.mlrt-table-row-handle {
-  padding: 0 4px 0 3px;
-}
-
-.mlrt-table-handle-bar {
-  flex: 1 1 auto;
-  border-radius: 2px;
-  background: var(--vscode-editorLineNumber-foreground, #858585);
-  opacity: 0.5;
-  transition:
-    opacity 80ms ease,
-    background-color 80ms ease;
-}
-
-.mlrt-table-col-handle:hover .mlrt-table-handle-bar,
-.mlrt-table-row-handle:hover .mlrt-table-handle-bar,
-.mlrt-table-handle-active .mlrt-table-handle-bar {
-  background: var(--vscode-focusBorder, #007fd4);
-  opacity: 1;
-}
-
-.mlrt-table-append-button {
+.mlrt-table-col-indicator,
+.mlrt-table-row-indicator {
   position: absolute;
   display: flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 15px;
-  height: 15px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--vscode-editorLineNumber-foreground, #858585);
+  opacity: 0.6;
+  cursor: pointer;
+  pointer-events: none;
+  transition:
+    top 90ms ease-out,
+    left 90ms ease-out,
+    width 90ms ease-out,
+    height 90ms ease-out,
+    opacity 90ms ease-out,
+    background-color 90ms ease-out,
+    border-color 90ms ease-out;
+}
+
+.mlrt-table-col-indicator[hidden],
+.mlrt-table-row-indicator[hidden],
+.mlrt-table-focus-indicator[hidden],
+.mlrt-table-append-rail[hidden] {
+  display: none;
+}
+
+.mlrt-table-col-indicator[data-state="dots"],
+.mlrt-table-row-indicator[data-state="dots"] {
+  opacity: 1;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  background: var(--vscode-editorWidget-background, #252526);
+  box-shadow: 0 1px 3px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+  pointer-events: auto;
+}
+
+.mlrt-table-col-indicator[data-state="dots"]:hover,
+.mlrt-table-row-indicator[data-state="dots"]:hover,
+.mlrt-table-indicator-active[data-state="dots"] {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.mlrt-table-indicator-dots {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 80ms ease-out;
+}
+
+.mlrt-table-row-indicator .mlrt-table-indicator-dots {
+  flex-direction: column;
+}
+
+.mlrt-table-col-indicator[data-state="dots"] .mlrt-table-indicator-dots,
+.mlrt-table-row-indicator[data-state="dots"] .mlrt-table-indicator-dots {
+  opacity: 1;
+}
+
+.mlrt-table-indicator-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--vscode-icon-foreground, #c5c5c5);
+}
+
+/* Accent hairline pinned to the focused cell's column and row: border-thin,
+   but clearly "active" even while the pointer is elsewhere. */
+.mlrt-table-focus-indicator {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--vscode-focusBorder, #007fd4);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* Thin "+" rails just outside the right and bottom table edges. */
+.mlrt-table-append-rail {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   margin: 0;
   padding: 0;
   border: 1px solid var(--vscode-editorWidget-border, #454545);
   border-radius: 3px;
   background: var(--vscode-editorWidget-background, #252526);
   color: var(--vscode-icon-foreground, #c5c5c5);
-  font-family: var(--vscode-font-family, system-ui, sans-serif);
-  font-size: 12px;
-  line-height: 1;
+  opacity: 0.85;
   cursor: pointer;
 }
 
-.mlrt-table-append-button:hover {
+.mlrt-table-append-rail:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
   color: var(--vscode-foreground, #cccccc);
+  opacity: 1;
+}
+
+.mlrt-table-append-rail-plus {
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: 11px;
+  line-height: 0;
+  pointer-events: none;
 }
 
 .mlrt-table-structure-menu {
   position: absolute;
   z-index: 40;
-  min-width: 150px;
+  min-width: 168px;
   padding: 3px;
   box-sizing: border-box;
   border: 1px solid
@@ -351,7 +397,9 @@ body,
 }
 
 .mlrt-table-structure-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
   width: 100%;
   margin: 0;
   padding: 2px 9px;
@@ -364,6 +412,12 @@ body,
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.mlrt-table-structure-menu-emoji {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .mlrt-table-structure-menu-item:hover:not(:disabled) {

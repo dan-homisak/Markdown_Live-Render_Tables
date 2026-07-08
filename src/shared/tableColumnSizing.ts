@@ -32,7 +32,8 @@ interface RowMeasurementSource {
 const CELL_HORIZONTAL_PADDING_CH = 2;
 const CELL_COMFORT_CH = 1;
 const TOKEN_COMFORT_CH = 0.5;
-const MIN_COLUMN_WIDTH_CH = 3;
+/** Narrowest a column can be, and the width a freshly inserted column gets. */
+export const MIN_COLUMN_WIDTH_CH = 3;
 const READABLE_COLUMN_WIDTH_CH = 12;
 const READABLE_LINE_LENGTH_THRESHOLD_CH = 32;
 const MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;

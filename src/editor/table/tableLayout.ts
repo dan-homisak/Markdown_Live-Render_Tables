@@ -208,7 +208,8 @@ function syncTableScrollbar(
   scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
 }
 
-function measureChWidth(element: HTMLElement): number {
+/** Measured pixel width of one `ch` in the element's font, cached per font. */
+export function measureChWidth(element: HTMLElement): number {
   const styles = getComputedStyle(element);
   const cacheKey = [
     styles.fontFamily,

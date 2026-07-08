@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 // Launch an isolated VS Code Extension Development Host, open TestTable.md in
-// the Markdown Live Editor, and exercise the table structure controls:
-// hover-reveal handles, flyout menus, insert/delete row and column actions,
-// and the append "+" buttons. Saves screenshots of the revealed controls and
-// open menu to qa/ and fails when any behavior or source edit is wrong.
+// the Markdown Live Editor, and exercise the proximity-driven table structure
+// controls: pointer-following border indicators (hairline -> three-dot
+// handle), focused-cell accent hairlines, flyout menus with insert/delete
+// actions, and the thin "+" append rails outside the right/bottom edges.
+// Saves screenshots to qa/ and fails when any behavior or source edit is
+// wrong.
+//
+// Pointer choreography notes:
+// - Pointer moves MUST be trusted CDP Input.dispatchMouseEvent calls; plain
+//   synthetic mousemove events are clobbered whenever Chromium re-synthesizes
+//   hover state from its real pointer position.
+// - Input.setIgnoreInputEvents(true) shields the run from the PHYSICAL mouse
+//   (the spawned window opens under the user's cursor, whose hardware events
+//   would otherwise race the scripted ones). CDP-injected input still works.
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -107,8 +117,8 @@ async function captureWorkbenchScreenshot(client, outputPath) {
 /**
  * Wraps an expression body so it runs against the document that actually
  * contains the live editor (the webview nests it inside an iframe). The body
- * sees `root` (that document) and `win` (its window) and must return a JSON
- * string.
+ * sees `root` (that document) and `win` (its window) plus `rect(el)` which
+ * returns a plain bounding box. The body must return a JSON string.
  */
 function liveExpression(body) {
   return `(() => {
@@ -124,6 +134,10 @@ function liveExpression(body) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const win = root.defaultView;
+    const rect = (el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+    };
     ${body}
   })()`;
 }
@@ -149,7 +163,7 @@ async function evaluateJson(client, expression) {
 }
 
 function expectOk(label, result) {
-  console.log(`${label}:`, result);
+  console.log(`${label}:`, JSON.stringify(result));
   if (!result?.ok) {
     throw new Error(`${label} failed: ${JSON.stringify(result)}`);
   }
@@ -244,7 +258,7 @@ try {
     throw new Error("Live editor webview client was not found.");
   }
 
-  // Record all cell-commit events so any unexpected write can be attributed.
+  // Record all cell-commit events so any stray write can be attributed.
   await evaluateJson(
     live,
     liveExpression(`
@@ -258,17 +272,52 @@ try {
     `),
   );
 
-  // Park the pointer away from the table so :hover cannot leak into the
-  // rest-state assertion (the physical mouse may sit over the new window).
-  await wb.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
-  await live.send("Input.dispatchMouseEvent", {
-    type: "mouseMoved",
-    x: 1,
-    y: 1,
-  });
-  await sleep(300);
+  // NOTE: do not use Input.setIgnoreInputEvents anywhere here. On the
+  // workbench target it also swallows CDP input injected on the webview
+  // target (OOPIF input routes through the root frame's pipeline), and on
+  // the webview target it swallows our own injected pointer moves. Physical
+  // mouse races are handled by moveAndCheck's retry loop instead.
 
-  // 1. Controls exist and stay hidden (and inert) at rest.
+  /**
+   * Moves the webview's trusted pointer to coordinates computed inside the
+   * webview by `coordsBody` (which must return `{ ok, x, y }`).
+   */
+  const movePointerTo = async (coordsBody) => {
+    const target = await evaluateJson(live, liveExpression(coordsBody));
+    if (!target?.ok) {
+      throw new Error(`Pointer target failed: ${JSON.stringify(target)}`);
+    }
+    await live.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: target.x,
+      y: target.y,
+    });
+    await sleep(200);
+    return target;
+  };
+
+  /**
+   * Runs move + check up to three times; layout can shift between computing
+   * coordinates and the move landing (e.g. right after a widget rebuild).
+   */
+  const moveAndCheck = async (label, coordsBody, checkBody) => {
+    let result = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await movePointerTo(coordsBody);
+      result = await evaluateJson(live, liveExpression(checkBody));
+      if (result?.ok) {
+        break;
+      }
+      await sleep(300);
+    }
+    expectOk(label, result);
+    return result;
+  };
+
+  // Park the pointer far from the table so nothing is revealed at rest.
+  await movePointerTo(`return JSON.stringify({ ok: true, x: 2, y: 2 });`);
+
+  // 1. All controls hidden at rest.
   const restState = await evaluateJson(
     live,
     liveExpression(`
@@ -277,104 +326,113 @@ try {
       if (!layer) {
         return JSON.stringify({ ok: false, reason: "missing controls layer" });
       }
-      const style = win.getComputedStyle(layer);
+      const hidden = (selector) => layer.querySelector(selector)?.hidden === true;
+      const detail = {
+        col: hidden(".mlrt-table-col-indicator"),
+        row: hidden(".mlrt-table-row-indicator"),
+        focusCol: hidden(".mlrt-table-focus-indicator.mlrt-table-focus-col-indicator"),
+        appendCol: hidden(".mlrt-table-append-column"),
+        appendRow: hidden(".mlrt-table-append-row"),
+      };
       return JSON.stringify({
-        ok: style.opacity === "0" && style.pointerEvents === "none",
-        opacity: style.opacity,
-        pointerEvents: style.pointerEvents,
-        colHandles: layer.querySelectorAll(".mlrt-table-col-handle").length,
-        rowHandles: layer.querySelectorAll(".mlrt-table-row-handle").length,
-        appendButtons: layer.querySelectorAll(".mlrt-table-append-button").length,
+        ok: detail.col && detail.row && detail.focusCol && detail.appendCol && detail.appendRow,
+        detail,
       });
     `),
   );
-  expectOk("CONTROLS REST STATE", restState);
-  if (
-    restState.colHandles !== 2 ||
-    restState.rowHandles !== 2 ||
-    restState.appendButtons !== 2
-  ) {
-    throw new Error(
-      `Unexpected handle counts for a 2x(1+1) table: ${JSON.stringify(restState)}`,
-    );
-  }
+  expectOk("CONTROLS HIDDEN AT REST", restState);
 
-  // 2. Reveal the controls and verify their geometry against the table.
-  await evaluateJson(
-    live,
-    liveExpression(`
-      root.querySelector(".mlrt-table-widget").classList.add("mlrt-table-controls-open");
-      return JSON.stringify({ ok: true });
-    `),
-  );
-  await sleep(400);
-  const revealState = await evaluateJson(
-    live,
-    liveExpression(`
+  // 2. Hovering mid-cell shows exactly one hairline indicator per axis, ON
+  //    the border, with the minimum-cell width cap.
+  await moveAndCheck(
+    "HAIRLINE INDICATORS ON BORDER",
+    `
       const wrapper = root.querySelector(".mlrt-table-widget");
-      const layer = wrapper.querySelector(".mlrt-table-controls-layer");
-      const style = win.getComputedStyle(layer);
-      const wrapperRect = wrapper.getBoundingClientRect();
-      const tableRect = wrapper.querySelector(".mlrt-table").getBoundingClientRect();
-      const headerCell = wrapper.querySelector("thead .mlrt-table-cell").getBoundingClientRect();
-      const colHandle = layer.querySelector(".mlrt-table-col-handle").getBoundingClientRect();
-      const rowHandle = layer.querySelector(".mlrt-table-row-handle").getBoundingClientRect();
-      const appendCol = layer.querySelector(".mlrt-table-append-column").getBoundingClientRect();
-      const appendRow = layer.querySelector(".mlrt-table-append-row").getBoundingClientRect();
+      const cell = wrapper.querySelector('td.mlrt-table-cell[data-column="1"]');
+      const r = rect(cell);
+      return JSON.stringify({ ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const wrapperRect = rect(wrapper);
+      const tableRect = rect(wrapper.querySelector(".mlrt-table"));
+      const headerCell = wrapper.querySelector('th.mlrt-table-cell[data-column="1"]');
+      const headerRect = rect(headerCell);
+      const bodyRow = wrapper.querySelector("tbody tr");
+      const rowRect = rect(bodyRow);
+      const col = wrapper.querySelector(".mlrt-table-col-indicator");
+      const row = wrapper.querySelector(".mlrt-table-row-indicator");
+      const colRect = rect(col);
+      const rowRectI = rect(row);
       const near = (a, b, tol) => Math.abs(a - b) <= tol;
+      const chWidth = (() => {
+        const probe = root.createElement("span");
+        probe.textContent = "0";
+        probe.style.cssText = "position:absolute;left:-9999px;white-space:pre;";
+        wrapper.querySelector(".mlrt-table").append(probe);
+        const w = probe.getBoundingClientRect().width;
+        probe.remove();
+        return w;
+      })();
+      const expectedWidth = Math.min(Math.max(12, 3 * chWidth), headerRect.width - 4);
       return JSON.stringify({
         ok:
-          style.opacity === "1" &&
-          near(colHandle.left, headerCell.left, 3) &&
-          colHandle.top < tableRect.top &&
-          colHandle.bottom > tableRect.top &&
-          rowHandle.right <= wrapperRect.left + 1 &&
-          rowHandle.left >= tableRect.left - 1 &&
-          appendCol.left > headerCell.right &&
-          appendRow.top < tableRect.bottom &&
-          appendRow.bottom > tableRect.bottom,
-        opacity: style.opacity,
-        colHandle: { left: colHandle.left, top: colHandle.top, width: colHandle.width },
-        headerCellLeft: headerCell.left,
+          !col.hidden &&
+          !row.hidden &&
+          col.dataset.state === "line" &&
+          row.dataset.state === "line" &&
+          colRect.height <= 4 &&
+          rowRectI.width <= 4 &&
+          near(colRect.top + colRect.height / 2, tableRect.top, 2) &&
+          near(rowRectI.left + rowRectI.width / 2, wrapperRect.left, 2) &&
+          near(colRect.width, expectedWidth, 2) &&
+          near((colRect.left + colRect.right) / 2, (headerRect.left + headerRect.right) / 2, 2) &&
+          rowRectI.top >= rowRect.top &&
+          rowRectI.bottom <= rowRect.bottom,
+        colState: col.dataset.state,
+        colHidden: col.hidden,
+        rowState: row.dataset.state,
+        colRect,
+        rowRect: rowRectI,
+        expectedWidth,
         tableTop: tableRect.top,
-        tableBottom: tableRect.bottom,
-        rowHandle: { left: rowHandle.left, right: rowHandle.right, top: rowHandle.top },
-        wrapperLeft: wrapperRect.left,
-        appendCol: { left: appendCol.left, top: appendCol.top },
-        appendRow: { left: appendRow.left, top: appendRow.top },
       });
-    `),
+    `,
   );
-  expectOk("CONTROLS REVEAL GEOMETRY", revealState);
+
+  // 3. Moving near the top border grows the column indicator into the
+  //    three-dot handle.
+  await moveAndCheck(
+    "COLUMN INDICATOR GROWS TO DOTS",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const headerCell = wrapper.querySelector('th.mlrt-table-cell[data-column="0"]');
+      const r = rect(headerCell);
+      return JSON.stringify({ ok: true, x: r.left + r.width / 2, y: r.top + 4 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const tableRect = rect(wrapper.querySelector(".mlrt-table"));
+      const col = wrapper.querySelector(".mlrt-table-col-indicator");
+      const colRect = rect(col);
+      const dots = col.querySelectorAll(".mlrt-table-indicator-dot");
+      return JSON.stringify({
+        ok:
+          !col.hidden &&
+          col.dataset.state === "dots" &&
+          colRect.height >= 10 &&
+          colRect.bottom <= tableRect.top + 2 &&
+          dots.length === 3,
+        state: col.dataset.state,
+        hidden: col.hidden,
+        colRect,
+        tableTop: tableRect.top,
+      });
+    `,
+  );
   await captureWorkbenchScreenshot(
     wb,
     path.join(qaDir, "edh-structure-controls.png"),
-  );
-
-  // 3. Open the first column's flyout menu.
-  const menuState = await evaluateJson(
-    live,
-    liveExpression(`
-      const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.querySelector(".mlrt-table-col-handle").click();
-      const menu = wrapper.querySelector(".mlrt-table-structure-menu");
-      if (!menu) {
-        return JSON.stringify({ ok: false, reason: "menu did not open" });
-      }
-      const items = [...menu.querySelectorAll(".mlrt-table-structure-menu-item")];
-      return JSON.stringify({
-        ok:
-          items.length === 3 &&
-          items.every((item) => !item.disabled) &&
-          wrapper.classList.contains("mlrt-table-controls-open"),
-        labels: items.map((item) => item.textContent),
-      });
-    `),
-  );
-  expectOk("COLUMN MENU", menuState);
-  await captureWorkbenchScreenshot(
-    wb,
-    path.join(qaDir, "edh-structure-menu.png"),
   );
 
   const docLines = () =>
@@ -394,20 +452,44 @@ try {
     throw new Error("Could not find the first table header line.");
   }
 
-  // 4. Insert column right from the menu; the source gains an empty column.
-  const insertColumnClick = await evaluateJson(
+  // 4. Click the dot handle: emoji menu opens with all column actions.
+  const menuState = await evaluateJson(
     live,
     liveExpression(`
-      const items = [...root.querySelectorAll(".mlrt-table-structure-menu-item")];
-      const item = items.find((entry) => entry.textContent === "Insert column right");
-      if (!item) {
-        return JSON.stringify({ ok: false, reason: "item not found" });
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      wrapper.querySelector(".mlrt-table-col-indicator").click();
+      const menu = wrapper.querySelector(".mlrt-table-structure-menu");
+      if (!menu) {
+        return JSON.stringify({ ok: false, reason: "menu did not open" });
       }
-      item.click();
+      const items = [...menu.querySelectorAll(".mlrt-table-structure-menu-item")];
+      return JSON.stringify({
+        ok:
+          items.length === 3 &&
+          items.every((item) => !item.disabled) &&
+          items.map((item) => item.dataset.action).join(",") ===
+            "insert-column-left,insert-column-right,delete-column" &&
+          items.some((item) => item.textContent.includes("🗑")) &&
+          items.some((item) => item.textContent.includes("⬅")),
+        actions: items.map((item) => item.dataset.action),
+        labels: items.map((item) => item.textContent),
+      });
+    `),
+  );
+  expectOk("COLUMN MENU", menuState);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-structure-menu.png"),
+  );
+
+  // 5. Insert column right; source gains an empty column.
+  await evaluateJson(
+    live,
+    liveExpression(`
+      root.querySelector('[data-action="insert-column-right"]').click();
       return JSON.stringify({ ok: true });
     `),
   );
-  expectOk("INSERT COLUMN RIGHT CLICK", insertColumnClick);
   await sleep(400);
   const afterInsertColumn = await docLines();
   expectOk("INSERT COLUMN RIGHT SOURCE", {
@@ -426,21 +508,36 @@ try {
   );
   expectOk("MENU CLOSED AFTER ACTION", menuClosed);
 
-  // 5. Delete the inserted column via its handle menu.
+  // 6. Delete the inserted column via its dot handle.
+  await moveAndCheck(
+    "DELETE COLUMN HANDLE READY",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const headerCell = wrapper.querySelector('th.mlrt-table-cell[data-column="1"]');
+      const r = rect(headerCell);
+      return JSON.stringify({ ok: true, x: r.left + r.width / 2, y: r.top + 4 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const col = wrapper.querySelector(".mlrt-table-col-indicator");
+      return JSON.stringify({
+        ok: !col.hidden && col.dataset.state === "dots",
+        hidden: col.hidden,
+        state: col.dataset.state,
+      });
+    `,
+  );
   const deleteColumnClick = await evaluateJson(
     live,
     liveExpression(`
       const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      const handles = wrapper.querySelectorAll(".mlrt-table-col-handle");
-      handles[1].click();
-      const items = [...wrapper.querySelectorAll(".mlrt-table-structure-menu-item")];
-      const item = items.find((entry) => entry.textContent === "Delete column");
+      wrapper.querySelector(".mlrt-table-col-indicator").click();
+      const item = wrapper.querySelector('[data-action="delete-column"]');
       if (!item) {
         return JSON.stringify({ ok: false, reason: "item not found" });
       }
       item.click();
-      return JSON.stringify({ ok: true, handles: handles.length });
+      return JSON.stringify({ ok: true });
     `),
   );
   expectOk("DELETE COLUMN CLICK", deleteColumnClick);
@@ -454,13 +551,40 @@ try {
     delimiter: afterDeleteColumn.lines[headerLineIndex + 1],
   });
 
-  // 6. Append a row with the bottom-edge "+" button.
+  // 7. Approach from BELOW the table (outside it): the bottom "+" rail
+  //    appears as a thin rectangle outside the bottom border.
+  await moveAndCheck(
+    "BOTTOM APPEND RAIL OUTSIDE ON APPROACH",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const tableRect = rect(wrapper.querySelector(".mlrt-table"));
+      return JSON.stringify({ ok: true, x: (tableRect.left + tableRect.right) / 2, y: tableRect.bottom + 18 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const tableRect = rect(wrapper.querySelector(".mlrt-table"));
+      const rail = wrapper.querySelector(".mlrt-table-append-row");
+      const railRect = rect(rail);
+      return JSON.stringify({
+        ok:
+          !rail.hidden &&
+          railRect.top >= tableRect.bottom &&
+          railRect.height <= 12 &&
+          railRect.width > railRect.height * 4,
+        hidden: rail.hidden,
+        railRect,
+        tableBottom: tableRect.bottom,
+      });
+    `,
+  );
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-structure-append-rails.png"),
+  );
   await evaluateJson(
     live,
     liveExpression(`
-      const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      wrapper.querySelector(".mlrt-table-append-row").click();
+      root.querySelector(".mlrt-table-append-row").click();
       return JSON.stringify({ ok: true });
     `),
   );
@@ -471,21 +595,40 @@ try {
     appended: afterAppendRow.lines[headerLineIndex + 3],
   });
 
-  // 7. Delete the appended row from its row-handle menu.
+  // 8. Delete the appended row from its row dot handle (pointer near the
+  //    left border of that row).
+  await moveAndCheck(
+    "DELETE ROW HANDLE READY",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const rows = wrapper.querySelectorAll("tbody tr");
+      const r = rect(rows[rows.length - 1]);
+      const wrapperRect = rect(wrapper);
+      return JSON.stringify({ ok: true, x: wrapperRect.left + 6, y: r.top + r.height / 2 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const row = wrapper.querySelector(".mlrt-table-row-indicator");
+      return JSON.stringify({
+        ok: !row.hidden && row.dataset.state === "dots",
+        hidden: row.hidden,
+        state: row.dataset.state,
+      });
+    `,
+  );
   const deleteRowClick = await evaluateJson(
     live,
     liveExpression(`
       const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      const handles = wrapper.querySelectorAll(".mlrt-table-row-handle");
-      handles[2].click();
+      wrapper.querySelector(".mlrt-table-row-indicator").click();
       const items = [...wrapper.querySelectorAll(".mlrt-table-structure-menu-item")];
-      const item = items.find((entry) => entry.textContent === "Delete row");
+      const actions = items.map((item) => item.dataset.action);
+      const item = wrapper.querySelector('[data-action="delete-row"]');
       if (!item) {
-        return JSON.stringify({ ok: false, reason: "item not found" });
+        return JSON.stringify({ ok: false, actions });
       }
       item.click();
-      return JSON.stringify({ ok: true, handles: handles.length });
+      return JSON.stringify({ ok: actions.length === 3, actions });
     `),
   );
   expectOk("DELETE ROW CLICK", deleteRowClick);
@@ -498,13 +641,41 @@ try {
     rowAfterTable: afterDeleteRow.lines[headerLineIndex + 3],
   });
 
-  // 8. Append a column with the right-edge "+" button, then delete it.
+  // 9. Approach from the RIGHT of the table (outside it): the right "+"
+  //    rail appears outside the right border; click appends a column, then
+  //    remove it again.
+  await moveAndCheck(
+    "RIGHT APPEND RAIL OUTSIDE ON APPROACH",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const tableRect = rect(wrapper.querySelector(".mlrt-table"));
+      const wrapperRect = rect(wrapper);
+      const dataRight = Math.min(tableRect.right, wrapperRect.right);
+      return JSON.stringify({ ok: true, x: dataRight + 16, y: (tableRect.top + tableRect.bottom) / 2 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const tableRect = rect(wrapper.querySelector(".mlrt-table"));
+      const wrapperRect = rect(wrapper);
+      const dataRight = Math.min(tableRect.right, wrapperRect.right);
+      const rail = wrapper.querySelector(".mlrt-table-append-column");
+      const railRect = rect(rail);
+      return JSON.stringify({
+        ok:
+          !rail.hidden &&
+          railRect.left >= dataRight &&
+          railRect.width <= 12 &&
+          railRect.height > railRect.width * 4,
+        hidden: rail.hidden,
+        railRect,
+        dataRight,
+      });
+    `,
+  );
   await evaluateJson(
     live,
     liveExpression(`
-      const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      wrapper.querySelector(".mlrt-table-append-column").click();
+      root.querySelector(".mlrt-table-append-column").click();
       return JSON.stringify({ ok: true });
     `),
   );
@@ -514,35 +685,72 @@ try {
     ok: afterAppendColumn.lines[headerLineIndex] === "| Key | Value |  |",
     header: afterAppendColumn.lines[headerLineIndex],
   });
+  await moveAndCheck(
+    "APPENDED COLUMN HANDLE READY",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const headerCell = wrapper.querySelector('th.mlrt-table-cell[data-column="2"]');
+      const r = rect(headerCell);
+      return JSON.stringify({ ok: true, x: r.left + r.width / 2, y: r.top + 4 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const col = wrapper.querySelector(".mlrt-table-col-indicator");
+      return JSON.stringify({
+        ok: !col.hidden && col.dataset.state === "dots",
+        hidden: col.hidden,
+        state: col.dataset.state,
+      });
+    `,
+  );
   await evaluateJson(
     live,
     liveExpression(`
       const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      const handles = wrapper.querySelectorAll(".mlrt-table-col-handle");
-      handles[handles.length - 1].click();
-      const items = [...wrapper.querySelectorAll(".mlrt-table-structure-menu-item")];
-      items.find((entry) => entry.textContent === "Delete column").click();
+      wrapper.querySelector(".mlrt-table-col-indicator").click();
+      wrapper.querySelector('[data-action="delete-column"]').click();
       return JSON.stringify({ ok: true });
     `),
   );
   await sleep(400);
 
-  // 9. Header row handle offers only "Insert row below"; use it.
+  // 10. Header row handle: pointer near the left border of the header row;
+  //     menu offers only "Insert row below" (with emoji); use it.
+  await moveAndCheck(
+    "HEADER ROW HANDLE READY",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const headerRow = wrapper.querySelector("thead tr");
+      const r = rect(headerRow);
+      const wrapperRect = rect(wrapper);
+      return JSON.stringify({ ok: true, x: wrapperRect.left + 6, y: r.top + r.height / 2 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const row = wrapper.querySelector(".mlrt-table-row-indicator");
+      return JSON.stringify({
+        ok: !row.hidden && row.dataset.state === "dots",
+        hidden: row.hidden,
+        state: row.dataset.state,
+      });
+    `,
+  );
   const headerRowMenu = await evaluateJson(
     live,
     liveExpression(`
       const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      wrapper.querySelector(".mlrt-table-row-handle").click();
+      wrapper.querySelector(".mlrt-table-row-indicator").click();
       const items = [...wrapper.querySelectorAll(".mlrt-table-structure-menu-item")];
-      const labels = items.map((item) => item.textContent);
-      const item = items.find((entry) => entry.textContent === "Insert row below");
+      const actions = items.map((item) => item.dataset.action);
+      const hasEmoji = items.every((item) =>
+        item.querySelector(".mlrt-table-structure-menu-emoji")?.textContent.length > 0,
+      );
+      const item = wrapper.querySelector('[data-action="insert-row-below"]');
       if (!item) {
-        return JSON.stringify({ ok: false, labels });
+        return JSON.stringify({ ok: false, actions });
       }
       item.click();
-      return JSON.stringify({ ok: labels.length === 1, labels });
+      return JSON.stringify({ ok: actions.length === 1 && hasEmoji, actions });
     `),
   );
   expectOk("HEADER ROW MENU", headerRowMenu);
@@ -555,35 +763,71 @@ try {
     inserted: afterHeaderInsert.lines[headerLineIndex + 2],
   });
 
-  // 10. The new row's first cell is focused for immediate typing.
-  const focusState = await evaluateJson(
-    live,
-    liveExpression(`
+  // 11. The new row's first cell is focused; with the pointer parked away,
+  //     the focused cell's column and row keep accent hairlines.
+  await moveAndCheck(
+    "FOCUS HAIRLINES WHILE POINTER AWAY",
+    `return JSON.stringify({ ok: true, x: 2, y: 2 });`,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
       const active = root.activeElement;
+      const focusCol = wrapper.querySelector(".mlrt-table-focus-col-indicator");
+      const focusRow = wrapper.querySelector(".mlrt-table-focus-row-indicator");
+      const mouseCol = wrapper.querySelector(".mlrt-table-col-indicator");
+      const focusColRect = rect(focusCol);
+      const headerRect = rect(wrapper.querySelector('th.mlrt-table-cell[data-column="0"]'));
+      const near = (a, b, tol) => Math.abs(a - b) <= tol;
       return JSON.stringify({
         ok:
           Boolean(active) &&
           active.classList.contains("mlrt-table-cell") &&
           active.dataset.rowKind === "body" &&
           active.dataset.rowIndex === "0" &&
-          active.dataset.column === "0",
-        rowKind: active?.dataset?.rowKind,
-        rowIndex: active?.dataset?.rowIndex,
-        column: active?.dataset?.column,
+          active.dataset.column === "0" &&
+          !focusCol.hidden &&
+          !focusRow.hidden &&
+          mouseCol.hidden &&
+          focusColRect.height <= 4 &&
+          near((focusColRect.left + focusColRect.right) / 2, (headerRect.left + headerRect.right) / 2, 2),
+        active: active?.dataset ? { rowKind: active.dataset.rowKind, rowIndex: active.dataset.rowIndex, column: active.dataset.column } : null,
+        focusColHidden: focusCol.hidden,
+        focusRowHidden: focusRow.hidden,
+        mouseColHidden: mouseCol.hidden,
+        focusColRect,
       });
-    `),
+    `,
   );
-  expectOk("FOCUS AFTER INSERT", focusState);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-structure-focus.png"),
+  );
 
-  // Clean up the inserted row so the doc ends as it started.
+  // 12. Clean up the inserted row so the doc ends as it started.
+  await moveAndCheck(
+    "CLEANUP ROW HANDLE READY",
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const bodyRow = wrapper.querySelector("tbody tr");
+      const r = rect(bodyRow);
+      const wrapperRect = rect(wrapper);
+      return JSON.stringify({ ok: true, x: wrapperRect.left + 6, y: r.top + r.height / 2 });
+    `,
+    `
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      const row = wrapper.querySelector(".mlrt-table-row-indicator");
+      return JSON.stringify({
+        ok: !row.hidden && row.dataset.state === "dots",
+        hidden: row.hidden,
+        state: row.dataset.state,
+      });
+    `,
+  );
   await evaluateJson(
     live,
     liveExpression(`
       const wrapper = root.querySelector(".mlrt-table-widget");
-      wrapper.classList.add("mlrt-table-controls-open");
-      wrapper.querySelectorAll(".mlrt-table-row-handle")[1].click();
-      const items = [...wrapper.querySelectorAll(".mlrt-table-structure-menu-item")];
-      items.find((entry) => entry.textContent === "Delete row").click();
+      wrapper.querySelector(".mlrt-table-row-indicator").click();
+      wrapper.querySelector('[data-action="delete-row"]').click();
       return JSON.stringify({ ok: true });
     `),
   );

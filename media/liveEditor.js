@@ -25876,13 +25876,16 @@
 
   // src/editor/table/tableStructureControls.ts
   var CONTROLS_OPEN_CLASS = "mlrt-table-controls-open";
-  var HANDLE_ACTIVE_CLASS = "mlrt-table-handle-active";
-  var COLUMN_HANDLE_HEIGHT = 11;
-  var COLUMN_HANDLE_OVERHANG = 6;
-  var ROW_HANDLE_WIDTH = 12;
-  var APPEND_BUTTON_SIZE = 15;
-  var APPEND_BUTTON_GAP = 3;
-  var MIN_VISIBLE_HANDLE_WIDTH = 14;
+  var INDICATOR_ACTIVE_CLASS = "mlrt-table-indicator-active";
+  var HAIRLINE_THICKNESS = 3;
+  var DOT_THICKNESS = 13;
+  var EDGE_GROW_ZONE = 22;
+  var EDGE_APPROACH_ZONE = 26;
+  var APPEND_PROXIMITY = 36;
+  var APPEND_RAIL_THICKNESS = 10;
+  var APPEND_RAIL_GAP = 2;
+  var MIN_INDICATOR_LENGTH = 12;
+  var lastPointerPosition = null;
   function bindTableStructureControls(options) {
     const { wrapper, view: view2, tableScroll, tableElement, table } = options;
     const doc2 = wrapper.ownerDocument;
@@ -25891,6 +25894,10 @@
     layer.contentEditable = "false";
     let menu = null;
     let menuAnchor = null;
+    let pendingFrame = 0;
+    let indicatorColumn = null;
+    let indicatorRow = null;
+    let minRowIndicatorLengthPx = 0;
     const currentTable = () => {
       const widgetTable = getTableWidgetTable(wrapper) ?? table;
       return getParsedTables(view2.state.doc).find(
@@ -25922,11 +25929,12 @@
       }
       menu.remove();
       menu = null;
-      menuAnchor?.classList.remove(HANDLE_ACTIVE_CLASS);
+      menuAnchor?.classList.remove(INDICATOR_ACTIVE_CLASS);
       menuAnchor = null;
       wrapper.classList.remove(CONTROLS_OPEN_CLASS);
       doc2.removeEventListener("pointerdown", onDocumentPointerDown, true);
       doc2.removeEventListener("keydown", onDocumentKeyDown, true);
+      scheduleUpdate();
     };
     const onDocumentPointerDown = (event) => {
       if (menu && event.target instanceof Node && !menu.contains(event.target) && event.target !== menuAnchor && !(menuAnchor?.contains(event.target) ?? false)) {
@@ -25949,8 +25957,16 @@
         item.type = "button";
         item.className = "mlrt-table-structure-menu-item";
         item.setAttribute("role", "menuitem");
-        item.textContent = entry.label;
+        item.dataset.action = entry.action;
         item.disabled = entry.disabled === true;
+        const emoji = doc2.createElement("span");
+        emoji.className = "mlrt-table-structure-menu-emoji";
+        emoji.setAttribute("aria-hidden", "true");
+        emoji.textContent = entry.emoji;
+        const label = doc2.createElement("span");
+        label.className = "mlrt-table-structure-menu-label";
+        label.textContent = entry.label;
+        item.append(emoji, label);
         item.addEventListener("mousedown", preventFocusSteal);
         item.addEventListener("click", (event) => {
           event.preventDefault();
@@ -25960,7 +25976,7 @@
         menu.append(item);
       }
       menuAnchor = anchor;
-      anchor.classList.add(HANDLE_ACTIVE_CLASS);
+      anchor.classList.add(INDICATOR_ACTIVE_CLASS);
       wrapper.classList.add(CONTROLS_OPEN_CLASS);
       wrapper.append(menu);
       positionMenu(anchor);
@@ -25974,39 +25990,47 @@
       const wrapperRect = wrapper.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
       const menuWidth = menu.offsetWidth;
-      const isColumnAnchor = anchor.classList.contains("mlrt-table-col-handle");
+      const isColumnAnchor = anchor.classList.contains(
+        "mlrt-table-col-indicator"
+      );
       let left;
       let top2;
       if (isColumnAnchor) {
         left = anchorRect.left - wrapperRect.left;
-        top2 = anchorRect.bottom - wrapperRect.top + 2;
+        top2 = anchorRect.bottom - wrapperRect.top + 3;
       } else {
-        left = anchorRect.right - wrapperRect.left + 2;
+        left = anchorRect.right - wrapperRect.left + 3;
         top2 = anchorRect.top - wrapperRect.top;
       }
       const maxLeft = wrapperRect.width - menuWidth - 2;
-      menu.style.left = `${Math.max(Math.min(left, maxLeft), -ROW_HANDLE_WIDTH)}px`;
+      menu.style.left = `${Math.max(Math.min(left, maxLeft), -DOT_THICKNESS)}px`;
       menu.style.top = `${top2}px`;
     };
     const openColumnMenu = (anchor, column) => {
       const canDelete = currentTable().columnCount > 1;
       openMenu(anchor, [
         {
+          emoji: "\u2B05\uFE0F",
           label: "Insert column left",
+          action: "insert-column-left",
           apply: () => applyStructureEdit(
             (current) => insertTableColumnEdit(current, column),
             () => ({ rowKind: "header", rowIndex: 0, column })
           )
         },
         {
+          emoji: "\u27A1\uFE0F",
           label: "Insert column right",
+          action: "insert-column-right",
           apply: () => applyStructureEdit(
             (current) => insertTableColumnEdit(current, column + 1),
             () => ({ rowKind: "header", rowIndex: 0, column: column + 1 })
           )
         },
         {
+          emoji: "\u{1F5D1}\uFE0F",
           label: "Delete column",
+          action: "delete-column",
           disabled: !canDelete,
           apply: () => applyStructureEdit(
             (current) => deleteTableColumnEdit(current, column),
@@ -26023,7 +26047,9 @@
       if (rowKind === "header") {
         openMenu(anchor, [
           {
+            emoji: "\u2B07\uFE0F",
             label: "Insert row below",
+            action: "insert-row-below",
             apply: () => applyStructureEdit(
               (current) => insertTableRowEdit(current, 0),
               () => ({ rowKind: "body", rowIndex: 0, column: 0 })
@@ -26034,21 +26060,27 @@
       }
       openMenu(anchor, [
         {
+          emoji: "\u2B06\uFE0F",
           label: "Insert row above",
+          action: "insert-row-above",
           apply: () => applyStructureEdit(
             (current) => insertTableRowEdit(current, rowIndex),
             () => ({ rowKind: "body", rowIndex, column: 0 })
           )
         },
         {
+          emoji: "\u2B07\uFE0F",
           label: "Insert row below",
+          action: "insert-row-below",
           apply: () => applyStructureEdit(
             (current) => insertTableRowEdit(current, rowIndex + 1),
             () => ({ rowKind: "body", rowIndex: rowIndex + 1, column: 0 })
           )
         },
         {
+          emoji: "\u{1F5D1}\uFE0F",
           label: "Delete row",
+          action: "delete-row",
           apply: () => applyStructureEdit(
             (current) => deleteTableRowEdit(current, rowIndex),
             (current) => current.body.length > 1 ? {
@@ -26060,48 +26092,49 @@
         }
       ]);
     };
-    const columnHandles = [];
-    for (let column = 0; column < table.columnCount; column++) {
-      const handle = createHandleButton(doc2, "mlrt-table-col-handle");
-      handle.setAttribute("aria-label", `Column ${column + 1} actions`);
-      handle.title = "Column actions";
-      handle.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (menuAnchor === handle) {
-          closeMenu();
-          return;
-        }
-        openColumnMenu(handle, column);
-      });
-      columnHandles.push(handle);
-      layer.append(handle);
-    }
-    const rowHandles = [];
-    const rowRefs = collectRenderedRows(tableElement);
-    for (const rowRef of rowRefs) {
-      const handle = createHandleButton(doc2, "mlrt-table-row-handle");
-      handle.setAttribute(
-        "aria-label",
-        rowRef.rowKind === "header" ? "Header row actions" : `Row ${rowRef.rowIndex + 1} actions`
-      );
-      handle.title = "Row actions";
-      handle.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (menuAnchor === handle) {
-          closeMenu();
-          return;
-        }
-        openRowMenu(handle, rowRef.rowKind, rowRef.rowIndex);
-      });
-      rowHandles.push(handle);
-      layer.append(handle);
-    }
-    const appendColumnButton = createAppendButton(doc2, "mlrt-table-append-column");
-    appendColumnButton.setAttribute("aria-label", "Add column");
-    appendColumnButton.title = "Add column";
-    appendColumnButton.addEventListener("click", (event) => {
+    const columnIndicator = createIndicatorButton(
+      doc2,
+      "mlrt-table-col-indicator"
+    );
+    columnIndicator.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (indicatorColumn === null) {
+        return;
+      }
+      if (menuAnchor === columnIndicator) {
+        closeMenu();
+        return;
+      }
+      openColumnMenu(columnIndicator, indicatorColumn);
+    });
+    layer.append(columnIndicator);
+    const rowIndicator = createIndicatorButton(doc2, "mlrt-table-row-indicator");
+    rowIndicator.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!indicatorRow) {
+        return;
+      }
+      if (menuAnchor === rowIndicator) {
+        closeMenu();
+        return;
+      }
+      openRowMenu(rowIndicator, indicatorRow.rowKind, indicatorRow.rowIndex);
+    });
+    layer.append(rowIndicator);
+    const focusColumnIndicator = doc2.createElement("div");
+    focusColumnIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-col-indicator";
+    focusColumnIndicator.hidden = true;
+    layer.append(focusColumnIndicator);
+    const focusRowIndicator = doc2.createElement("div");
+    focusRowIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-row-indicator";
+    focusRowIndicator.hidden = true;
+    layer.append(focusRowIndicator);
+    const appendColumnRail = createAppendRail(doc2, "mlrt-table-append-column");
+    appendColumnRail.setAttribute("aria-label", "Add column");
+    appendColumnRail.title = "Add column";
+    appendColumnRail.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       applyStructureEdit(
@@ -26113,11 +26146,11 @@
         })
       );
     });
-    layer.append(appendColumnButton);
-    const appendRowButton = createAppendButton(doc2, "mlrt-table-append-row");
-    appendRowButton.setAttribute("aria-label", "Add row");
-    appendRowButton.title = "Add row";
-    appendRowButton.addEventListener("click", (event) => {
+    layer.append(appendColumnRail);
+    const appendRowRail = createAppendRail(doc2, "mlrt-table-append-row");
+    appendRowRail.setAttribute("aria-label", "Add row");
+    appendRowRail.title = "Add row";
+    appendRowRail.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       applyStructureEdit(
@@ -26129,108 +26162,324 @@
         })
       );
     });
-    layer.append(appendRowButton);
-    const syncControlPositions = () => {
+    layer.append(appendRowRail);
+    const minColumnIndicatorLengthPx = () => Math.max(
+      MIN_INDICATOR_LENGTH,
+      MIN_COLUMN_WIDTH_CH * measureChWidth(tableElement)
+    );
+    const minRowIndicatorLengthPxFor = (cell) => {
+      if (minRowIndicatorLengthPx > 0) {
+        return minRowIndicatorLengthPx;
+      }
+      if (!cell) {
+        return 16;
+      }
+      const styles = getComputedStyle(cell);
+      const lineHeight = Number.parseFloat(styles.lineHeight);
+      const fontSize = Number.parseFloat(styles.fontSize);
+      minRowIndicatorLengthPx = Math.max(
+        MIN_INDICATOR_LENGTH,
+        Number.isFinite(lineHeight) ? lineHeight : Number.isFinite(fontSize) ? fontSize * 1.4 : 16
+      );
+      return minRowIndicatorLengthPx;
+    };
+    const positionColumnIndicator = (element, state, cellRect, wrapperRect, tableRect) => {
+      const visibleLeft = Math.max(cellRect.left, wrapperRect.left);
+      const visibleRight = Math.min(cellRect.right, wrapperRect.right);
+      const visibleWidth = visibleRight - visibleLeft;
+      if (visibleWidth < MIN_INDICATOR_LENGTH) {
+        element.hidden = true;
+        return false;
+      }
+      const width = Math.max(
+        MIN_INDICATOR_LENGTH,
+        Math.min(minColumnIndicatorLengthPx(), visibleWidth - 4)
+      );
+      const left = (visibleLeft + visibleRight) / 2 - width / 2 - wrapperRect.left;
+      const tableTop = tableRect.top - wrapperRect.top;
+      element.hidden = false;
+      element.style.left = `${left}px`;
+      element.style.width = `${width}px`;
+      if (state === "dots") {
+        element.dataset.state = "dots";
+        element.style.top = `${tableTop - (DOT_THICKNESS - 1)}px`;
+        element.style.height = `${DOT_THICKNESS}px`;
+      } else {
+        if (state) {
+          element.dataset.state = "line";
+        }
+        element.style.top = `${tableTop - 1}px`;
+        element.style.height = `${HAIRLINE_THICKNESS}px`;
+      }
+      return true;
+    };
+    const positionRowIndicator = (element, state, rowRect, wrapperRect, referenceCell) => {
+      const height = Math.max(
+        MIN_INDICATOR_LENGTH,
+        Math.min(minRowIndicatorLengthPxFor(referenceCell), rowRect.height - 4)
+      );
+      const top2 = rowRect.top + (rowRect.height - height) / 2 - wrapperRect.top;
+      element.hidden = false;
+      element.style.top = `${top2}px`;
+      element.style.height = `${height}px`;
+      if (state === "dots") {
+        element.dataset.state = "dots";
+        element.style.left = `${-(DOT_THICKNESS - 1)}px`;
+        element.style.width = `${DOT_THICKNESS}px`;
+      } else {
+        if (state) {
+          element.dataset.state = "line";
+        }
+        element.style.left = `-1px`;
+        element.style.width = `${HAIRLINE_THICKNESS}px`;
+      }
+      return true;
+    };
+    const update = () => {
+      pendingFrame = 0;
+      if (menu) {
+        return;
+      }
       const wrapperRect = wrapper.getBoundingClientRect();
       const tableRect = tableElement.getBoundingClientRect();
       if (wrapperRect.width <= 0 || tableRect.height <= 0) {
+        columnIndicator.hidden = true;
+        rowIndicator.hidden = true;
+        focusColumnIndicator.hidden = true;
+        focusRowIndicator.hidden = true;
+        appendColumnRail.hidden = true;
+        appendRowRail.hidden = true;
         return;
       }
-      const tableTop = tableRect.top - wrapperRect.top;
-      const headerCells = tableElement.querySelectorAll(
-        `thead ${TABLE_CELL_SELECTOR}`
-      );
-      columnHandles.forEach((handle, column) => {
-        const cell = headerCells[column];
-        if (!cell) {
-          handle.hidden = true;
-          return;
-        }
-        const cellRect = cell.getBoundingClientRect();
-        const visibleLeft = Math.max(cellRect.left, wrapperRect.left);
-        const visibleRight = Math.min(cellRect.right, wrapperRect.right);
-        const width = visibleRight - visibleLeft;
-        if (width < MIN_VISIBLE_HANDLE_WIDTH) {
-          handle.hidden = true;
-          return;
-        }
-        handle.hidden = false;
-        handle.style.left = `${visibleLeft - wrapperRect.left + 1}px`;
-        handle.style.width = `${width - 2}px`;
-        handle.style.top = `${tableTop - COLUMN_HANDLE_OVERHANG}px`;
-        handle.style.height = `${COLUMN_HANDLE_HEIGHT}px`;
-      });
+      const dataLeftX = wrapperRect.left;
+      const dataRightX = Math.min(tableRect.right, wrapperRect.right);
       const rows = collectRenderedRows(tableElement);
-      rowHandles.forEach((handle, index) => {
-        const row = rows[index];
-        if (!row) {
-          handle.hidden = true;
-          return;
+      const headerCells = Array.from(
+        tableElement.querySelectorAll(
+          `thead ${TABLE_CELL_SELECTOR}`
+        )
+      );
+      const pointer = lastPointerPosition;
+      let mouseColumn = null;
+      let mouseColumnState = "line";
+      let mouseRow = null;
+      let mouseRowState = "line";
+      let showAppendColumn = false;
+      let showAppendRow = false;
+      if (pointer) {
+        const { x, y } = pointer;
+        if (y >= tableRect.top - EDGE_APPROACH_ZONE && y <= tableRect.bottom && x >= dataLeftX && x <= dataRightX) {
+          mouseColumn = findColumnAt(headerCells, x);
+          mouseColumnState = y <= tableRect.top + EDGE_GROW_ZONE ? "dots" : "line";
         }
-        const rowRect = row.element.getBoundingClientRect();
-        handle.hidden = false;
-        handle.style.left = `${-ROW_HANDLE_WIDTH}px`;
-        handle.style.width = `${ROW_HANDLE_WIDTH}px`;
-        handle.style.top = `${rowRect.top - wrapperRect.top + 1}px`;
-        handle.style.height = `${Math.max(8, rowRect.height - 2)}px`;
-      });
-      const dataRight = Math.min(tableRect.right, wrapperRect.right) - wrapperRect.left;
-      appendColumnButton.style.left = `${Math.min(
-        dataRight + APPEND_BUTTON_GAP,
-        wrapperRect.width - APPEND_BUTTON_SIZE
-      )}px`;
-      appendColumnButton.style.top = `${tableTop + Math.max(0, (tableRect.height - APPEND_BUTTON_SIZE) / 2)}px`;
-      appendRowButton.style.left = `${Math.max(0, dataRight / 2 - APPEND_BUTTON_SIZE / 2)}px`;
-      appendRowButton.style.top = `${tableRect.bottom - wrapperRect.top - APPEND_BUTTON_SIZE / 2}px`;
-      if (menu && menuAnchor) {
-        positionMenu(menuAnchor);
+        if (x >= dataLeftX - EDGE_APPROACH_ZONE && x <= dataRightX && y >= tableRect.top && y <= tableRect.bottom) {
+          mouseRow = findRowAt(rows, y);
+          mouseRowState = x <= dataLeftX + EDGE_GROW_ZONE ? "dots" : "line";
+        }
+        showAppendColumn = x >= dataRightX - EDGE_GROW_ZONE && x <= dataRightX + APPEND_PROXIMITY && y >= tableRect.top - 4 && y <= tableRect.bottom + APPEND_PROXIMITY;
+        showAppendRow = y >= tableRect.bottom - EDGE_GROW_ZONE && y <= tableRect.bottom + APPEND_PROXIMITY && x >= dataLeftX - 4 && x <= dataRightX + APPEND_PROXIMITY;
+      }
+      const activeCell = findFocusedCell(doc2, wrapper);
+      let focusColumn = null;
+      let focusRow = null;
+      if (activeCell) {
+        const column = Number(activeCell.dataset.column ?? "");
+        focusColumn = Number.isInteger(column) && column >= 0 && column < headerCells.length ? column : null;
+        focusRow = rows.find(
+          (row) => row.rowKind === activeCell.dataset.rowKind && row.rowIndex === Number(activeCell.dataset.rowIndex ?? "")
+        ) ?? null;
+      }
+      indicatorColumn = mouseColumn;
+      if (mouseColumn !== null && headerCells[mouseColumn]) {
+        const shown = positionColumnIndicator(
+          columnIndicator,
+          mouseColumnState,
+          headerCells[mouseColumn].getBoundingClientRect(),
+          wrapperRect,
+          tableRect
+        );
+        if (!shown) {
+          indicatorColumn = null;
+        }
+        columnIndicator.setAttribute(
+          "aria-label",
+          `Column ${mouseColumn + 1} actions`
+        );
+      } else {
+        columnIndicator.hidden = true;
+      }
+      indicatorRow = mouseRow;
+      if (mouseRow) {
+        positionRowIndicator(
+          rowIndicator,
+          mouseRowState,
+          mouseRow.element.getBoundingClientRect(),
+          wrapperRect,
+          mouseRow.element.querySelector(TABLE_CELL_SELECTOR)
+        );
+        rowIndicator.setAttribute(
+          "aria-label",
+          mouseRow.rowKind === "header" ? "Header row actions" : `Row ${mouseRow.rowIndex + 1} actions`
+        );
+      } else {
+        rowIndicator.hidden = true;
+      }
+      if (focusColumn !== null && focusColumn !== mouseColumn) {
+        positionColumnIndicator(
+          focusColumnIndicator,
+          null,
+          headerCells[focusColumn].getBoundingClientRect(),
+          wrapperRect,
+          tableRect
+        );
+      } else {
+        focusColumnIndicator.hidden = true;
+      }
+      if (focusRow && !(mouseRow && mouseRow.rowKind === focusRow.rowKind && mouseRow.rowIndex === focusRow.rowIndex)) {
+        positionRowIndicator(
+          focusRowIndicator,
+          null,
+          focusRow.element.getBoundingClientRect(),
+          wrapperRect,
+          focusRow.element.querySelector(TABLE_CELL_SELECTOR)
+        );
+      } else {
+        focusRowIndicator.hidden = true;
+      }
+      const tableTop = tableRect.top - wrapperRect.top;
+      const tableBottom = tableRect.bottom - wrapperRect.top;
+      const dataRight = dataRightX - wrapperRect.left;
+      if (showAppendColumn) {
+        appendColumnRail.hidden = false;
+        appendColumnRail.style.left = `${dataRight + APPEND_RAIL_GAP}px`;
+        appendColumnRail.style.top = `${tableTop}px`;
+        appendColumnRail.style.width = `${APPEND_RAIL_THICKNESS}px`;
+        appendColumnRail.style.height = `${tableRect.height}px`;
+      } else {
+        appendColumnRail.hidden = true;
+      }
+      if (showAppendRow) {
+        appendRowRail.hidden = false;
+        appendRowRail.style.left = `0px`;
+        appendRowRail.style.top = `${tableBottom + APPEND_RAIL_GAP}px`;
+        appendRowRail.style.width = `${Math.max(MIN_INDICATOR_LENGTH, dataRight)}px`;
+        appendRowRail.style.height = `${APPEND_RAIL_THICKNESS}px`;
+      } else {
+        appendRowRail.hidden = true;
       }
     };
-    const onWrapperMouseEnter = () => {
-      syncControlPositions();
+    const scheduleUpdate = () => {
+      if (pendingFrame !== 0) {
+        return;
+      }
+      const raf = doc2.defaultView?.requestAnimationFrame;
+      if (!raf) {
+        update();
+        return;
+      }
+      pendingFrame = raf(() => update());
     };
-    wrapper.append(layer);
-    syncControlPositions();
+    const onScrollerMouseMove = (event) => {
+      lastPointerPosition = { x: event.clientX, y: event.clientY };
+      scheduleUpdate();
+    };
+    const onScrollerMouseLeave = () => {
+      lastPointerPosition = null;
+      scheduleUpdate();
+    };
+    const scroller = view2.scrollDOM;
+    scroller.addEventListener("mousemove", onScrollerMouseMove);
+    scroller.addEventListener("mouseleave", onScrollerMouseLeave);
+    wrapper.addEventListener("focusin", scheduleUpdate);
+    wrapper.addEventListener("focusout", scheduleUpdate);
+    tableScroll.addEventListener("scroll", scheduleUpdate);
     const ResizeObserverCtor = doc2.defaultView?.ResizeObserver;
-    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(syncControlPositions) : void 0;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleUpdate) : void 0;
     resizeObserver?.observe(tableElement);
     resizeObserver?.observe(tableScroll);
-    tableScroll.addEventListener("scroll", syncControlPositions);
-    wrapper.addEventListener("mouseenter", onWrapperMouseEnter);
+    wrapper.append(layer);
+    scheduleUpdate();
     return () => {
       closeMenu();
+      if (pendingFrame !== 0) {
+        doc2.defaultView?.cancelAnimationFrame(pendingFrame);
+        pendingFrame = 0;
+      }
+      scroller.removeEventListener("mousemove", onScrollerMouseMove);
+      scroller.removeEventListener("mouseleave", onScrollerMouseLeave);
+      wrapper.removeEventListener("focusin", scheduleUpdate);
+      wrapper.removeEventListener("focusout", scheduleUpdate);
+      tableScroll.removeEventListener("scroll", scheduleUpdate);
       resizeObserver?.disconnect();
-      tableScroll.removeEventListener("scroll", syncControlPositions);
-      wrapper.removeEventListener("mouseenter", onWrapperMouseEnter);
       layer.remove();
     };
   }
-  function createHandleButton(doc2, className) {
-    const handle = doc2.createElement("button");
-    handle.type = "button";
-    handle.tabIndex = -1;
-    handle.className = className;
-    handle.addEventListener("mousedown", preventFocusSteal);
-    const bar = doc2.createElement("span");
-    bar.className = "mlrt-table-handle-bar";
-    handle.append(bar);
-    return handle;
-  }
-  function createAppendButton(doc2, className) {
+  function createIndicatorButton(doc2, className) {
     const button = doc2.createElement("button");
     button.type = "button";
     button.tabIndex = -1;
-    button.className = `mlrt-table-append-button ${className}`;
-    button.textContent = "+";
+    button.className = className;
+    button.dataset.state = "line";
+    button.hidden = true;
     button.addEventListener("mousedown", preventFocusSteal);
+    const dots = doc2.createElement("span");
+    dots.className = "mlrt-table-indicator-dots";
+    dots.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < 3; index++) {
+      const dot2 = doc2.createElement("span");
+      dot2.className = "mlrt-table-indicator-dot";
+      dots.append(dot2);
+    }
+    button.append(dots);
     return button;
+  }
+  function createAppendRail(doc2, className) {
+    const rail = doc2.createElement("button");
+    rail.type = "button";
+    rail.tabIndex = -1;
+    rail.className = `mlrt-table-append-rail ${className}`;
+    rail.hidden = true;
+    rail.addEventListener("mousedown", preventFocusSteal);
+    const plus2 = doc2.createElement("span");
+    plus2.className = "mlrt-table-append-rail-plus";
+    plus2.setAttribute("aria-hidden", "true");
+    plus2.textContent = "+";
+    rail.append(plus2);
+    return rail;
   }
   function preventFocusSteal(event) {
     event.preventDefault();
   }
+  function findColumnAt(headerCells, x) {
+    for (let column = 0; column < headerCells.length; column++) {
+      const rect = headerCells[column].getBoundingClientRect();
+      if (x <= rect.right) {
+        return x >= rect.left - 1 ? column : null;
+      }
+    }
+    return null;
+  }
+  function findRowAt(rows, y) {
+    for (const row of rows) {
+      const rect = row.element.getBoundingClientRect();
+      if (y <= rect.bottom) {
+        return y >= rect.top - 1 ? row : null;
+      }
+    }
+    return null;
+  }
+  function findFocusedCell(doc2, wrapper) {
+    const active = doc2.activeElement;
+    if (active instanceof HTMLElement && wrapper.contains(active) && active.classList.contains("mlrt-table-cell")) {
+      return active;
+    }
+    return null;
+  }
   function collectRenderedRows(tableElement) {
     const rows = [];
-    const headerRow = tableElement.querySelector("thead tr");
+    const headerRow = tableElement.querySelector(
+      "thead tr"
+    );
     if (headerRow) {
       rows.push({ element: headerRow, rowKind: "header", rowIndex: 0 });
     }
