@@ -1,11 +1,17 @@
 import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, ViewUpdate } from "@codemirror/view";
-import { createLiveRuntime } from "../live-v4/LiveRuntime";
+import { createLiveEditorExtensions } from "../editor/liveEditorExtensions";
 import {
-  tableCellCommitSequence,
+  tableCellCommitSequenceAnnotation,
   TableCellCommitRestore,
   TableCellCommitSequence,
-} from "../live-v4/tableCellCommitSequence";
+} from "../editor/tableEditAnnotations";
+import {
+  findCell,
+  setCellCaretOffset,
+  TABLE_CELL_SELECTOR,
+} from "../editor/table/cellSelection";
+import { TABLE_CELL_COMMIT_EVENT } from "../editor/table/tableCellEditing";
 import { allowTableSourceChange } from "../shared/tableSourceProtection";
 
 declare function acquireVsCodeApi(): {
@@ -85,21 +91,22 @@ let nextWebviewChangeId = 1;
 let hostDocumentApplyToken = 0;
 const pendingWebviewEchoes: { id: number; text: string }[] = [];
 const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
+const MAX_PENDING_HOST_UNDO_FOCUS = 200;
 
 try {
-  const runtime = createLiveRuntime(readEditorOptions());
+  const editorExtensions = createLiveEditorExtensions(readEditorOptions());
   const initialDocument = readInitialDocument();
   app.replaceChildren();
-  app.className = "mm-live-v4-shell";
+  app.className = "mlrt-editor-shell";
   const editorMount = document.createElement("div");
-  editorMount.className = "mm-live-v4-editor-mount";
+  editorMount.className = "mlrt-editor-mount";
   app.append(editorMount);
   view = new EditorView({
     parent: editorMount,
     state: EditorState.create({
       doc: initialDocument,
       extensions: [
-        ...runtime.extensions,
+        ...editorExtensions,
         EditorView.updateListener.of((update) => {
           if (update.selectionSet || update.focusChanged || update.docChanged) {
             recordDebug("editor-update", {
@@ -118,7 +125,7 @@ try {
                 commitSequence,
               );
             } else {
-              pendingHostUndoFocusStack.push({
+              pushPendingHostUndoFocus({
                 beforeText: update.startState.doc.toString(),
                 restore: lastTableCellCommit
                   ? { kind: "tableCell", detail: lastTableCellCommit }
@@ -184,20 +191,33 @@ function setEditorDocument(text: string, source: string): void {
   }
 
   const undoFocus = popPendingHostUndoFocus(text);
-  const fallbackSelection = clampEditorPosition(
-    view.state.selection.main.head,
-    text.length,
-  );
+  const hostChange = computeMinimalTextChange(currentText, text);
   markHostDocumentApplyInProgress();
-  blurActiveTableCell();
+
+  // Focus handling during a host apply is deliberately conservative:
+  // - undo returning to a source-editor edit blurs the cell and places the
+  //   cursor at the undone edit,
+  // - undo of a cell edit re-targets the cell via focusTableCellAfterRender
+  //   (an atomic focus transfer; no intermediate blur, so cell chrome and
+  //   the active-line highlight never flash),
+  // - all other host changes leave focus and let CodeMirror map the
+  //   selection through the change. Dispatching a cursor into hidden table
+  //   source would make the selection guard bounce the active line.
+  const returnFocusToEditor = undoFocus?.restore.kind === "editor";
+  if (returnFocusToEditor) {
+    blurActiveTableCell();
+  }
 
   applyingFromHost = true;
-  const hostChange = computeMinimalTextChange(currentText, text);
   view.dispatch({
     changes: hostChange,
-    selection: undoFocus
-      ? selectionForHostUndoRestore(undoFocus.restore, text.length)
-      : EditorSelection.cursor(fallbackSelection, 1),
+    selection:
+      undoFocus?.restore.kind === "editor"
+        ? EditorSelection.cursor(
+            clampEditorPosition(undoFocus.restore.anchor, text.length),
+            1,
+          )
+        : undefined,
     annotations: allowTableSourceChange.of(true),
   });
   applyingFromHost = false;
@@ -234,7 +254,7 @@ function blurActiveTableCell(): void {
     return;
   }
 
-  activeElement.closest<HTMLElement>(".mm-live-v4-table-cell")?.blur();
+  findCell(activeElement)?.blur();
 }
 
 function installEditorCommandBridge(root: HTMLElement): void {
@@ -243,7 +263,7 @@ function installEditorCommandBridge(root: HTMLElement): void {
     "pointerdown",
     (event) => {
       if (event.target instanceof Element) {
-        if (event.target.closest(".mm-live-v4-table-cell")) {
+        if (event.target.closest(TABLE_CELL_SELECTOR)) {
           return;
         }
         if (!root.contains(event.target)) {
@@ -320,7 +340,7 @@ function pushTableCellCommitUndoFocus(
 ): void {
   let currentText = beforeText;
   for (const step of commitSequence.steps) {
-    pendingHostUndoFocusStack.push({
+    pushPendingHostUndoFocus({
       beforeText: currentText,
       restore: {
         kind: "tableCell",
@@ -328,6 +348,16 @@ function pushTableCellCommitUndoFocus(
       },
     });
     currentText = applyDocumentChange(currentText, step.change);
+  }
+}
+
+function pushPendingHostUndoFocus(pendingFocus: PendingHostUndoFocus): void {
+  pendingHostUndoFocusStack.push(pendingFocus);
+  if (pendingHostUndoFocusStack.length > MAX_PENDING_HOST_UNDO_FOCUS) {
+    pendingHostUndoFocusStack.splice(
+      0,
+      pendingHostUndoFocusStack.length - MAX_PENDING_HOST_UNDO_FOCUS,
+    );
   }
 }
 
@@ -432,15 +462,6 @@ function popPendingHostUndoFocus(text: string): PendingHostUndoFocus | null {
   return null;
 }
 
-function selectionForHostUndoRestore(
-  restore: HostUndoRestoreTarget,
-  documentLength: number,
-): ReturnType<typeof EditorSelection.cursor> {
-  const anchor =
-    restore.kind === "tableCell" ? restore.detail.from : restore.anchor;
-  return EditorSelection.cursor(clampEditorPosition(anchor, documentLength), 1);
-}
-
 function clampEditorPosition(position: number, documentLength: number): number {
   return Math.min(documentLength, Math.max(0, position));
 }
@@ -449,7 +470,7 @@ function getTableCellCommitSequence(
   update: ViewUpdate,
 ): TableCellCommitSequence | undefined {
   for (const transaction of update.transactions) {
-    const sequence = transaction.annotation(tableCellCommitSequence);
+    const sequence = transaction.annotation(tableCellCommitSequenceAnnotation);
     if (sequence) {
       return sequence;
     }
@@ -558,7 +579,7 @@ function installCursorDebugListeners(root: HTMLElement): void {
     });
   });
 
-  root.addEventListener("mlrt:table-cell-commit", (event) => {
+  root.addEventListener(TABLE_CELL_COMMIT_EVENT, (event) => {
     if (event instanceof CustomEvent && isTableCellCommitDetail(event.detail)) {
       lastTableCellCommit = event.detail;
     }
@@ -574,7 +595,7 @@ function installCursorDebugListeners(root: HTMLElement): void {
 function focusTableCellAfterRender(detail: TableCellCommitDetail): void {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      const tableSelector = `.mm-live-v4-table-cell[data-table-from="${detail.tableFrom}"]`;
+      const tableSelector = `${TABLE_CELL_SELECTOR}[data-table-from="${detail.tableFrom}"]`;
       const selector = [
         tableSelector,
         `[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
@@ -585,7 +606,7 @@ function focusTableCellAfterRender(detail: TableCellCommitDetail): void {
         document.querySelector<HTMLElement>(selector) ??
         document.querySelector<HTMLElement>(
           [
-            `.mm-live-v4-table-cell[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
+            `${TABLE_CELL_SELECTOR}[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
             `[data-row-index="${detail.rowIndex}"]`,
             `[data-column="${detail.column}"]`,
           ].join(""),
@@ -595,45 +616,9 @@ function focusTableCellAfterRender(detail: TableCellCommitDetail): void {
       }
 
       cell.focus();
-      setElementCaretOffset(cell, detail.restoreCaretOffset);
+      setCellCaretOffset(cell, detail.restoreCaretOffset);
     });
   });
-}
-
-function setElementCaretOffset(element: HTMLElement, offset: number): void {
-  const selection = element.ownerDocument.defaultView?.getSelection();
-  if (!selection) {
-    return;
-  }
-
-  const walker = element.ownerDocument.createTreeWalker(
-    element,
-    NodeFilter.SHOW_TEXT,
-  );
-  let remainingOffset = Math.max(0, offset);
-  let textNode = walker.nextNode();
-  while (textNode) {
-    const length = textNode.textContent?.length ?? 0;
-    if (remainingOffset <= length) {
-      const range = element.ownerDocument.createRange();
-      range.setStart(textNode, remainingOffset);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      range.detach();
-      return;
-    }
-
-    remainingOffset -= length;
-    textNode = walker.nextNode();
-  }
-
-  const range = element.ownerDocument.createRange();
-  range.selectNodeContents(element);
-  range.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(range);
-  range.detach();
 }
 
 function cssEscapeAttribute(value: string): string {

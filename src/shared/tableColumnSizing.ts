@@ -13,7 +13,10 @@ export interface TableColumnSizing {
 export interface TableColumnMeasurement {
   cellLineLengths: number[];
   minWidthCh: number;
+  /** Width the column wants under contention (long headers capped). */
   preferredWidthCh: number;
+  /** Width the column wants when space is plentiful (header caps lifted). */
+  fullPreferredWidthCh: number;
   widthCh: number;
 }
 
@@ -76,6 +79,18 @@ export function measureTableColumnSizing(
     targetWidth >= totalMinWidth
       ? allocateColumnWidths(columns, targetWidth)
       : columns.map((column) => ({ ...column, widthCh: column.minWidthCh }));
+
+  // Second pass: when the contention-capped layout leaves free width, spend
+  // it un-wrapping columns up to their uncapped preference (typically long
+  // header titles), so no line wraps that the viewport could have fit.
+  if (availableDataWidthCh !== undefined && availableDataWidthCh > 0) {
+    distributeWidthSteps(
+      allocatedColumns,
+      availableDataWidthCh,
+      (column) => column.fullPreferredWidthCh,
+    );
+  }
+
   const dataWidthCh = allocatedColumns.reduce(
     (total, column) => total + column.widthCh,
     0,
@@ -154,11 +169,17 @@ function measureColumn(
     minWidthCh,
     MAX_PREFERRED_COLUMN_WIDTH_CH,
   );
+  const fullPreferredWidthCh = clamp(
+    longestLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
+    preferredWidthCh,
+    MAX_PREFERRED_COLUMN_WIDTH_CH,
+  );
 
   return {
     cellLineLengths,
     minWidthCh,
     preferredWidthCh,
+    fullPreferredWidthCh,
     widthCh: preferredWidthCh,
   };
 }
@@ -181,6 +202,12 @@ function getCellDisplayValue(
   return rowToDisplayValues(source.row, columnCount)[column] ?? "";
 }
 
+/**
+ * Greedy width allocation: starting from minimum widths, hand out fixed
+ * steps to whichever column removes the most wrapped lines per step (with
+ * remaining need as tiebreak) until the target width or every column's
+ * contention-capped preference is reached.
+ */
 function allocateColumnWidths(
   columns: TableColumnMeasurement[],
   targetWidthCh: number,
@@ -189,29 +216,40 @@ function allocateColumnWidths(
     ...column,
     widthCh: column.minWidthCh,
   }));
+  distributeWidthSteps(
+    allocated,
+    targetWidthCh,
+    (column) => column.preferredWidthCh,
+  );
+  return allocated;
+}
+
+function distributeWidthSteps(
+  columns: TableColumnMeasurement[],
+  targetWidthCh: number,
+  limitOf: (column: TableColumnMeasurement) => number,
+): void {
   let remainingSteps = Math.round(
     (targetWidthCh -
-      allocated.reduce((total, column) => total + column.widthCh, 0)) /
+      columns.reduce((total, column) => total + column.widthCh, 0)) /
       WIDTH_STEP_CH,
   );
 
   while (remainingSteps > 0) {
     let bestColumnIndex = -1;
     let bestScore = Number.NEGATIVE_INFINITY;
-    for (let index = 0; index < allocated.length; index++) {
-      const column = allocated[index];
-      if (column.widthCh >= column.preferredWidthCh) {
+    for (let index = 0; index < columns.length; index++) {
+      const column = columns[index];
+      const limit = limitOf(column);
+      if (column.widthCh >= limit) {
         continue;
       }
 
-      const nextWidth = Math.min(
-        column.preferredWidthCh,
-        column.widthCh + WIDTH_STEP_CH,
-      );
+      const nextWidth = Math.min(limit, column.widthCh + WIDTH_STEP_CH);
       const wrapReduction =
         measureWrapCost(column, column.widthCh) -
         measureWrapCost(column, nextWidth);
-      const remainingNeed = column.preferredWidthCh - column.widthCh;
+      const remainingNeed = limit - column.widthCh;
       const score = wrapReduction * 1000 + remainingNeed;
       if (score > bestScore) {
         bestScore = score;
@@ -223,15 +261,13 @@ function allocateColumnWidths(
       break;
     }
 
-    const column = allocated[bestColumnIndex];
+    const column = columns[bestColumnIndex];
     column.widthCh = Math.min(
-      column.preferredWidthCh,
+      limitOf(column),
       column.widthCh + WIDTH_STEP_CH,
     );
     remainingSteps--;
   }
-
-  return allocated;
 }
 
 function measureWrapCost(

@@ -551,17 +551,17 @@ function liveMetricsExpression() {
     }).filter(Boolean)];
     for (const root of roots) {
       const scroller = root.querySelector('.cm-scroller');
-      const table = root.querySelector('.mm-live-v4-table');
+      const table = root.querySelector('.mlrt-table');
       if (!scroller || !table) continue;
       const gutter = root.querySelector('.cm-gutters');
       const lineNumber = root.querySelector('.cm-lineNumbers .cm-gutterElement:not([style*="visibility: hidden"])');
       const line = root.querySelector('.cm-line');
       const activeLine = root.querySelector('.cm-activeLine');
       const activeLineGutter = root.querySelector('.cm-activeLineGutter');
-      const tableScroll = root.querySelector('.mm-live-v4-table-scroll');
-      const tableScrollbar = root.querySelector('.mm-live-v4-table-scrollbar');
-      const sourceLine = root.querySelector('.mm-live-v4-table-source-line');
-      const tableCell = root.querySelector('.mm-live-v4-table-cell');
+      const tableScroll = root.querySelector('.mlrt-table-scroll');
+      const tableScrollbar = root.querySelector('.mlrt-table-scrollbar');
+      const sourceLine = root.querySelector('.mlrt-table-source-line');
+      const tableCell = root.querySelector('.mlrt-table-cell');
       const lineStyle = line ? getComputedStyle(line) : null;
       return JSON.stringify({
         url: location.href.slice(0, 80),
@@ -621,13 +621,13 @@ function tableGutterAlignmentExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const scroller = root.querySelector('.cm-scroller');
-    const table = root.querySelector('.mm-live-v4-table');
-    const tableSourceLines = Array.from(root.querySelectorAll('.mm-live-v4-table-source-line'));
+    const table = root.querySelector('.mlrt-table');
+    const tableSourceLines = Array.from(root.querySelectorAll('.mlrt-table-source-line'));
     const nativeRows = Array.from(root.querySelectorAll('.cm-lineNumbers .cm-gutterElement')).map((element) => {
       const rect = element.getBoundingClientRect();
       const style = root.defaultView.getComputedStyle(element);
@@ -656,9 +656,9 @@ function tableGutterAlignmentExpression() {
       .map((row) => Number(row.text))
       .filter((value) => Number.isFinite(value));
     const hiddenNativeRows = nativeRows.filter((row) =>
-      row.className.includes('mm-live-v4-hidden-table-source-gutter')
+      row.className.includes('mlrt-hidden-table-source-gutter')
     );
-    const hiddenContentLines = Array.from(root.querySelectorAll('.cm-line.mm-live-v4-hidden-table-source-line')).map((element) => box(element));
+    const hiddenContentLines = Array.from(root.querySelectorAll('.cm-line.mlrt-hidden-table-source-line')).map((element) => box(element));
     return JSON.stringify({
       ok: true,
       table: box(table),
@@ -686,7 +686,7 @@ function tableGutterStabilityExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
@@ -704,7 +704,7 @@ function tableGutterStabilityExpression() {
       return rect.height > 0.5 && style.visibility !== 'hidden' && style.display !== 'none';
     });
     const nativeRowsInTableBand = () => {
-      const table = root.querySelector('.mm-live-v4-table');
+      const table = root.querySelector('.mlrt-table');
       if (!table) return [];
       const tableRect = table.getBoundingClientRect();
       return visibleNativeRows().filter((element) => {
@@ -713,7 +713,7 @@ function tableGutterStabilityExpression() {
       }).map((element) => element.textContent.trim());
     };
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-    const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const cell = root.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const gutter = root.querySelector('.cm-lineNumbers');
     if (!view || !cell || !gutter) {
       return JSON.stringify({
@@ -807,7 +807,7 @@ function tableRenderStabilityExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
@@ -829,7 +829,7 @@ function tableRenderStabilityExpression() {
         height: rect.height,
       };
     };
-    const readCell = () => root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const readCell = () => root.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const setCaretAtEnd = (targetCell) => {
       const range = root.createRange();
       range.selectNodeContents(targetCell);
@@ -839,9 +839,9 @@ function tableRenderStabilityExpression() {
       selection.addRange(range);
     };
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-    const widget = root.querySelector('.mm-live-v4-table-widget');
-    const table = root.querySelector('.mm-live-v4-table');
-    const tableSourceLine = root.querySelector('.mm-live-v4-table-source-line');
+    const widget = root.querySelector('.mlrt-table-widget');
+    const table = root.querySelector('.mlrt-table');
+    const tableSourceLine = root.querySelector('.mlrt-table-source-line');
     const scroller = root.querySelector('.cm-scroller');
     const activeLine = root.querySelector('.cm-activeLine');
     const activeLineGutter = root.querySelector('.cm-activeLineGutter');
@@ -959,10 +959,10 @@ function tableRenderStabilityExpression() {
       }));
       frames.push({
         phase: 'sync-' + character,
-        sameWidget: root.querySelector('.mm-live-v4-table-widget') === widget,
-        sameTable: root.querySelector('.mm-live-v4-table') === table,
+        sameWidget: root.querySelector('.mlrt-table-widget') === widget,
+        sameTable: root.querySelector('.mlrt-table') === table,
         sameCell: readCell() === cell,
-        sameTableSourceLine: root.querySelector('.mm-live-v4-table-source-line') === tableSourceLine,
+        sameTableSourceLine: root.querySelector('.mlrt-table-source-line') === tableSourceLine,
         activeIsCell: root.activeElement === cell,
         cellTextLength: cell.textContent.length,
         tableBox: box(table),
@@ -974,10 +974,10 @@ function tableRenderStabilityExpression() {
       await waitForRender();
       frames.push({
         phase: 'raf-' + character,
-        sameWidget: root.querySelector('.mm-live-v4-table-widget') === widget,
-        sameTable: root.querySelector('.mm-live-v4-table') === table,
+        sameWidget: root.querySelector('.mlrt-table-widget') === widget,
+        sameTable: root.querySelector('.mlrt-table') === table,
         sameCell: readCell() === cell,
-        sameTableSourceLine: root.querySelector('.mm-live-v4-table-source-line') === tableSourceLine,
+        sameTableSourceLine: root.querySelector('.mlrt-table-source-line') === tableSourceLine,
         activeIsCell: root.activeElement === cell,
         cellTextLength: cell.textContent.length,
         tableBox: box(table),
@@ -1059,7 +1059,7 @@ function tableStaleWebviewAckStabilityExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
@@ -1089,11 +1089,11 @@ function tableStaleWebviewAckStabilityExpression() {
       selection.addRange(range);
     };
     const readShortCell = () => {
-      const cells = Array.from(root.querySelectorAll('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]'));
+      const cells = Array.from(root.querySelectorAll('.mlrt-table-cell[data-row-kind="body"][data-column="1"]'));
       return cells.find((candidate) => candidate.textContent.includes('short cell')) ?? cells[cells.length - 1] ?? null;
     };
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-    const widget = root.querySelector('.mm-live-v4-table-widget');
+    const widget = root.querySelector('.mlrt-table-widget');
     const content = root.querySelector('.cm-content');
     const gutter = root.querySelector('.cm-lineNumbers');
     let cell = readShortCell();
@@ -1178,7 +1178,7 @@ function tableStaleWebviewAckStabilityExpression() {
     contentObserver.disconnect();
     widgetObserver.disconnect();
     gutterObserver.disconnect();
-    const sameWidget = root.querySelector('.mm-live-v4-table-widget') === widget;
+    const sameWidget = root.querySelector('.mlrt-table-widget') === widget;
     const sameCell = readShortCell() === cell;
 
     sendHostDocument(beforeDoc, 999303, 'host');
@@ -1214,7 +1214,7 @@ function tableHostSyncStabilityExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
@@ -1242,10 +1242,10 @@ function tableHostSyncStabilityExpression() {
       selection.removeAllRanges();
       selection.addRange(range);
     };
-    const widget = root.querySelector('.mm-live-v4-table-widget');
+    const widget = root.querySelector('.mlrt-table-widget');
     const content = root.querySelector('.cm-content');
     const gutter = root.querySelector('.cm-lineNumbers');
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!widget || !content || !gutter || !cell || !view) {
       return JSON.stringify({
@@ -1309,8 +1309,8 @@ function tableHostSyncStabilityExpression() {
       ok: true,
       docChangedBeforeSync: afterEditDoc !== beforeDoc,
       restoredDoc: view.state.doc.toString() === beforeDoc,
-      sameWidget: root.querySelector('.mm-live-v4-table-widget') === widget,
-      sameCell: root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]') === cell,
+      sameWidget: root.querySelector('.mlrt-table-widget') === widget,
+      sameCell: root.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]') === cell,
       contentChildListMutations,
       widgetChildListMutations,
       gutterChildListMutations,
@@ -1327,7 +1327,7 @@ function tableSequentialCellToEditorTypingExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
@@ -1355,11 +1355,11 @@ function tableSequentialCellToEditorTypingExpression() {
       selection.removeAllRanges();
       selection.addRange(range);
     };
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const headerKeyCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="header"][data-column="0"]');
-    const keyCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="0"]');
-    const valueCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const headerKeyCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="header"][data-column="0"]');
+    const keyCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="0"]');
+    const valueCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!widget || !headerKeyCell || !keyCell || !valueCell || !view) {
       return JSON.stringify({
@@ -1515,15 +1515,15 @@ function tableResponsiveScrollExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-scroll'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-scroll'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const scroller = root.querySelector('.cm-scroller');
-    const tableScroll = root.querySelector('.mm-live-v4-table-scroll');
-    const tableScrollbar = root.querySelector('.mm-live-v4-table-scrollbar');
-    const sourceLine = root.querySelector('.mm-live-v4-table-source-line');
-    const tableCell = root.querySelector('.mm-live-v4-table-cell');
+    const tableScroll = root.querySelector('.mlrt-table-scroll');
+    const tableScrollbar = root.querySelector('.mlrt-table-scrollbar');
+    const sourceLine = root.querySelector('.mlrt-table-source-line');
+    const tableCell = root.querySelector('.mlrt-table-cell');
     const normalLine = root.querySelector('.cm-line');
     if (!scroller || !tableScroll || !tableScrollbar || !sourceLine || !tableCell || !normalLine) {
       return JSON.stringify({
@@ -1590,8 +1590,8 @@ function setTableResponsiveScrollPreviewExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-scroll'));
-    const tableScroll = root?.querySelector('.mm-live-v4-table-scroll');
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-scroll'));
+    const tableScroll = root?.querySelector('.mlrt-table-scroll');
     if (!root || !tableScroll) {
       return JSON.stringify({ ok: false, reason: 'missing table scroll' });
     }
@@ -1622,8 +1622,8 @@ function restoreTableResponsiveScrollPreviewExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-scroll'));
-    const tableScroll = root?.querySelector('.mm-live-v4-table-scroll');
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-scroll'));
+    const tableScroll = root?.querySelector('.mlrt-table-scroll');
     const previous = root?.defaultView.__MLRT_RESPONSIVE_SCROLL_PREVIEW__;
     if (!root || !tableScroll || !previous) {
       return JSON.stringify({ ok: false, reason: 'missing responsive scroll preview state' });
@@ -1646,7 +1646,7 @@ function tableLiveResizeExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
@@ -1669,11 +1669,11 @@ function tableLiveResizeExpression() {
       }));
       await waitForRender();
     };
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const table = widget?.querySelector('.mm-live-v4-table');
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
-    const columns = Array.from(widget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
+    const table = widget?.querySelector('.mlrt-table');
+    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+    const columns = Array.from(widget?.querySelectorAll('.mlrt-table-sized-col') ?? []);
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!widget || !table || !cell || columns.length < 2 || !view) {
       return JSON.stringify({
@@ -1704,11 +1704,11 @@ function tableLiveResizeExpression() {
       data: 'short cell with enough live typed text to expand the value column immediately',
     }));
     await waitForRender();
-    const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const currentWidget = currentWidgets[currentWidgets.length - 1];
-    const currentTable = currentWidget?.querySelector('.mm-live-v4-table');
-    const currentColumns = Array.from(currentWidget?.querySelectorAll('.mm-live-v4-table-sized-col') ?? []);
-    const currentCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const currentTable = currentWidget?.querySelector('.mlrt-table');
+    const currentColumns = Array.from(currentWidget?.querySelectorAll('.mlrt-table-sized-col') ?? []);
+    const currentCell = currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const currentGutter = root.querySelector('.cm-lineNumbers .cm-gutterElement');
     const afterWidth = currentColumns[1]?.getBoundingClientRect().width ?? 0;
     const afterTableWidth = currentTable?.getBoundingClientRect().width ?? 0;
@@ -1742,14 +1742,14 @@ function tableWhitespaceDeletionExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const readCell = () => {
-      const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
       const widget = widgets[widgets.length - 1];
-      return widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+      return widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     };
     const waitForRender = () => new Promise((done) => {
       root.defaultView.requestAnimationFrame(() => {
@@ -1833,14 +1833,14 @@ function tableCellEditShortcutsExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const queryCell = () => {
-      const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
       const widget = widgets[widgets.length - 1];
-      return widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+      return widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     };
     const waitForRender = () => new Promise((done) => {
       root.defaultView.requestAnimationFrame(() => {
@@ -1999,14 +1999,14 @@ function tableTrustedUndoSetupExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const queryCell = () => {
-      const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
       const widget = widgets[widgets.length - 1];
-      return widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+      return widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     };
     let cell = queryCell();
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
@@ -2076,10 +2076,10 @@ function tableTrustedUndoResultExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
-    const widgets = Array.from(root?.querySelectorAll('.mm-live-v4-table-widget') ?? []);
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const widgets = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? []);
     const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
     const state = root?.defaultView.__MLRT_TRUSTED_UNDO_STATE__;
     if (!root || !cell || !view || !state) {
@@ -2134,13 +2134,13 @@ function tableTrustedDeleteSetupExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
       return JSON.stringify({
@@ -2172,9 +2172,9 @@ function tableTrustedDeleteSetupExpression() {
         root.defaultView.requestAnimationFrame(done);
       });
     });
-    const nextWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const nextWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const nextWidget = nextWidgets[nextWidgets.length - 1];
-    const nextCell = nextWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const nextCell = nextWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     nextCell?.focus();
     return JSON.stringify({
       ok: true,
@@ -2193,14 +2193,14 @@ function tableHostUndoFocusExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
       return;
     }
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
       resolve(JSON.stringify({
@@ -2254,9 +2254,9 @@ function tableHostUndoFocusExpression() {
       root.defaultView.requestAnimationFrame(() => {
         root.defaultView.requestAnimationFrame(() => {
           const active = root.activeElement;
-          const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+          const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
           const currentWidget = currentWidgets[currentWidgets.length - 1];
-          const restoredCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+          const restoredCell = currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
           const restoredSelection = root.defaultView.getSelection();
           const restoredText = restoredCell?.innerText ?? null;
           const caretOffset = (() => {
@@ -2298,14 +2298,14 @@ function tableHostCharacterUndoFocusExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const readCurrentShortCell = () => {
-      const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+      const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
       const currentWidget = currentWidgets[currentWidgets.length - 1];
-      return currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+      return currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     };
     const waitForRender = () => new Promise((done) => {
       root.defaultView.requestAnimationFrame(() => {
@@ -2462,14 +2462,14 @@ function tableThenEditorUndoFocusExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
       return;
     }
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const cell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const cell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     if (!cell || !view) {
       resolve(JSON.stringify({
@@ -2544,9 +2544,9 @@ function tableThenEditorUndoFocusExpression() {
         root.defaultView.requestAnimationFrame(() => {
           root.defaultView.requestAnimationFrame(() => {
             const active = root.activeElement;
-            const currentWidgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+            const currentWidgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
             const currentWidget = currentWidgets[currentWidgets.length - 1];
-            const restoredCell = currentWidget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+            const restoredCell = currentWidget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
             const restoredSelection = root.defaultView.getSelection();
             const restoredText = restoredCell?.innerText ?? null;
             const caretOffset = (() => {
@@ -2593,15 +2593,15 @@ function tableGlobalUndoBridgeExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const keyCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="0"]');
-    const valueCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const keyCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="0"]');
+    const valueCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     if (!view || !keyCell || !valueCell) {
       return JSON.stringify({
         ok: false,
@@ -2730,14 +2730,14 @@ function tableOutsideTypingFocusExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-widget'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
     if (!root) {
       return JSON.stringify({ ok: false, reason: 'missing live root' });
     }
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-    const widgets = Array.from(root.querySelectorAll('.mm-live-v4-table-widget'));
+    const widgets = Array.from(root.querySelectorAll('.mlrt-table-widget'));
     const widget = widgets[widgets.length - 1];
-    const valueCell = widget?.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+    const valueCell = widget?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
     if (!view || !widget || !valueCell) {
       return JSON.stringify({
         ok: false,
@@ -2841,7 +2841,7 @@ function tableCellFocusExpression() {
           return null;
         }
       }).filter(Boolean)];
-      return roots.find((candidate) => candidate.querySelector('.mm-live-v4-table'));
+      return roots.find((candidate) => candidate.querySelector('.mlrt-table'));
     }
 
     return new Promise((resolve) => {
@@ -2850,7 +2850,7 @@ function tableCellFocusExpression() {
         resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
         return;
       }
-      const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
+      const cell = root.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
       const editor = root.querySelector('.cm-editor');
       const activeLine = root.querySelector('.cm-activeLine');
       if (!cell || !editor || !activeLine) {
@@ -2867,7 +2867,7 @@ function tableCellFocusExpression() {
       setTimeout(() => {
         resolve(JSON.stringify({
           activeElementClass: root.activeElement?.className ?? null,
-          editorHasTableFocusClass: editor.classList.contains('mm-live-v4-table-cell-focused'),
+          editorHasTableFocusClass: editor.classList.contains('mlrt-table-cell-focused'),
           activeLineBackground: root.defaultView.getComputedStyle(activeLine).backgroundColor,
         }));
       }, 100);
@@ -2885,7 +2885,7 @@ function tableSourceProtectionExpression() {
           return null;
         }
       }).filter(Boolean)];
-      return roots.find((candidate) => candidate.querySelector('.mm-live-v4-table'));
+      return roots.find((candidate) => candidate.querySelector('.mlrt-table'));
     }
 
     return new Promise((resolve) => {
@@ -2895,7 +2895,7 @@ function tableSourceProtectionExpression() {
         return;
       }
       const view = root.defaultView.__MLRT_EDITOR_VIEW__;
-      const widget = root.querySelector('.mm-live-v4-table-widget');
+      const widget = root.querySelector('.mlrt-table-widget');
       if (!view || !widget) {
         resolve(JSON.stringify({
           ok: false,
@@ -2953,13 +2953,13 @@ function tableEnterExitExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]'));
     if (!root) {
       resolve(JSON.stringify({ ok: false, reason: 'missing table cell' }));
       return;
     }
-    const cell = root.querySelector('.mm-live-v4-table-cell[data-row-kind="body"][data-column="1"]');
-    const wrapper = root.querySelector('.mm-live-v4-table-widget');
+    const cell = root.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+    const wrapper = root.querySelector('.mlrt-table-widget');
     const view = root.defaultView.__MLRT_EDITOR_VIEW__;
     const expectedActiveLineGutterText = (() => {
       if (!wrapper || !view) {
@@ -2994,7 +2994,7 @@ function tableEnterExitExpression() {
       const activeLineGutter = root.querySelector('.cm-activeLineGutter');
       const activeLine = root.querySelector('.cm-activeLine');
       const cursor = root.querySelector('.cm-cursor');
-      const table = root.querySelector('.mm-live-v4-table');
+      const table = root.querySelector('.mlrt-table');
       const box = (element) => {
         if (!element) return null;
         const rect = element.getBoundingClientRect();
@@ -3031,7 +3031,7 @@ function tableArrowNavigationExpression() {
         return null;
       }
     }).filter(Boolean)];
-    const root = roots.find((candidate) => candidate.querySelector('.mm-live-v4-table'));
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table'));
     if (!root) {
       resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
       return;
@@ -3060,7 +3060,7 @@ function tableArrowNavigationExpression() {
     };
     const activeCellDetails = () => {
       const active = root.activeElement;
-      if (!(active instanceof root.defaultView.HTMLElement) || !active.classList.contains('mm-live-v4-table-cell')) {
+      if (!(active instanceof root.defaultView.HTMLElement) || !active.classList.contains('mlrt-table-cell')) {
         return null;
       }
       return {
@@ -3080,8 +3080,8 @@ function tableArrowNavigationExpression() {
       selection.addRange(range);
     };
     const before = view.state.doc.toString();
-    const wrapper = root.querySelector('.mm-live-v4-table-widget');
-    const firstSourceLine = root.querySelector('.mm-live-v4-table-source-line');
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    const firstSourceLine = root.querySelector('.mlrt-table-source-line');
     const tableHeaderLineNumber = Number(firstSourceLine?.getAttribute('data-source-line') ?? 0);
     const beforeTableLineNumber = Math.max(1, tableHeaderLineNumber - 1);
     const afterTablePosition = (() => {
@@ -3487,8 +3487,8 @@ function assertTableOutsideTypingFocus(result) {
   if (
     !result?.ok ||
     !result.afterCellEditDocChanged ||
-    !String(result.activeBeforePointer ?? "").includes("mm-live-v4-table-cell") ||
-    String(result.activeAfterPointer ?? "").includes("mm-live-v4-table-cell") ||
+    !String(result.activeBeforePointer ?? "").includes("mlrt-table-cell") ||
+    String(result.activeAfterPointer ?? "").includes("mlrt-table-cell") ||
     !result.execResult ||
     !result.outsideTextInserted ||
     result.tableContainsOutsideText ||

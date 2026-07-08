@@ -1,8 +1,9 @@
 # Markdown Live Editor
 
-A VS Code extension that ports the Meeting_Minutes live editor into a custom
-markdown editor. V1 is intentionally table-first: markdown tables render as live
-editable grids, while the rest of the document remains editable markdown source.
+A VS Code custom editor for markdown that is intentionally table-first:
+markdown tables render as live editable grids that write every edit back to
+the markdown source, while the rest of the document remains editable markdown
+source with stock VS Code editor styling.
 
 ## Usage
 

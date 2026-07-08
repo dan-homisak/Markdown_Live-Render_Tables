@@ -15,7 +15,6 @@ export interface ParsedRow {
 }
 
 export interface ParsedTable {
-  id: string;
   from: number;
   to: number;
   startLine: number;
@@ -25,6 +24,16 @@ export interface ParsedTable {
   body: ParsedRow[];
   columnCount: number;
   alignments: CellAlignment[];
+}
+
+/**
+ * Minimal read-only document contract satisfied by both plain strings
+ * (via a wrapper) and CodeMirror `Text` instances.
+ */
+export interface ReadonlyDocText {
+  readonly length: number;
+  sliceString(from: number, to: number): string;
+  toString(): string;
 }
 
 export interface TableCellSourceEdit {
@@ -42,6 +51,46 @@ interface SourceLine {
 
 const FENCE_RE = /^\s{0,3}(```|~~~)/;
 const DELIMITER_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+const parsedTablesByDoc = new WeakMap<object, ParsedTable[]>();
+
+/**
+ * Parses markdown tables from an immutable document object, memoized on the
+ * document instance. CodeMirror `Text` values are immutable and shared across
+ * states, so every extension that needs the table list for the same document
+ * version reuses a single parse instead of re-scanning the full source.
+ *
+ * Callers must treat the returned tables as read-only; clone before mutating.
+ */
+export function getParsedTables(doc: ReadonlyDocText): ParsedTable[] {
+  const cached = parsedTablesByDoc.get(doc);
+  if (cached) {
+    return cached;
+  }
+
+  const tables = parseMarkdownTables(doc.toString());
+  parsedTablesByDoc.set(doc, tables);
+  return tables;
+}
+
+/**
+ * Position immediately after the table block, including the trailing newline
+ * when one exists (the start of the next document line).
+ */
+export function positionAfterTable(
+  doc: ReadonlyDocText,
+  table: ParsedTable,
+): number {
+  return table.to < doc.length &&
+    doc.sliceString(table.to, table.to + 1) === "\n"
+    ? table.to + 1
+    : table.to;
+}
+
+/** Position immediately before the table block (end of the previous line). */
+export function positionBeforeTable(table: ParsedTable): number {
+  return Math.max(0, table.from - 1);
+}
 
 export function parseMarkdownTables(source: string): ParsedTable[] {
   const lines = getSourceLines(source);
@@ -110,7 +159,6 @@ export function parseMarkdownTables(source: string): ParsedTable[] {
     const endRow = body.length > 0 ? body[body.length - 1] : delimiter;
 
     tables.push({
-      id: `table-${line.from}-${endRow.to}`,
       from: line.from,
       to: endRow.to,
       startLine: line.index,
@@ -198,7 +246,12 @@ export function formatTableCellSourceEdit(
   };
 }
 
-function getCellPaddingWhitespace(raw: string): {
+/**
+ * Splits the raw cell text into the whitespace that padded it in the source
+ * row, so cell edits can preserve the author's column spacing. A whitespace-only
+ * cell is split down the middle to keep padding on both sides of the new value.
+ */
+export function getCellPaddingWhitespace(raw: string): {
   leadingWhitespace: string;
   trailingWhitespace: string;
 } {

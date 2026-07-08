@@ -5,11 +5,29 @@ setopt NULL_GLOB
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
+# Pause before closing ONLY when the script was launched by double-click
+# (Terminal runs it as the window's initial `login` process, and the window
+# would vanish before the output could be read). Interactive shells, agents,
+# and CI must never block here: gate on the parent process, allow an explicit
+# PAUSE_ON_EXIT=0/1 override, and time the pause out as a last resort.
+launched_by_double_click() {
+  local parent_comm
+  parent_comm="$(ps -o comm= -p "${PPID:-0}" 2>/dev/null || true)"
+  parent_comm="${parent_comm##*/}"
+  [[ "$parent_comm" == "login" ]]
+}
+
 pause_if_clicked() {
+  if [[ "${PAUSE_ON_EXIT:-}" == "0" ]]; then
+    return 0
+  fi
+  if [[ "${PAUSE_ON_EXIT:-}" != "1" ]] && ! launched_by_double_click; then
+    return 0
+  fi
   if [[ -t 0 ]]; then
     echo
-    echo "Press any key to close this window."
-    read -k 1 -s || true
+    echo "Press any key to close this window (auto-continues in 60s)."
+    read -t 60 -k 1 -s || true
   fi
 }
 
@@ -126,7 +144,7 @@ if ! grep -q "table-layout: fixed" "$INSTALLED_DIR/media/liveEditor.css"; then
   echo "Installed webview stylesheet does not contain the fixed table-layout marker."
   exit 1
 fi
-if ! grep -q "mm-live-v4-table-source-line" "$INSTALLED_DIR/media/liveEditor.css"; then
+if ! grep -q "mlrt-table-source-line" "$INSTALLED_DIR/media/liveEditor.css"; then
   echo "Installed webview stylesheet does not contain the table row line-number marker."
   exit 1
 fi

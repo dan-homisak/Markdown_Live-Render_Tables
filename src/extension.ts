@@ -2,7 +2,6 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
-const LEGACY_TABLE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.tableEditor";
 const DEBUG_SETTING = "debug";
 const REOPEN_ACTIVE_EDITOR_WITH_COMMAND = "reopenActiveEditorWith";
 const DEFAULT_EDITOR_ID = "default";
@@ -27,26 +26,10 @@ export function activate(context: vscode.ExtensionContext): void {
         },
       },
     ),
-    vscode.window.registerCustomEditorProvider(
-      LEGACY_TABLE_EDITOR_VIEW_TYPE,
-      provider,
-      {
-        supportsMultipleEditorsPerDocument: false,
-        webviewOptions: {
-          retainContextWhenHidden: true,
-        },
-      },
-    ),
     vscode.commands.registerCommand(
       "markdownLiveRenderTables.toggleEditor",
       async (uri?: vscode.Uri) => {
         await toggleEditor(uri, provider);
-      },
-    ),
-    vscode.commands.registerCommand(
-      "markdownLiveRenderTables.openSourceEditor",
-      async (uri?: vscode.Uri) => {
-        await openSourceEditor(uri, provider);
       },
     ),
     vscode.commands.registerCommand(
@@ -80,11 +63,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel: vscode.WebviewPanel,
   ): void {
     const webview = webviewPanel.webview;
-    const scriptFileName =
-      webviewPanel.viewType === LEGACY_TABLE_EDITOR_VIEW_TYPE
-        ? "tableEditor.js"
-        : "liveEditor.js";
-    const scriptText = this.readMediaText(scriptFileName);
+    const scriptText = this.readMediaText("liveEditor.js");
     const styleText = this.readMediaText("liveEditor.css");
     const documentKey = document.uri.toString();
 
@@ -159,6 +138,9 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           vscode.window.showErrorMessage(
             `Markdown live editor could not apply changes: ${String(error)}`,
           );
+          // Resync the webview with the authoritative document state so an
+          // apply failure cannot leave the two sides silently diverged.
+          postDocument();
         });
     };
 
@@ -183,16 +165,6 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
 
-        if (isOpenSourceMessage(message)) {
-          logDebug(`open source requested for ${document.uri.toString()}`);
-          void openSourceEditor(
-            document.uri,
-            this,
-            vscode.window.tabGroups.activeTabGroup.activeTab,
-          );
-          return;
-        }
-
         if (isDebugMessage(message)) {
           logDebug(`${message.event}: ${JSON.stringify(message.details)}`);
           return;
@@ -214,9 +186,14 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
 
         if (
           isChangeMessage(message) &&
-          message.text !== document.getText() &&
           message.baseRevision <= documentRevision
         ) {
+          if (message.text === document.getText()) {
+            // Nothing to apply, but the webview still expects its optimistic
+            // change to be acknowledged so it can settle its echo queue.
+            postDocument("webviewAck", message.changeId);
+            return;
+          }
           applyFromWebview(message);
         }
       }),
@@ -229,8 +206,6 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       document.getText(),
       document.uri,
     );
-    setTimeout(postDocument, 0);
-    setTimeout(postDocument, 250);
 
     webviewPanel.onDidDispose(() => {
       this.panelsByDocument.delete(documentKey);
@@ -296,10 +271,7 @@ async function toggleEditor(
 }
 
 function isLiveEditorViewType(viewType: string): boolean {
-  return (
-    viewType === LIVE_EDITOR_VIEW_TYPE ||
-    viewType === LEGACY_TABLE_EDITOR_VIEW_TYPE
-  );
+  return viewType === LIVE_EDITOR_VIEW_TYPE;
 }
 
 async function openLiveEditor(
@@ -432,10 +404,6 @@ interface EditorCommandMessage {
   command: "undo" | "redo";
 }
 
-interface OpenSourceMessage {
-  type: "openSource";
-}
-
 interface HostSetDocumentMessage {
   type: "setDocument";
   text: string;
@@ -488,10 +456,6 @@ function isDocumentChange(change: unknown): change is DocumentChange {
     to >= from &&
     typeof change.text === "string"
   );
-}
-
-function isOpenSourceMessage(message: unknown): message is OpenSourceMessage {
-  return isMessageRecord(message) && message.type === "openSource";
 }
 
 function isDebugMessage(message: unknown): message is DebugMessage {
@@ -645,9 +609,19 @@ function getEditorMetricsCss(documentUri: vscode.Uri): string {
   ].join("\n");
 }
 
-function getEditorOptions(_documentUri: vscode.Uri): { lineWrapping: boolean } {
+/**
+ * Line wrapping in the live editor follows the effective `editor.wordWrap`
+ * for markdown files (VS Code defaults markdown to "on"), so the webview
+ * matches what the stock editor would do for the same document.
+ */
+function getEditorOptions(documentUri: vscode.Uri): { lineWrapping: boolean } {
+  const editorConfig = vscode.workspace.getConfiguration("editor", {
+    uri: documentUri,
+    languageId: "markdown",
+  });
+  const wordWrap = editorConfig.get<string>("wordWrap", "on");
   return {
-    lineWrapping: true,
+    lineWrapping: wordWrap !== "off",
   };
 }
 

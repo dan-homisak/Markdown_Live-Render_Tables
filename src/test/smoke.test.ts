@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { createTableFirstParser } from "../live-v4/parser/TableFirstParser";
 import { measureTableColumnSizing } from "../shared/tableColumnSizing";
 import {
   formatMarkdownCell,
   formatMarkdownRow,
   formatTableCellEdit,
   formatTableCellSourceEdit,
+  getParsedTables,
   markdownCellToDisplayText,
   parseMarkdownTables,
+  positionAfterTable,
+  positionBeforeTable,
   rowToDisplayValues,
 } from "../shared/tableModel";
 
@@ -128,15 +130,30 @@ const fencedTables = parseMarkdownTables(fenced);
 assert.equal(fencedTables.length, 1);
 assert.deepEqual(rowToDisplayValues(fencedTables[0].body[0], 2), ["yes", "ok"]);
 
-const parser = createTableFirstParser();
-const model = parser.parse(standard);
-assert.equal(model.meta.dialect, "markdown-live-v4");
-assert.equal(model.meta.parser, "table-first");
-assert.equal(model.blocks.length, 1);
-assert.equal(model.blocks[0].type, "table");
-assert.equal(model.blocks[0].from, standard.indexOf("| Name |"));
-assert.equal(model.blocks[0].lineFrom, 3);
-assert.equal(model.blocks[0].lineTo, 6);
+// Memoized parse: same immutable document object => same parse result
+// instance; equal text in a different object => fresh parse.
+const memoDoc = {
+  length: standard.length,
+  sliceString: (from: number, to: number) => standard.slice(from, to),
+  toString: () => standard,
+};
+assert.equal(getParsedTables(memoDoc), getParsedTables(memoDoc));
+assert.notEqual(getParsedTables(memoDoc), getParsedTables({ ...memoDoc }));
+assert.equal(getParsedTables(memoDoc).length, 1);
+assert.equal(
+  getParsedTables(memoDoc)[0].from,
+  standard.indexOf("| Name |"),
+);
+assert.equal(getParsedTables(memoDoc)[0].startLine, 2);
+assert.equal(getParsedTables(memoDoc)[0].endLine, 5);
+
+// Position helpers used for cursor placement around rendered tables.
+const positionedTable = getParsedTables(memoDoc)[0];
+assert.equal(
+  positionAfterTable(memoDoc, positionedTable),
+  positionedTable.to + 1,
+);
+assert.equal(positionBeforeTable(positionedTable), positionedTable.from - 1);
 
 const compactSizing = measureTableColumnSizing(
   parseMarkdownTables("| # | Value |\n| --- | --- |\n| 10 | B |")[0],
@@ -299,6 +316,31 @@ assert.ok(
   `expected body content column to receive width priority over long header-only column, got ${headerPrioritySizing.columns.map((column) => column.preferredWidthCh).join(", ")}`,
 );
 
+const spaciousHeaderText =
+  "Extremely Long Header Title That Should Fit When Space Allows";
+const spaciousHeaderSizing = measureTableColumnSizing(
+  parseMarkdownTables(
+    [
+      `| ${spaciousHeaderText} | Notes |`,
+      "| --- | --- |",
+      "| A | short |",
+    ].join("\n"),
+  )[0],
+  160,
+);
+assert.ok(
+  spaciousHeaderSizing.columns[0].widthCh >= spaciousHeaderText.length + 2,
+  `expected abundant width to un-wrap the long header title, got ${spaciousHeaderSizing.columns[0].widthCh}ch for ${spaciousHeaderText.length}ch of text`,
+);
+assert.ok(
+  spaciousHeaderSizing.columns[0].preferredWidthCh <= 27,
+  `expected the contention-capped preference to stay body-driven, got ${spaciousHeaderSizing.columns[0].preferredWidthCh}ch`,
+);
+assert.ok(
+  spaciousHeaderSizing.dataWidthCh <= 160,
+  `expected the expanded table to stay within available width, got ${spaciousHeaderSizing.dataWidthCh}ch`,
+);
+
 const longTokenSizing = measureTableColumnSizing(
   parseMarkdownTables(
     [
@@ -336,12 +378,16 @@ const liveEditorSource = fs.readFileSync(
   path.join(process.cwd(), "src", "webview", "liveEditor.ts"),
   "utf8",
 );
-const liveRuntimeSource = fs.readFileSync(
-  path.join(process.cwd(), "src", "live-v4", "LiveRuntime.ts"),
+const tableDecorationsSource = fs.readFileSync(
+  path.join(process.cwd(), "src", "editor", "tableDecorations.ts"),
+  "utf8",
+);
+const geometrySyncSource = fs.readFileSync(
+  path.join(process.cwd(), "src", "editor", "editorGeometrySync.ts"),
   "utf8",
 );
 const tableWidgetSource = fs.readFileSync(
-  path.join(process.cwd(), "src", "live-v4", "render", "TableWidget.ts"),
+  path.join(process.cwd(), "src", "editor", "table", "TableWidget.ts"),
   "utf8",
 );
 
@@ -350,10 +396,10 @@ assert.equal(
   "markdownLiveRenderTables.liveEditor",
 );
 assert.equal(packageJson.contributes?.customEditors?.[0]?.priority, "option");
-assert.ok(
-  packageJson.contributes?.customEditors?.some(
-    (editor) => editor.viewType === "markdownLiveRenderTables.tableEditor",
-  ),
+assert.equal(
+  packageJson.contributes?.customEditors?.length,
+  1,
+  "expected the legacy table editor registration to stay removed",
 );
 assert.ok(
   packageJson.contributes?.commands?.some(
@@ -391,13 +437,13 @@ assert.doesNotMatch(
   liveEditorSource,
   /toggleMode|toggleRenderedMode|renderedMode|renderModeCompartment/,
 );
-assert.match(liveRuntimeSource, /lineNumberMarkers/);
-assert.match(liveRuntimeSource, /hiddenLineNumberMarker/);
-assert.match(liveRuntimeSource, /ResizeObserver/);
+assert.match(tableDecorationsSource, /lineNumberMarkers/);
+assert.match(tableDecorationsSource, /hiddenLineNumberMarker/);
+assert.match(geometrySyncSource, /ResizeObserver/);
 assert.match(tableWidgetSource, /dataset\.sourceLine/);
 assert.match(tableWidgetSource, /measureTableColumnSizing/);
 assert.doesNotMatch(tableWidgetSource, /appendLineNumberCell/);
-assert.doesNotMatch(liveRuntimeSource, /class TableRowLineNumberMarker/);
-assert.doesNotMatch(liveRuntimeSource, /lineNumberWidgetMarker/);
+assert.doesNotMatch(geometrySyncSource, /class TableRowLineNumberMarker/);
+assert.doesNotMatch(geometrySyncSource, /lineNumberWidgetMarker/);
 
 console.log("Markdown live editor smoke tests passed.");

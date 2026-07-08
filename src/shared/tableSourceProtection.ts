@@ -7,7 +7,12 @@ import {
   Transaction,
 } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
-import { parseMarkdownTables, ParsedTable } from "./tableModel";
+import {
+  getParsedTables,
+  ParsedTable,
+  positionAfterTable,
+  positionBeforeTable,
+} from "./tableModel";
 
 export const allowTableSourceChange = Annotation.define<boolean>();
 
@@ -25,7 +30,7 @@ export function createTableSourceChangeFilter(): Extension {
       return true;
     }
 
-    const tables = parseMarkdownTables(transaction.startState.doc.toString());
+    const tables = getParsedTables(transaction.startState.doc);
     if (
       tables.length === 0 ||
       !selectionTouchesTableSource(
@@ -75,7 +80,8 @@ export function createTableSourceSelectionGuard(
       ): void {
         if (
           this.scheduled ||
-          isTableCellFocused(view, options.tableCellSelector)
+          isTableCellFocused(view, options.tableCellSelector) ||
+          isApplyingHostDocument(view)
         ) {
           return;
         }
@@ -88,7 +94,10 @@ export function createTableSourceSelectionGuard(
         this.scheduled = true;
         queueMicrotask(() => {
           this.scheduled = false;
-          if (isTableCellFocused(view, options.tableCellSelector)) {
+          if (
+            isTableCellFocused(view, options.tableCellSelector) ||
+            isApplyingHostDocument(view)
+          ) {
             return;
           }
 
@@ -125,7 +134,7 @@ function findSafeSelectionAnchor(
   state: EditorState,
   previousHead: number | undefined,
 ): number | undefined {
-  const tables = parseMarkdownTables(state.doc.toString());
+  const tables = getParsedTables(state.doc);
   const range = state.selection.main;
   const table = tables.find((candidate) =>
     rangeTouchesTableSource(state, range, candidate),
@@ -178,8 +187,8 @@ function resolveOutsideTableSource(
   position: number,
   previousHead: number | undefined,
 ): number {
-  const before = getPositionBeforeTable(table);
-  const after = getPositionAfterTable(state, table);
+  const before = positionBeforeTable(table);
+  const after = positionAfterTable(state.doc, table);
   const hasBefore = before < table.from;
   const hasAfter = after >= table.to && after <= state.doc.length;
 
@@ -207,25 +216,11 @@ function resolveOutsideTableSource(
   return Math.min(state.doc.length, Math.max(0, table.to));
 }
 
-function getPositionBeforeTable(table: ParsedTable): number {
-  return Math.max(0, table.from - 1);
-}
-
-function getPositionAfterTable(
-  state: EditorState,
-  table: ParsedTable,
-): number {
-  return table.to < state.doc.length &&
-    state.doc.sliceString(table.to, table.to + 1) === "\n"
-    ? table.to + 1
-    : table.to;
-}
-
 function getTableReplacementTo(
   state: EditorState,
   table: ParsedTable,
 ): number {
-  return getPositionAfterTable(state, table);
+  return positionAfterTable(state.doc, table);
 }
 
 function isTableCellFocused(
@@ -236,5 +231,17 @@ function isTableCellFocused(
   return (
     activeElement instanceof HTMLElement &&
     Boolean(activeElement.closest(tableCellSelector))
+  );
+}
+
+/**
+ * A host document apply blurs and refocuses table cells across a couple of
+ * animation frames. Guarding mid-apply would fight the pending focus restore
+ * and visibly bounce the cursor, so corrections wait until the next update.
+ */
+function isApplyingHostDocument(view: EditorView): boolean {
+  return (
+    view.dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument ===
+    "true"
   );
 }

@@ -23417,6 +23417,22 @@
   // src/shared/tableModel.ts
   var FENCE_RE = /^\s{0,3}(```|~~~)/;
   var DELIMITER_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+  var parsedTablesByDoc = /* @__PURE__ */ new WeakMap();
+  function getParsedTables(doc2) {
+    const cached = parsedTablesByDoc.get(doc2);
+    if (cached) {
+      return cached;
+    }
+    const tables = parseMarkdownTables(doc2.toString());
+    parsedTablesByDoc.set(doc2, tables);
+    return tables;
+  }
+  function positionAfterTable(doc2, table) {
+    return table.to < doc2.length && doc2.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
+  }
+  function positionBeforeTable(table) {
+    return Math.max(0, table.from - 1);
+  }
   function parseMarkdownTables(source) {
     const lines = getSourceLines(source);
     const tables = [];
@@ -23466,7 +23482,6 @@
       );
       const endRow = body.length > 0 ? body[body.length - 1] : delimiter;
       tables.push({
-        id: `table-${line.from}-${endRow.to}`,
         from: line.from,
         to: endRow.to,
         startLine: line.index,
@@ -23642,7 +23657,7 @@
       if (!transaction.docChanged || transaction.annotation(allowTableSourceChange) || isUndoRedo(transaction)) {
         return true;
       }
-      const tables = parseMarkdownTables(transaction.startState.doc.toString());
+      const tables = getParsedTables(transaction.startState.doc);
       if (tables.length === 0 || !selectionTouchesTableSource(
         transaction.startState,
         transaction.startState.selection,
@@ -23674,7 +23689,7 @@
           }
         }
         scheduleIfNeeded(view2, previousHead = void 0) {
-          if (this.scheduled || isTableCellFocused(view2, options.tableCellSelector)) {
+          if (this.scheduled || isTableCellFocused(view2, options.tableCellSelector) || isApplyingHostDocument(view2)) {
             return;
           }
           const target = findSafeSelectionAnchor(view2.state, previousHead);
@@ -23684,7 +23699,7 @@
           this.scheduled = true;
           queueMicrotask(() => {
             this.scheduled = false;
-            if (isTableCellFocused(view2, options.tableCellSelector)) {
+            if (isTableCellFocused(view2, options.tableCellSelector) || isApplyingHostDocument(view2)) {
               return;
             }
             const refreshedTarget = findSafeSelectionAnchor(view2.state, previousHead);
@@ -23709,7 +23724,7 @@
     );
   }
   function findSafeSelectionAnchor(state, previousHead) {
-    const tables = parseMarkdownTables(state.doc.toString());
+    const tables = getParsedTables(state.doc);
     const range = state.selection.main;
     const table = tables.find(
       (candidate) => rangeTouchesTableSource(state, range, candidate)
@@ -23735,8 +23750,8 @@
     return position >= table.from && position < getTableReplacementTo(state, table);
   }
   function resolveOutsideTableSource(state, table, position, previousHead) {
-    const before = getPositionBeforeTable(table);
-    const after = getPositionAfterTable(state, table);
+    const before = positionBeforeTable(table);
+    const after = positionAfterTable(state.doc, table);
     const hasBefore = before < table.from;
     const hasAfter = after >= table.to && after <= state.doc.length;
     if (position >= table.to && hasAfter) {
@@ -23760,110 +23775,621 @@
     }
     return Math.min(state.doc.length, Math.max(0, table.to));
   }
-  function getPositionBeforeTable(table) {
-    return Math.max(0, table.from - 1);
-  }
-  function getPositionAfterTable(state, table) {
-    return table.to < state.doc.length && state.doc.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
-  }
   function getTableReplacementTo(state, table) {
-    return getPositionAfterTable(state, table);
+    return positionAfterTable(state.doc, table);
   }
   function isTableCellFocused(view2, tableCellSelector) {
     const activeElement = view2.dom.ownerDocument.activeElement;
     return activeElement instanceof HTMLElement && Boolean(activeElement.closest(tableCellSelector));
   }
-
-  // src/live-v4/LiveProjection.ts
-  function buildLiveProjection(model) {
-    const renderedBlocks = model.blocks.filter((block) => block.type === "table").map((block) => ({
-      id: block.id,
-      type: "table",
-      sourceFrom: block.from,
-      sourceTo: block.to
-    }));
-    return {
-      model,
-      renderedBlocks,
-      metrics: {
-        blockCount: model.blocks.length,
-        renderedBlockCount: renderedBlocks.length
-      }
-    };
+  function isApplyingHostDocument(view2) {
+    return view2.dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true";
   }
 
-  // src/live-v4/model/LiveDocModel.ts
-  function createLiveDocModel({
-    version = 0,
-    text = "",
-    blocks = []
-  } = {}) {
-    const normalizedText = typeof text === "string" ? text : "";
-    const textLength2 = normalizedText.length;
-    return {
-      version: normalizeNumber(version),
-      text: normalizedText,
-      blocks: blocks.map((block, index) => normalizeBlock(block, index, textLength2)).filter((block) => Boolean(block)).sort((left, right) => left.from - right.from || left.to - right.to),
-      meta: {
-        dialect: "markdown-live-v4",
-        parser: "table-first"
-      }
-    };
-  }
-  function createEmptyLiveDocModel() {
-    return createLiveDocModel();
-  }
-  function normalizeBlock(block, index, textLength2) {
-    if (!block || !Number.isFinite(block.from) || !Number.isFinite(block.to)) {
+  // src/editor/tableEditAnnotations.ts
+  var tableCellCommitSequenceAnnotation = Annotation.define();
+  var tableCellLiveEditAnnotation = Annotation.define();
+
+  // src/editor/table/cellSelection.ts
+  var TABLE_CELL_SELECTOR = ".mlrt-table-cell";
+  function findCell(target) {
+    if (!(target instanceof HTMLElement)) {
       return null;
     }
-    const from = clampNumber(block.from, 0, textLength2);
-    const to = clampNumber(block.to, from, textLength2);
-    if (to <= from) {
+    return target.closest(TABLE_CELL_SELECTOR);
+  }
+  function readCellDisplayValue(cell) {
+    const value = isSimpleCellContent(cell) ? readSimpleCellText(cell) : cell.innerText;
+    return value.replace(/\u00a0/g, " ");
+  }
+  function setCellPlainText(cell, value) {
+    const needsSentinel = value.endsWith("\n");
+    const nodes = cell.childNodes;
+    if (!needsSentinel && nodes.length === 1 && cell.firstChild instanceof Text) {
+      if (cell.firstChild.data !== value) {
+        cell.firstChild.data = value;
+      }
+      return;
+    }
+    if (needsSentinel && nodes.length === 2 && cell.firstChild instanceof Text && cell.lastChild instanceof HTMLBRElement) {
+      if (cell.firstChild.data !== value) {
+        cell.firstChild.data = value;
+      }
+      return;
+    }
+    if (!needsSentinel && nodes.length === 0) {
+      cell.append(cell.ownerDocument.createTextNode(value));
+      return;
+    }
+    cell.replaceChildren(
+      cell.ownerDocument.createTextNode(value),
+      ...needsSentinel ? [cell.ownerDocument.createElement("br")] : []
+    );
+  }
+  function isSimpleCellContent(cell) {
+    const nodes = cell.childNodes;
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index];
+      if (node instanceof Text) {
+        continue;
+      }
+      if (node instanceof HTMLBRElement && index === nodes.length - 1) {
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
+  function readSimpleCellText(cell) {
+    let text = "";
+    const nodes = cell.childNodes;
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index];
+      if (node instanceof Text) {
+        text += node.data;
+      }
+    }
+    return text;
+  }
+  function getCellCaretOffset(cell) {
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell)) {
+      return readCellDisplayValue(cell).length;
+    }
+    const range = selection.getRangeAt(0).cloneRange();
+    const measuringRange = cell.ownerDocument.createRange();
+    measuringRange.selectNodeContents(cell);
+    measuringRange.setEnd(range.endContainer, range.endOffset);
+    const offset = measuringRange.toString().replace(/\u00a0/g, " ").length;
+    range.detach();
+    measuringRange.detach();
+    return offset;
+  }
+  function getCellSelectionOffsets(cell) {
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell) || !isNodeInside(selection.focusNode, cell)) {
       return null;
     }
-    const type = block.type === "table" ? "table" : "paragraph";
-    const lineFrom = Math.max(1, normalizeNumber(block.lineFrom, 1));
-    const lineTo = Math.max(lineFrom, normalizeNumber(block.lineTo, lineFrom));
     return {
-      id: block.id || `live-block-${index + 1}-${from}-${to}`,
-      type,
-      from,
-      to,
-      lineFrom,
-      lineTo
+      anchor: getCellNodeOffset(cell, selection.anchorNode, selection.anchorOffset),
+      head: getCellNodeOffset(cell, selection.focusNode, selection.focusOffset)
     };
   }
-  function normalizeNumber(value, fallback = 0) {
-    if (!Number.isFinite(value)) {
-      return Math.max(0, Math.trunc(fallback));
+  function setCellCaretOffset(cell, offset) {
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection) {
+      return;
     }
-    return Math.max(0, Math.trunc(value));
+    const walker = cell.ownerDocument.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+    let remainingOffset = Math.max(0, offset);
+    let textNode = walker.nextNode();
+    while (textNode) {
+      const length = textNode.textContent?.length ?? 0;
+      if (remainingOffset <= length) {
+        const range = cell.ownerDocument.createRange();
+        range.setStart(textNode, remainingOffset);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        range.detach();
+        return;
+      }
+      remainingOffset -= length;
+      textNode = walker.nextNode();
+    }
+    focusCellAtEnd(cell);
   }
-  function clampNumber(value, min, max) {
-    const normalized = normalizeNumber(value, min);
-    return Math.max(min, Math.min(max, normalized));
+  function focusCellAtEnd(cell) {
+    cell.focus();
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = cell.ownerDocument.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  function isCaretAtVerticalBoundary(cell, rowDelta) {
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    if (!selection || selection.rangeCount === 0 || !selection.isCollapsed || !isNodeInside(selection.anchorNode, cell)) {
+      return false;
+    }
+    const caretRect = getCaretRect(selection.getRangeAt(0));
+    const lineBounds = getCellLineBounds(cell);
+    if (!caretRect || !lineBounds) {
+      return true;
+    }
+    const styles = getComputedStyle(cell);
+    const parsedLineHeight = parseFloat(styles.lineHeight);
+    const tolerance = Number.isFinite(parsedLineHeight) ? Math.max(2, parsedLineHeight * 0.25) : 3;
+    return rowDelta < 0 ? caretRect.top <= lineBounds.firstTop + tolerance : caretRect.bottom >= lineBounds.lastBottom - tolerance;
+  }
+  function requestElementAnimationFrame(element, callback) {
+    const view2 = element.ownerDocument.defaultView;
+    return view2 ? view2.requestAnimationFrame(callback) : requestAnimationFrame(callback);
+  }
+  function cancelElementAnimationFrame(element, frame) {
+    const view2 = element.ownerDocument.defaultView;
+    if (view2) {
+      view2.cancelAnimationFrame(frame);
+      return;
+    }
+    cancelAnimationFrame(frame);
+  }
+  function isNodeInside(node, element) {
+    return node === element || node !== null && element.contains(node);
+  }
+  function getCellNodeOffset(cell, node, offset) {
+    if (!node) {
+      return readCellDisplayValue(cell).length;
+    }
+    const measuringRange = cell.ownerDocument.createRange();
+    measuringRange.selectNodeContents(cell);
+    measuringRange.setEnd(node, offset);
+    const measuredOffset = measuringRange.toString().replace(/\u00a0/g, " ").length;
+    measuringRange.detach();
+    return measuredOffset;
+  }
+  function getCaretRect(range) {
+    const directRect = firstUsefulRect(range.getClientRects());
+    if (directRect) {
+      return directRect;
+    }
+    const doc2 = getNodeDocument(range.startContainer);
+    if (!doc2) {
+      return null;
+    }
+    const marker = doc2.createElement("span");
+    marker.textContent = "\u200B";
+    marker.style.display = "inline-block";
+    marker.style.width = "0";
+    marker.style.height = "1em";
+    marker.style.overflow = "hidden";
+    marker.style.padding = "0";
+    marker.style.margin = "0";
+    marker.style.border = "0";
+    const restoreRange = range.cloneRange();
+    const markerRange = range.cloneRange();
+    markerRange.insertNode(marker);
+    const markerRect = marker.getBoundingClientRect();
+    marker.remove();
+    const selection = doc2.defaultView?.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(restoreRange);
+    return markerRect.height > 0 ? markerRect : null;
+  }
+  function getNodeDocument(node) {
+    return node.nodeType === Node.DOCUMENT_NODE ? node : node.ownerDocument;
+  }
+  function getCellLineBounds(cell) {
+    const range = cell.ownerDocument.createRange();
+    range.selectNodeContents(cell);
+    const rects = Array.from(range.getClientRects()).filter(
+      (rect) => rect.height > 0 && rect.width >= 0
+    );
+    range.detach();
+    if (rects.length === 0) {
+      const cellRect = cell.getBoundingClientRect();
+      return cellRect.height > 0 ? { firstTop: cellRect.top, lastBottom: cellRect.bottom } : null;
+    }
+    return rects.reduce(
+      (bounds, rect) => ({
+        firstTop: Math.min(bounds.firstTop, rect.top),
+        lastBottom: Math.max(bounds.lastBottom, rect.bottom)
+      }),
+      { firstTop: Number.POSITIVE_INFINITY, lastBottom: Number.NEGATIVE_INFINITY }
+    );
+  }
+  function firstUsefulRect(rects) {
+    for (let index = 0; index < rects.length; index++) {
+      const rect = rects.item(index);
+      if (rect && rect.height > 0) {
+        return rect;
+      }
+    }
+    return null;
   }
 
-  // src/live-v4/parser/TableFirstParser.ts
-  function createTableFirstParser() {
+  // src/editor/table/tableWidgetState.ts
+  var TABLE_WIDGET_SELECTOR = ".mlrt-table-widget";
+  var liveEditPreservedTableStarts = /* @__PURE__ */ new Set();
+  function preserveTableForLiveEdit(tableFrom) {
+    liveEditPreservedTableStarts.add(tableFrom);
+  }
+  function releaseTableLiveEditPreservation(tableFrom) {
+    liveEditPreservedTableStarts.delete(tableFrom);
+  }
+  function isTablePreservedForLiveEdit(tableFrom) {
+    return liveEditPreservedTableStarts.has(tableFrom);
+  }
+  function setTableWidgetCleanup(wrapper, cleanup) {
+    wrapper.__mlrtTableWidgetCleanup = cleanup;
+  }
+  function getTableWidgetCleanup(wrapper) {
+    return wrapper.__mlrtTableWidgetCleanup;
+  }
+  function setTableWidgetTable(wrapper, table) {
+    wrapper.__mlrtTable = cloneParsedTable(table);
+  }
+  function getTableWidgetTable(wrapper) {
+    return wrapper.__mlrtTable;
+  }
+  function readActiveCellSizingOverride(wrapper) {
+    const activeElement = wrapper.ownerDocument.activeElement;
+    const cell = findCell(activeElement);
+    if (!cell || !wrapper.contains(cell)) {
+      return void 0;
+    }
+    const rowKind = cell.dataset.rowKind;
+    const rowIndex = Number(cell.dataset.rowIndex ?? "0");
+    const column = Number(cell.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
+      return void 0;
+    }
     return {
-      parse(text) {
-        const source = typeof text === "string" ? text : "";
-        const tables = parseMarkdownTables(source);
-        return createLiveDocModel({
-          text: source,
-          blocks: tables.map((table) => ({
-            id: table.id,
-            type: "table",
-            from: table.from,
-            to: table.to,
-            lineFrom: table.startLine + 1,
-            lineTo: table.endLine + 1
-          }))
-        });
-      }
+      rowKind,
+      rowIndex,
+      column,
+      value: readCellDisplayValue(cell)
     };
+  }
+  function cloneParsedTable(table) {
+    return {
+      from: table.from,
+      to: table.to,
+      startLine: table.startLine,
+      endLine: table.endLine,
+      header: cloneParsedRow(table.header),
+      delimiter: cloneParsedRow(table.delimiter),
+      body: table.body.map(cloneParsedRow),
+      columnCount: table.columnCount,
+      alignments: [...table.alignments]
+    };
+  }
+  function cloneParsedRow(row) {
+    return {
+      lineIndex: row.lineIndex,
+      from: row.from,
+      to: row.to,
+      text: row.text,
+      cells: row.cells.map((cell) => ({ ...cell }))
+    };
+  }
+
+  // src/editor/editorGeometrySync.ts
+  function createEditorGeometrySync() {
+    return ViewPlugin.fromClass(
+      class {
+        measureKey = {};
+        lastGutterWidth = -1;
+        lastContentWidth = -1;
+        lastObservedScrollerWidth = -1;
+        resizeObserver;
+        observedTableWidgets = /* @__PURE__ */ new Set();
+        observedWidgetHeights = /* @__PURE__ */ new WeakMap();
+        constructor(view2) {
+          const ResizeObserverCtor = view2.dom.ownerDocument.defaultView?.ResizeObserver;
+          if (ResizeObserverCtor) {
+            this.lastObservedScrollerWidth = view2.scrollDOM.clientWidth;
+            this.resizeObserver = new ResizeObserverCtor((entries) => {
+              let forceContentRemeasure = false;
+              for (const entry of entries) {
+                if (entry.target === view2.dom || entry.target === view2.scrollDOM) {
+                  const scrollerWidth = view2.scrollDOM.clientWidth;
+                  if (scrollerWidth !== this.lastObservedScrollerWidth) {
+                    this.lastObservedScrollerWidth = scrollerWidth;
+                    forceContentRemeasure = true;
+                  }
+                  continue;
+                }
+                const height = entry.contentRect.height;
+                const previousHeight = this.observedWidgetHeights.get(
+                  entry.target
+                );
+                if (previousHeight === void 0 || Math.abs(previousHeight - height) > 0.5) {
+                  this.observedWidgetHeights.set(entry.target, height);
+                  forceContentRemeasure = true;
+                }
+              }
+              this.schedule(view2, forceContentRemeasure);
+            });
+            this.resizeObserver.observe(view2.dom);
+            this.resizeObserver.observe(view2.scrollDOM);
+          }
+          this.schedule(view2);
+        }
+        update(update) {
+          this.syncObservedTableWidgets(update.view);
+          if (update.transactions.some(
+            (transaction) => transaction.annotation(tableCellLiveEditAnnotation)
+          )) {
+            return;
+          }
+          if (update.geometryChanged || update.viewportChanged || update.docChanged) {
+            this.schedule(update.view);
+          }
+        }
+        destroy() {
+          this.resizeObserver?.disconnect();
+          this.observedTableWidgets.clear();
+        }
+        schedule(view2, forceContentRemeasure = false) {
+          if (forceContentRemeasure) {
+            forceCodeMirrorContentRemeasure(view2);
+          }
+          view2.requestMeasure({
+            key: this.measureKey,
+            read: (measuredView) => ({
+              gutterWidth: measuredView.dom.querySelector(".cm-gutters")?.offsetWidth ?? 0,
+              contentWidth: measuredView.scrollDOM.clientWidth
+            }),
+            write: (metrics, measuredView) => {
+              this.syncObservedTableWidgets(measuredView);
+              const scrollerStyle = measuredView.scrollDOM.style;
+              if (metrics.gutterWidth > 0 && metrics.gutterWidth !== this.lastGutterWidth) {
+                this.lastGutterWidth = metrics.gutterWidth;
+                scrollerStyle.setProperty(
+                  "--mlrt-live-gutter-width",
+                  `${metrics.gutterWidth}px`
+                );
+              }
+              if (metrics.contentWidth > 0 && metrics.contentWidth !== this.lastContentWidth) {
+                this.lastContentWidth = metrics.contentWidth;
+                scrollerStyle.setProperty(
+                  "--mlrt-live-content-width",
+                  `calc(${metrics.contentWidth}px - var(--mlrt-editor-right-padding, 26px))`
+                );
+              }
+            }
+          });
+        }
+        syncObservedTableWidgets(view2) {
+          if (!this.resizeObserver) {
+            return;
+          }
+          const widgets = new Set(
+            Array.from(view2.dom.querySelectorAll(TABLE_WIDGET_SELECTOR))
+          );
+          for (const widget of widgets) {
+            if (!this.observedTableWidgets.has(widget)) {
+              this.resizeObserver.observe(widget);
+            }
+          }
+          for (const widget of this.observedTableWidgets) {
+            if (!widgets.has(widget)) {
+              this.resizeObserver.unobserve(widget);
+            }
+          }
+          this.observedTableWidgets.clear();
+          for (const widget of widgets) {
+            this.observedTableWidgets.add(widget);
+          }
+        }
+      }
+    );
+  }
+  function forceCodeMirrorContentRemeasure(view2) {
+    const viewState = view2.viewState;
+    if (viewState) {
+      viewState.mustMeasureContent = "refresh";
+    }
+  }
+
+  // src/editor/editorTheme.ts
+  function createEditorTheme() {
+    return EditorView.theme({
+      "&": {
+        height: "100%",
+        color: "var(--vscode-editor-foreground, #d4d4d4)",
+        backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
+      },
+      ".cm-scroller": {
+        overflowX: "hidden !important",
+        overflowY: "auto !important",
+        height: "100%",
+        fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
+        fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
+        fontWeight: "var(--mlrt-editor-font-weight, normal)",
+        lineHeight: "var(--mlrt-editor-line-height, normal)",
+        letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
+        fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
+        fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)"
+      },
+      ".cm-gutters": {
+        backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e))",
+        color: "var(--vscode-editorLineNumber-foreground, #858585)",
+        borderRight: "none",
+        boxSizing: "border-box",
+        paddingLeft: "var(--mlrt-editor-gutter-left-padding, 18px)",
+        fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
+        fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
+        fontWeight: "var(--mlrt-editor-font-weight, normal)",
+        lineHeight: "var(--mlrt-editor-line-height, normal)",
+        letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
+        fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
+        fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)"
+      },
+      ".cm-activeLineGutter": {
+        backgroundColor: "transparent",
+        color: "var(--vscode-editorLineNumber-activeForeground, #c6c6c6)"
+      },
+      ".cm-lineNumbers .cm-gutterElement": {
+        boxSizing: "border-box",
+        width: "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
+        minHeight: "var(--mlrt-editor-line-height, 1.5em)",
+        minWidth: "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
+        maxWidth: "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
+        padding: "0 var(--mlrt-editor-gutter-right-padding, 26px) 0 0"
+      },
+      '.cm-lineNumbers .cm-gutterElement[style*="visibility: hidden"]': {
+        minHeight: "0"
+      },
+      ".cm-content": {
+        minHeight: "100%",
+        boxSizing: "border-box",
+        padding: "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
+        caretColor: "var(--vscode-editorCursor-foreground, #aeafad)"
+      },
+      ".cm-line": {
+        color: "var(--vscode-editor-foreground, #d4d4d4)",
+        padding: "0"
+      },
+      ".cm-activeLine": {
+        backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)"
+      },
+      ".cm-cursor, .cm-dropCursor": {
+        borderLeftColor: "var(--vscode-editorCursor-foreground, #aeafad)",
+        borderLeftWidth: "var(--mlrt-editor-cursor-width, 1px)"
+      },
+      "&.mlrt-table-cell-focused .cm-activeLine": {
+        backgroundColor: "transparent"
+      },
+      "&.mlrt-table-cell-focused .cm-cursor": {
+        display: "none"
+      },
+      // While a rendered table cell has focus, the editor selection is parked
+      // on some unrelated line; do not let the native gutter highlight it.
+      "&.mlrt-table-cell-focused .cm-activeLineGutter": {
+        color: "var(--vscode-editorLineNumber-foreground, #858585)"
+      }
+    });
+  }
+
+  // src/editor/tableBoundaryNavigation.ts
+  function createTableBoundaryArrowNavigation() {
+    return keymap.of([
+      {
+        key: "ArrowDown",
+        run: (view2) => focusTableAcrossBoundary(view2, "down")
+      },
+      {
+        key: "ArrowUp",
+        run: (view2) => focusTableAcrossBoundary(view2, "up")
+      }
+    ]);
+  }
+  function focusTableAcrossBoundary(view2, direction) {
+    if (!view2.state.selection.main.empty || isRenderedTableCellFocused(view2)) {
+      return false;
+    }
+    const head = view2.state.selection.main.head;
+    const line = view2.state.doc.lineAt(head);
+    const tables = getParsedTables(view2.state.doc);
+    for (const table of tables) {
+      const lineNumberAboveTable = table.startLine;
+      const afterTable = positionAfterTable(view2.state.doc, table);
+      if (direction === "down" && line.number === lineNumberAboveTable) {
+        return focusRenderedTableCell(view2, table, "first");
+      }
+      if (direction === "up" && line.from === afterTable && head >= afterTable) {
+        return focusRenderedTableCell(view2, table, "last");
+      }
+      if (head >= table.from && head <= table.to) {
+        return focusRenderedTableCell(
+          view2,
+          table,
+          direction === "down" ? "first" : "last"
+        );
+      }
+    }
+    return false;
+  }
+  function focusRenderedTableCell(view2, table, target) {
+    const wrapper = view2.dom.querySelector(
+      `${TABLE_WIDGET_SELECTOR}[data-src-from="${table.from}"]`
+    );
+    const cells = Array.from(
+      wrapper?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
+    );
+    const cell = target === "first" ? cells[0] : cells[cells.length - 1];
+    if (!cell) {
+      return false;
+    }
+    focusCellAtEnd(cell);
+    return true;
+  }
+  function isRenderedTableCellFocused(view2) {
+    return Boolean(findCell(view2.dom.ownerDocument.activeElement));
+  }
+
+  // src/editor/tableCellFocus.ts
+  var TABLE_CELL_FOCUSED_CLASS = "mlrt-table-cell-focused";
+  function createTableCellFocusClassSync() {
+    return ViewPlugin.fromClass(
+      class {
+        constructor(view2) {
+          this.view = view2;
+          this.syncFocusClass = () => this.sync();
+          const doc2 = view2.dom.ownerDocument;
+          doc2.addEventListener("focusin", this.syncFocusClass, true);
+          doc2.addEventListener("focusout", this.syncFocusClass, true);
+          this.sync();
+        }
+        view;
+        syncFocusClass;
+        recheckScheduled = false;
+        update(update) {
+          if (update.focusChanged || update.selectionSet || update.docChanged) {
+            this.sync();
+          }
+        }
+        destroy() {
+          const doc2 = this.view.dom.ownerDocument;
+          doc2.removeEventListener("focusin", this.syncFocusClass, true);
+          doc2.removeEventListener("focusout", this.syncFocusClass, true);
+        }
+        sync() {
+          queueMicrotask(() => {
+            const ownerDocument = this.view.dom.ownerDocument;
+            const hasTableCellFocus = Boolean(findCell(ownerDocument.activeElement));
+            if (!hasTableCellFocus && ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
+              this.scheduleRecheck();
+              return;
+            }
+            this.view.dom.classList.toggle(
+              TABLE_CELL_FOCUSED_CLASS,
+              hasTableCellFocus
+            );
+          });
+        }
+        scheduleRecheck() {
+          if (this.recheckScheduled) {
+            return;
+          }
+          this.recheckScheduled = true;
+          const ownerWindow = this.view.dom.ownerDocument.defaultView;
+          const raf = ownerWindow ? ownerWindow.requestAnimationFrame.bind(ownerWindow) : requestAnimationFrame;
+          raf(() => {
+            raf(() => {
+              this.recheckScheduled = false;
+              this.sync();
+            });
+          });
+        }
+      }
+    );
   }
 
   // src/shared/tableColumnSizing.ts
@@ -23902,6 +24428,13 @@
     const safeTotalWidth = totalPreferredWidth > 0 ? totalPreferredWidth : table.columnCount;
     const targetWidth = availableDataWidthCh === void 0 || availableDataWidthCh <= 0 ? safeTotalWidth : Math.min(safeTotalWidth, availableDataWidthCh);
     const allocatedColumns = targetWidth >= totalMinWidth ? allocateColumnWidths(columns, targetWidth) : columns.map((column) => ({ ...column, widthCh: column.minWidthCh }));
+    if (availableDataWidthCh !== void 0 && availableDataWidthCh > 0) {
+      distributeWidthSteps(
+        allocatedColumns,
+        availableDataWidthCh,
+        (column) => column.fullPreferredWidthCh
+      );
+    }
     const dataWidthCh = allocatedColumns.reduce(
       (total, column) => total + column.widthCh,
       0
@@ -23967,10 +24500,16 @@
       minWidthCh,
       MAX_PREFERRED_COLUMN_WIDTH_CH
     );
+    const fullPreferredWidthCh = clamp(
+      longestLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
+      preferredWidthCh,
+      MAX_PREFERRED_COLUMN_WIDTH_CH
+    );
     return {
       cellLineLengths,
       minWidthCh,
       preferredWidthCh,
+      fullPreferredWidthCh,
       widthCh: preferredWidthCh
     };
   }
@@ -23985,23 +24524,29 @@
       ...column,
       widthCh: column.minWidthCh
     }));
+    distributeWidthSteps(
+      allocated,
+      targetWidthCh,
+      (column) => column.preferredWidthCh
+    );
+    return allocated;
+  }
+  function distributeWidthSteps(columns, targetWidthCh, limitOf) {
     let remainingSteps = Math.round(
-      (targetWidthCh - allocated.reduce((total, column) => total + column.widthCh, 0)) / WIDTH_STEP_CH
+      (targetWidthCh - columns.reduce((total, column) => total + column.widthCh, 0)) / WIDTH_STEP_CH
     );
     while (remainingSteps > 0) {
       let bestColumnIndex = -1;
       let bestScore = Number.NEGATIVE_INFINITY;
-      for (let index = 0; index < allocated.length; index++) {
-        const column2 = allocated[index];
-        if (column2.widthCh >= column2.preferredWidthCh) {
+      for (let index = 0; index < columns.length; index++) {
+        const column2 = columns[index];
+        const limit = limitOf(column2);
+        if (column2.widthCh >= limit) {
           continue;
         }
-        const nextWidth = Math.min(
-          column2.preferredWidthCh,
-          column2.widthCh + WIDTH_STEP_CH
-        );
+        const nextWidth = Math.min(limit, column2.widthCh + WIDTH_STEP_CH);
         const wrapReduction = measureWrapCost(column2, column2.widthCh) - measureWrapCost(column2, nextWidth);
-        const remainingNeed = column2.preferredWidthCh - column2.widthCh;
+        const remainingNeed = limit - column2.widthCh;
         const score = wrapReduction * 1e3 + remainingNeed;
         if (score > bestScore) {
           bestScore = score;
@@ -24011,14 +24556,13 @@
       if (bestColumnIndex === -1) {
         break;
       }
-      const column = allocated[bestColumnIndex];
+      const column = columns[bestColumnIndex];
       column.widthCh = Math.min(
-        column.preferredWidthCh,
+        limitOf(column),
         column.widthCh + WIDTH_STEP_CH
       );
       remainingSteps--;
     }
-    return allocated;
   }
   function measureWrapCost(column, widthCh) {
     const contentWidthCh = Math.max(1, widthCh - CELL_HORIZONTAL_PADDING_CH);
@@ -24038,159 +24582,9 @@
     return Math.max(min, Math.min(value, max));
   }
 
-  // src/live-v4/tableCellCommitSequence.ts
-  var tableCellCommitSequence = Annotation.define();
-  var tableCellLiveEdit = Annotation.define();
-
-  // src/live-v4/render/TableWidget.ts
-  var RenderedTableWidget = class _RenderedTableWidget extends WidgetType {
-    constructor(table) {
-      super();
-      this.table = table;
-    }
-    table;
-    eq(widget) {
-      return widget instanceof _RenderedTableWidget && widget.table.from === this.table.from && preservedLiveEditTableStarts.has(this.table.from);
-    }
-    updateDOM(dom, _view) {
-      if (!canPatchTableDOM(dom, this.table)) {
-        return false;
-      }
-      patchTableDOM(dom, this.table);
-      return true;
-    }
-    getTableFrom() {
-      return this.table.from;
-    }
-    toDOM(view2) {
-      const wrapper = document.createElement("section");
-      wrapper.className = "mm-live-v4-table-widget";
-      wrapper.dataset.blockId = this.table.id;
-      wrapper.dataset.srcFrom = String(this.table.from);
-      wrapper.dataset.srcTo = String(getPositionAfterTable2(view2, this.table));
-      wrapper.contentEditable = "false";
-      setTableWidgetTable(wrapper, this.table);
-      const columnSizing = measureTableColumnSizing(this.table);
-      applyColumnSizing(wrapper, columnSizing);
-      const tableElement = document.createElement("table");
-      tableElement.className = "mm-live-v4-table";
-      appendColumnSizing(tableElement, this.table, columnSizing);
-      const thead = document.createElement("thead");
-      const headerRow = document.createElement("tr");
-      appendCells({
-        table: this.table,
-        sourceRow: this.table.header,
-        tableRow: headerRow,
-        tagName: "th",
-        rowKind: "header",
-        rowIndex: 0,
-        sourceLineNumber: this.table.header.lineIndex + 1
-      });
-      thead.append(headerRow);
-      tableElement.append(thead);
-      const tbody = document.createElement("tbody");
-      this.table.body.forEach((sourceRow, rowIndex) => {
-        const tableRow = document.createElement("tr");
-        appendCells({
-          table: this.table,
-          sourceRow,
-          tableRow,
-          tagName: "td",
-          rowKind: "body",
-          rowIndex,
-          sourceLineNumber: sourceRow.lineIndex + 1
-        });
-        tbody.append(tableRow);
-      });
-      tableElement.append(tbody);
-      const tableScroll = document.createElement("div");
-      tableScroll.className = "mm-live-v4-table-scroll";
-      tableScroll.append(tableElement);
-      const scrollbar = document.createElement("div");
-      scrollbar.className = "mm-live-v4-table-scrollbar";
-      const scrollbarThumb = document.createElement("div");
-      scrollbarThumb.className = "mm-live-v4-table-scrollbar-thumb";
-      scrollbar.append(scrollbarThumb);
-      wrapper.append(tableScroll, scrollbar);
-      const scheduleTableLayout = bindTableLayout(
-        wrapper,
-        tableScroll,
-        tableElement,
-        scrollbar,
-        scrollbarThumb,
-        this.table
-      );
-      bindTableEditing(wrapper, view2, this.table, scheduleTableLayout);
-      return wrapper;
-    }
-    destroy(dom) {
-      getTableWidgetCleanup(dom)?.();
-    }
-    ignoreEvent() {
-      return true;
-    }
-  };
-  function canPatchTableDOM(dom, table) {
-    if (!dom.classList.contains("mm-live-v4-table-widget")) {
-      return false;
-    }
-    const existingCells = dom.querySelectorAll(
-      ".mm-live-v4-table-cell"
-    );
-    return existingCells.length === table.columnCount * (table.body.length + 1);
-  }
-  function patchTableDOM(dom, table) {
-    setTableWidgetTable(dom, table);
-    dom.dataset.blockId = table.id;
-    dom.dataset.srcFrom = String(table.from);
-    dom.dataset.srcTo = String(table.to);
-    patchTableRowDOM(dom, table, table.header, "header", 0);
-    table.body.forEach((row, rowIndex) => {
-      patchTableRowDOM(dom, table, row, "body", rowIndex);
-    });
-    applyColumnSizing(
-      dom,
-      measureTableColumnSizing(
-        table,
-        measureAvailableDataWidthCh(dom),
-        readActiveCellSizingOverride(dom)
-      )
-    );
-  }
-  function patchTableRowDOM(dom, table, sourceRow, rowKind, rowIndex) {
-    const lineCell = dom.querySelector(
-      `.mm-live-v4-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`
-    );
-    if (lineCell) {
-      const sourceLineText = String(sourceRow.lineIndex + 1);
-      if (lineCell.textContent !== sourceLineText) {
-        lineCell.textContent = sourceLineText;
-      }
-    }
-    const values2 = rowToDisplayValues(sourceRow, table.columnCount);
-    for (let column = 0; column < table.columnCount; column++) {
-      const cell = dom.querySelector(
-        [
-          `.mm-live-v4-table-cell[data-row-kind="${rowKind}"]`,
-          `[data-row-index="${rowIndex}"]`,
-          `[data-column="${column}"]`
-        ].join("")
-      );
-      if (!cell) {
-        continue;
-      }
-      const value = values2[column] ?? "";
-      const isActive = cell.ownerDocument.activeElement === cell;
-      const isApplyingHostDocument = dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true";
-      syncCellSourceMetadata(cell, table, sourceRow, column, value);
-      if ((!isActive || isApplyingHostDocument) && cell.textContent !== value) {
-        setCellPlainText(cell, value);
-      }
-    }
-  }
+  // src/editor/table/tableCellMetadata.ts
   function syncTableSourceMetadata(dom, table) {
     setTableWidgetTable(dom, table);
-    dom.dataset.blockId = table.id;
     dom.dataset.srcFrom = String(table.from);
     dom.dataset.srcTo = String(table.to);
     syncTableRowSourceMetadata(dom, table, table.header, "header", 0);
@@ -24201,13 +24595,7 @@
   function syncTableRowSourceMetadata(dom, table, sourceRow, rowKind, rowIndex) {
     const values2 = rowToDisplayValues(sourceRow, table.columnCount);
     for (let column = 0; column < table.columnCount; column++) {
-      const cell = dom.querySelector(
-        [
-          `.mm-live-v4-table-cell[data-row-kind="${rowKind}"]`,
-          `[data-row-index="${rowIndex}"]`,
-          `[data-column="${column}"]`
-        ].join("")
-      );
+      const cell = queryCell(dom, rowKind, rowIndex, column);
       if (!cell) {
         continue;
       }
@@ -24223,7 +24611,7 @@
   function syncCellSourceMetadata(cell, table, sourceRow, column, value) {
     cell.dataset.tableFrom = String(table.from);
     cell.dataset.sourceValue = value;
-    cell.dataset.original = value;
+    cell.style.textAlign = table.alignments[column] ?? "left";
     const sourceCell = sourceRow.cells[column];
     if (!sourceCell) {
       delete cell.dataset.sourceFrom;
@@ -24232,272 +24620,34 @@
       delete cell.dataset.sourceTrailingWhitespace;
       return;
     }
-    const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+      sourceCell.raw
+    );
     cell.dataset.sourceFrom = String(sourceCell.start);
     cell.dataset.sourceTo = String(sourceCell.end);
     cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
     cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
   }
-  var persistentCellHistories = /* @__PURE__ */ new Map();
-  var preservedLiveEditTableStarts = /* @__PURE__ */ new Set();
-  var chWidthCache = /* @__PURE__ */ new WeakMap();
-  function appendCells(options) {
-    appendSourceLineCell(options);
-    const values2 = rowToDisplayValues(options.sourceRow, options.table.columnCount);
-    values2.forEach((value, column) => {
-      const sourceCell = options.sourceRow.cells[column];
-      const cell = document.createElement(options.tagName);
-      cell.className = "mm-live-v4-table-cell";
-      cell.contentEditable = "true";
-      cell.spellcheck = false;
-      cell.textContent = value;
-      cell.dataset.tableFrom = String(options.table.from);
-      cell.dataset.rowKind = options.rowKind;
-      cell.dataset.rowIndex = String(options.rowIndex);
-      cell.dataset.column = String(column);
-      cell.dataset.original = value;
-      cell.dataset.sourceValue = value;
-      if (sourceCell) {
-        const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
-        cell.dataset.sourceFrom = String(sourceCell.start);
-        cell.dataset.sourceTo = String(sourceCell.end);
-        cell.dataset.sourceLeadingWhitespace = leadingWhitespace;
-        cell.dataset.sourceTrailingWhitespace = trailingWhitespace;
-      }
-      cell.style.textAlign = options.table.alignments[column] ?? "left";
-      options.tableRow.append(cell);
-    });
-  }
-  function appendSourceLineCell(options) {
-    const cell = document.createElement(options.tagName);
-    cell.className = "mm-live-v4-table-source-line";
-    cell.contentEditable = "false";
-    cell.dataset.sourceLine = String(options.sourceLineNumber);
-    cell.textContent = String(options.sourceLineNumber);
-    cell.setAttribute("aria-hidden", "true");
-    options.tableRow.append(cell);
-  }
-  function getSourceCellPaddingWhitespace(raw) {
-    if (raw.trim() === "") {
-      const split = Math.floor(raw.length / 2);
-      return {
-        leadingWhitespace: raw.slice(0, split),
-        trailingWhitespace: raw.slice(split)
-      };
-    }
-    return {
-      leadingWhitespace: raw.match(/^\s*/)?.[0] ?? "",
-      trailingWhitespace: raw.match(/\s*$/)?.[0] ?? ""
-    };
-  }
-  function appendColumnSizing(tableElement, table, columnSizing) {
-    const colgroup = document.createElement("colgroup");
-    const lineNumberCol = document.createElement("col");
-    lineNumberCol.className = "mm-live-v4-table-source-line-col";
-    colgroup.append(lineNumberCol);
-    for (let column = 0; column < table.columnCount; column++) {
-      const col = document.createElement("col");
-      col.className = "mm-live-v4-table-sized-col";
-      col.style.width = `${columnSizing.columns[column].widthCh.toFixed(4)}ch`;
-      colgroup.append(col);
-    }
-    tableElement.append(colgroup);
-  }
-  function bindTableLayout(wrapper, tableScroll, tableElement, scrollbar, scrollbarThumb, table) {
-    const syncScrollbar = () => syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
-    let pendingAnimationFrame = 0;
-    const syncLayout = () => {
-      pendingAnimationFrame = 0;
-      const currentTable = getTableWidgetTable(wrapper) ?? table;
-      applyColumnSizing(
-        wrapper,
-        measureTableColumnSizing(
-          currentTable,
-          measureAvailableDataWidthCh(wrapper),
-          readActiveCellSizingOverride(wrapper)
-        )
-      );
-      const tableHeight = tableElement.getBoundingClientRect().height;
-      syncScrollbar();
-      const scrollbarHeight = scrollbar.hidden ? 0 : scrollbar.getBoundingClientRect().height;
-      wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
-    };
-    const scheduleLayout = () => {
-      if (pendingAnimationFrame !== 0) {
-        return;
-      }
-      pendingAnimationFrame = requestTableAnimationFrame(wrapper, syncLayout);
-    };
-    const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
-    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleLayout) : void 0;
-    resizeObserver?.observe(tableElement);
-    resizeObserver?.observe(tableScroll);
-    tableScroll.addEventListener("scroll", syncScrollbar);
-    scheduleLayout();
-    setTableWidgetCleanup(wrapper, () => {
-      if (pendingAnimationFrame !== 0) {
-        cancelTableAnimationFrame(wrapper, pendingAnimationFrame);
-        pendingAnimationFrame = 0;
-      }
-      resizeObserver?.disconnect();
-      tableScroll.removeEventListener("scroll", syncScrollbar);
-    });
-    return scheduleLayout;
-  }
-  function syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb) {
-    const maxScrollLeft = Math.max(0, tableScroll.scrollWidth - tableScroll.clientWidth);
-    const hasOverflow = maxScrollLeft > 1;
-    scrollbar.hidden = !hasOverflow;
-    if (!hasOverflow) {
-      scrollbarThumb.style.width = "0px";
-      scrollbarThumb.style.transform = "translateX(0px)";
-      return;
-    }
-    const trackWidth = Math.max(0, scrollbar.clientWidth);
-    const thumbWidth = Math.max(
-      24,
-      tableScroll.clientWidth / tableScroll.scrollWidth * trackWidth
+  function queryCell(dom, rowKind, rowIndex, column) {
+    return dom.querySelector(
+      [
+        `.mlrt-table-cell[data-row-kind="${rowKind}"]`,
+        `[data-row-index="${rowIndex}"]`,
+        `[data-column="${column}"]`
+      ].join("")
     );
-    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
-    const thumbLeft = maxScrollLeft > 0 ? tableScroll.scrollLeft / maxScrollLeft * maxThumbLeft : 0;
-    scrollbarThumb.style.width = `${thumbWidth}px`;
-    scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
   }
-  function applyColumnSizing(wrapper, columnSizing) {
-    wrapper.style.setProperty(
-      "--mlrt-table-data-width",
-      `${columnSizing.dataWidthCh.toFixed(4)}ch`
-    );
-    wrapper.querySelectorAll(".mm-live-v4-table-sized-col").forEach((col, column) => {
-      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(4)}ch`;
-    });
-  }
-  function measureAvailableDataWidthCh(wrapper) {
-    const scroller = wrapper.closest(".cm-scroller");
-    if (!scroller) {
-      return void 0;
-    }
-    const styles = getComputedStyle(scroller);
-    const gutterWidth = resolveCssLengthPx(
-      scroller,
-      styles.getPropertyValue("--mlrt-live-gutter-width")
-    );
-    const rightPadding = resolveCssLengthPx(
-      scroller,
-      styles.getPropertyValue("--mlrt-editor-right-padding")
-    );
-    const chWidth = measureChWidth(wrapper);
-    const availablePx = Math.max(
-      0,
-      scroller.clientWidth - gutterWidth - rightPadding
-    );
-    return chWidth > 0 ? availablePx / chWidth : void 0;
-  }
-  function measureChWidth(element) {
-    const styles = getComputedStyle(element);
-    const cacheKey = [
-      styles.fontFamily,
-      styles.fontSize,
-      styles.fontWeight,
-      styles.fontStretch,
-      styles.fontStyle,
-      styles.letterSpacing,
-      styles.fontFeatureSettings,
-      styles.fontVariationSettings
-    ].join("|");
-    const cached = chWidthCache.get(element);
-    if (cached?.key === cacheKey) {
-      return cached.width;
-    }
-    const probe = element.ownerDocument.createElement("span");
-    probe.textContent = "0";
-    probe.style.position = "absolute";
-    probe.style.left = "-10000px";
-    probe.style.top = "0";
-    probe.style.visibility = "hidden";
-    probe.style.pointerEvents = "none";
-    probe.style.whiteSpace = "pre";
-    probe.style.fontFamily = styles.fontFamily;
-    probe.style.fontSize = styles.fontSize;
-    probe.style.fontWeight = styles.fontWeight;
-    probe.style.fontStretch = styles.fontStretch;
-    probe.style.fontStyle = styles.fontStyle;
-    probe.style.letterSpacing = styles.letterSpacing;
-    probe.style.fontFeatureSettings = styles.fontFeatureSettings;
-    probe.style.fontVariationSettings = styles.fontVariationSettings;
-    const host = element.ownerDocument.body ?? element.ownerDocument.documentElement;
-    host.append(probe);
-    const width = probe.getBoundingClientRect().width;
-    probe.remove();
-    chWidthCache.set(element, { key: cacheKey, width });
-    return width;
-  }
-  function resolveCssLengthPx(element, value) {
-    const direct = Number.parseFloat(value);
-    if (Number.isFinite(direct) && value.trim().endsWith("px")) {
-      return direct;
-    }
-    const probe = element.ownerDocument.createElement("span");
-    probe.style.position = "absolute";
-    probe.style.visibility = "hidden";
-    probe.style.pointerEvents = "none";
-    probe.style.width = value.trim() || "0px";
-    element.append(probe);
-    const width = probe.getBoundingClientRect().width;
-    probe.remove();
-    return Number.isFinite(width) ? width : 0;
-  }
-  function setTableWidgetCleanup(wrapper, cleanup) {
-    wrapper.__mlrtTableWidgetCleanup = cleanup;
-  }
-  function getTableWidgetCleanup(wrapper) {
-    return wrapper.__mlrtTableWidgetCleanup;
-  }
-  function setTableWidgetTable(wrapper, table) {
-    wrapper.__mlrtTable = table;
-  }
-  function getTableWidgetTable(wrapper) {
-    return wrapper.__mlrtTable;
-  }
-  function requestTableAnimationFrame(wrapper, callback) {
-    const view2 = wrapper.ownerDocument.defaultView;
-    return view2 ? view2.requestAnimationFrame(callback) : requestAnimationFrame(callback);
-  }
-  function cancelTableAnimationFrame(wrapper, frame) {
-    const view2 = wrapper.ownerDocument.defaultView;
-    if (view2) {
-      view2.cancelAnimationFrame(frame);
-      return;
-    }
-    cancelAnimationFrame(frame);
-  }
-  function readActiveCellSizingOverride(wrapper) {
-    const activeElement = wrapper.ownerDocument.activeElement;
-    const cell = findCell(activeElement);
-    if (!cell || !wrapper.contains(cell)) {
-      return void 0;
-    }
-    const rowKind = cell.dataset.rowKind;
-    const rowIndex = Number(cell.dataset.rowIndex ?? "0");
-    const column = Number(cell.dataset.column ?? "0");
-    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
-      return void 0;
-    }
-    return {
-      rowKind,
-      rowIndex,
-      column,
-      value: readCellDisplayValue(cell)
-    };
-  }
+
+  // src/editor/table/tableCellEditing.ts
+  var TABLE_CELL_COMMIT_EVENT = "mlrt:table-cell-commit";
+  var cellEditHistories = /* @__PURE__ */ new Map();
+  var MAX_TRACKED_CELL_HISTORIES = 512;
   function bindTableEditing(wrapper, view2, table, scheduleTableLayout) {
-    const cellHistories = persistentCellHistories;
     const getCurrentTable = () => getTableWidgetTable(wrapper) ?? table;
     wrapper.addEventListener("focusin", (event) => {
       const cell = findCell(event.target);
       if (cell) {
-        ensureCellEditHistory(cellHistories, cell);
-        view2.dom.classList.add("mm-live-v4-table-cell-focused");
+        ensureCellEditHistory(cell);
         scheduleTableLayout();
       }
     });
@@ -24507,47 +24657,20 @@
         return;
       }
       const currentTable = getCurrentTable();
-      if (event.inputType === "historyUndo") {
-        if (!restoreCellEditHistory(cellHistories, cell, "undo")) {
-          scheduleNativeHistoryFallback(
-            view2,
-            currentTable,
-            cell,
-            cellHistories,
-            scheduleTableLayout
-          );
+      if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
+        const direction = event.inputType === "historyUndo" ? "undo" : "redo";
+        if (!restoreCellEditHistory(cell, direction)) {
+          scheduleNativeHistoryFallback(view2, currentTable, cell, scheduleTableLayout);
           return;
         }
         event.preventDefault();
-        if (applyLiveCellEdit(view2, currentTable, cell)) {
-          scheduleTableLayout();
-          return;
-        }
-        scheduleTableLayout();
-        return;
-      }
-      if (event.inputType === "historyRedo") {
-        if (!restoreCellEditHistory(cellHistories, cell, "redo")) {
-          scheduleNativeHistoryFallback(
-            view2,
-            currentTable,
-            cell,
-            cellHistories,
-            scheduleTableLayout
-          );
-          return;
-        }
-        event.preventDefault();
-        if (applyLiveCellEdit(view2, currentTable, cell)) {
-          scheduleTableLayout();
-          return;
-        }
+        applyLiveCellEdit(view2, currentTable, cell);
         scheduleTableLayout();
         return;
       }
       const nextSnapshot = computeBeforeInputSnapshot(cell, event);
       if (!nextSnapshot) {
-        recordCellEditHistory(cellHistories, cell);
+        recordCellEditHistory(cell);
         return;
       }
       event.preventDefault();
@@ -24555,7 +24678,6 @@
         view2,
         currentTable,
         cell,
-        cellHistories,
         nextSnapshot,
         scheduleTableLayout
       );
@@ -24565,25 +24687,19 @@
       if (!cell) {
         return;
       }
-      syncCellEditHistory(cellHistories, cell);
-      if (applyLiveCellEdit(view2, getCurrentTable(), cell)) {
-        scheduleTableLayout();
-        return;
-      }
+      syncCellEditHistory(cell);
+      applyLiveCellEdit(view2, getCurrentTable(), cell);
       scheduleTableLayout();
     });
     wrapper.addEventListener("focusout", (event) => {
       const cell = findCell(event.target);
       if (cell) {
         setTimeout(() => {
-          if (!findCell(wrapper.ownerDocument.activeElement)) {
-            view2.dom.classList.remove("mm-live-v4-table-cell-focused");
-          }
           if (wrapper.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
             return;
           }
           if (cell.isConnected) {
-            commitCellEdit(view2, getCurrentTable(), cell, cellHistories);
+            commitCellEdit(view2, getCurrentTable(), cell);
           }
         }, 0);
       }
@@ -24597,28 +24713,19 @@
       const currentTable = getCurrentTable();
       const historyDirection = getCellEditHistoryDirection(event);
       if (historyDirection) {
-        if (!restoreCellEditHistory(cellHistories, cell, historyDirection)) {
-          scheduleNativeHistoryFallback(
-            view2,
-            currentTable,
-            cell,
-            cellHistories,
-            scheduleTableLayout
-          );
+        if (!restoreCellEditHistory(cell, historyDirection)) {
+          scheduleNativeHistoryFallback(view2, currentTable, cell, scheduleTableLayout);
           return;
         }
         event.preventDefault();
-        if (applyLiveCellEdit(view2, currentTable, cell)) {
-          scheduleTableLayout();
-          return;
-        }
+        applyLiveCellEdit(view2, currentTable, cell);
         scheduleTableLayout();
         return;
       }
       if (event.key === "Enter" && isPlainKey(event)) {
         event.preventDefault();
-        commitCellEdit(view2, currentTable, cell, cellHistories, {
-          selectionAnchor: getPositionAfterTable2(view2, currentTable)
+        commitCellEdit(view2, currentTable, cell, {
+          selectionAnchor: positionAfterTable(view2.state.doc, currentTable)
         });
         cell.blur();
         view2.focus();
@@ -24637,7 +24744,6 @@
           view2,
           currentTable,
           cell,
-          cellHistories,
           nextSnapshot,
           scheduleTableLayout
         );
@@ -24651,47 +24757,44 @@
         const target = resolveVerticalCell(cell, rowDelta);
         event.preventDefault();
         if (target === "before-table") {
-          commitCellEdit(view2, currentTable, cell, cellHistories, {
-            selectionAnchor: getPositionBeforeTable2(currentTable)
+          commitCellEdit(view2, currentTable, cell, {
+            selectionAnchor: positionBeforeTable(currentTable)
           });
           cell.blur();
           view2.focus();
           return;
         }
         if (target === "after-table") {
-          commitCellEdit(view2, currentTable, cell, cellHistories, {
+          commitCellEdit(view2, currentTable, cell, {
             selectionAnchor: getEndOfLineAfterTable(view2, currentTable)
           });
           cell.blur();
           view2.focus();
           return;
         }
-        commitCellEdit(view2, currentTable, cell, cellHistories);
+        commitCellEdit(view2, currentTable, cell);
         focusCellAfterRender(currentTable.from, target);
         return;
       }
       if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
-        commitCellEdit(view2, currentTable, cell, cellHistories);
+        commitCellEdit(view2, currentTable, cell);
         focusCellAfterRender(currentTable.from, target);
       }
     });
   }
-  function scheduleNativeHistoryFallback(view2, table, cell, histories, scheduleTableLayout) {
+  function scheduleNativeHistoryFallback(view2, table, cell, scheduleTableLayout) {
     setTimeout(() => {
       if (!cell.isConnected) {
         return;
       }
-      syncCellEditHistory(histories, cell);
-      if (applyLiveCellEdit(view2, table, cell)) {
-        scheduleTableLayout();
-        return;
-      }
+      syncCellEditHistory(cell);
+      applyLiveCellEdit(view2, table, cell);
       scheduleTableLayout();
     }, 0);
   }
-  function commitCellEdit(view2, table, cell, histories, options = {}) {
+  function commitCellEdit(view2, table, cell, options = {}) {
     const rowKind = cell.dataset.rowKind;
     const rowIndex = Number(cell.dataset.rowIndex ?? "0");
     const column = Number(cell.dataset.column ?? "0");
@@ -24716,7 +24819,7 @@
       caretOffset + Math.max(0, originalValue.length - value.length)
     );
     const valueSteps = buildCellCommitValueSteps(
-      getCellEditHistory(histories, cell),
+      getCellEditHistory(cell),
       originalValue,
       value,
       restoreCaretOffset
@@ -24739,7 +24842,7 @@
       value
     );
     view2.dom.dispatchEvent(
-      new CustomEvent("mlrt:table-cell-commit", {
+      new CustomEvent(TABLE_CELL_COMMIT_EVENT, {
         bubbles: true,
         detail: {
           tableFrom: table.from,
@@ -24764,7 +24867,7 @@
       selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
       annotations: [
         allowTableSourceChange.of(true),
-        tableCellCommitSequence.of({
+        tableCellCommitSequenceAnnotation.of({
           steps: sourceSteps.map((step) => ({
             change: step.change,
             restore: {
@@ -24811,12 +24914,7 @@
       table.columnCount,
       column,
       value
-    ) ?? formatTableCellSourceEdit(
-      sourceRow,
-      table.columnCount,
-      column,
-      value
-    );
+    ) ?? formatTableCellSourceEdit(sourceRow, table.columnCount, column, value);
     const restore = {
       tableFrom: table.from,
       rowKind,
@@ -24827,7 +24925,7 @@
       restoreCaretOffset
     };
     view2.dom.dispatchEvent(
-      new CustomEvent("mlrt:table-cell-commit", {
+      new CustomEvent(TABLE_CELL_COMMIT_EVENT, {
         bubbles: true,
         detail: {
           ...restore,
@@ -24840,15 +24938,14 @@
       table,
       rowKind,
       rowIndex,
-      column,
       edit,
       currentRowText
     );
-    const wrapper = cell.closest(".mm-live-v4-table-widget");
+    const wrapper = cell.closest(".mlrt-table-widget");
     if (wrapper) {
       syncTableSourceMetadata(wrapper, table);
     }
-    preservedLiveEditTableStarts.add(table.from);
+    preserveTableForLiveEdit(table.from);
     view2.dispatch({
       changes: {
         from: edit.from,
@@ -24857,7 +24954,7 @@
       },
       annotations: [
         allowTableSourceChange.of(true),
-        tableCellLiveEdit.of({
+        tableCellLiveEditAnnotation.of({
           change: {
             from: edit.from,
             to: edit.to,
@@ -24868,8 +24965,8 @@
       ],
       userEvent: "input"
     });
-    requestTableAnimationFrame(cell, () => {
-      preservedLiveEditTableStarts.delete(table.from);
+    requestElementAnimationFrame(cell, () => {
+      releaseTableLiveEditPreservation(table.from);
     });
     if (!cell.isConnected || cell.ownerDocument.activeElement !== cell) {
       focusCellAfterRenderAtOffset(
@@ -24881,7 +24978,7 @@
     return true;
   }
   function getCellSourceValue(cell) {
-    return cell.dataset.sourceValue ?? cell.dataset.original ?? "";
+    return cell.dataset.sourceValue ?? "";
   }
   function formatLiveTableCellSourceEdit(view2, sourceRow, columnCount, column, value) {
     const currentRowText = readCurrentSourceRowText(view2, sourceRow);
@@ -24897,7 +24994,7 @@
     if (!sourceCell) {
       return formatTableCellSourceEdit(currentRow, columnCount, column, value);
     }
-    const { leadingWhitespace, trailingWhitespace } = getSourceCellPaddingWhitespace(sourceCell.raw);
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(sourceCell.raw);
     return {
       from: sourceCell.start,
       to: sourceCell.end,
@@ -24912,7 +25009,7 @@
       return void 0;
     }
   }
-  function updateTableSourceAfterCellEdit(table, rowKind, rowIndex, column, edit, currentRowText) {
+  function updateTableSourceAfterCellEdit(table, rowKind, rowIndex, edit, currentRowText) {
     const sourceRow = rowKind === "header" ? table.header : table.body[rowIndex];
     if (!sourceRow) {
       return;
@@ -24941,7 +25038,6 @@
         cell.end += delta;
       }
     }
-    table.id = `table-${table.from}-${table.to}`;
   }
   function buildCellCommitValueSteps(history, originalValue, finalValue, fallbackRestoreCaretOffset) {
     const snapshots = history?.undoStack ?? [];
@@ -24995,9 +25091,6 @@
       };
     });
   }
-  function readCellDisplayValue(cell) {
-    return cell.innerText.replace(/\u00a0/g, " ");
-  }
   function dispatchSelection(view2, selectionAnchor) {
     if (selectionAnchor === void 0) {
       return;
@@ -25007,18 +25100,8 @@
       scrollIntoView: true
     });
   }
-  function getPositionAfterTable2(view2, table) {
-    const doc2 = view2.state.doc;
-    if (table.to < doc2.length && doc2.sliceString(table.to, table.to + 1) === "\n") {
-      return table.to + 1;
-    }
-    return table.to;
-  }
   function getEndOfLineAfterTable(view2, table) {
-    return view2.state.doc.lineAt(getPositionAfterTable2(view2, table)).to;
-  }
-  function getPositionBeforeTable2(table) {
-    return Math.max(0, table.from - 1);
+    return view2.state.doc.lineAt(positionAfterTable(view2.state.doc, table)).to;
   }
   function mapPositionThroughCellEdit(position, edit) {
     if (position <= edit.from) {
@@ -25031,7 +25114,7 @@
   }
   function resolveRelativeCell(cell, delta) {
     const cells = Array.from(
-      cell.closest(".mm-live-v4-table")?.querySelectorAll(".mm-live-v4-table-cell") ?? []
+      cell.closest(".mlrt-table")?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
     );
     const index = cells.indexOf(cell);
     const next = cells[index + delta] ?? cell;
@@ -25044,8 +25127,8 @@
   function resolveVerticalCell(cell, rowDelta) {
     const column = cell.dataset.column ?? "0";
     const columnCells = Array.from(
-      cell.closest(".mm-live-v4-table")?.querySelectorAll(
-        `.mm-live-v4-table-cell[data-column="${column}"]`
+      cell.closest(".mlrt-table")?.querySelectorAll(
+        `${TABLE_CELL_SELECTOR}[data-column="${column}"]`
       ) ?? []
     );
     const index = columnCells.indexOf(cell);
@@ -25061,13 +25144,7 @@
   }
   function focusCellAfterRender(tableFrom, target) {
     setTimeout(() => {
-      const selector = [
-        `.mm-live-v4-table-cell[data-table-from="${tableFrom}"]`,
-        `[data-row-kind="${target.rowKind}"]`,
-        `[data-row-index="${target.rowIndex}"]`,
-        `[data-column="${target.column}"]`
-      ].join("");
-      const cell = document.querySelector(selector);
+      const cell = queryCell2(tableFrom, target);
       if (cell) {
         focusCellAtEnd(cell);
       }
@@ -25075,41 +25152,44 @@
   }
   function focusCellAfterRenderAtOffset(tableFrom, target, caretOffset) {
     setTimeout(() => {
-      const selector = [
-        `.mm-live-v4-table-cell[data-table-from="${tableFrom}"]`,
-        `[data-row-kind="${target.rowKind}"]`,
-        `[data-row-index="${target.rowIndex}"]`,
-        `[data-column="${target.column}"]`
-      ].join("");
-      const cell = document.querySelector(selector);
+      const cell = queryCell2(tableFrom, target);
       if (cell) {
         cell.focus();
         setCellCaretOffset(cell, caretOffset);
       }
     }, 0);
   }
-  function findCell(target) {
-    if (!(target instanceof HTMLElement)) {
-      return null;
-    }
-    return target.closest(".mm-live-v4-table-cell");
+  function queryCell2(tableFrom, target) {
+    const selector = [
+      `${TABLE_CELL_SELECTOR}[data-table-from="${tableFrom}"]`,
+      `[data-row-kind="${target.rowKind}"]`,
+      `[data-row-index="${target.rowIndex}"]`,
+      `[data-column="${target.column}"]`
+    ].join("");
+    return document.querySelector(selector);
   }
-  function ensureCellEditHistory(histories, cell) {
+  function ensureCellEditHistory(cell) {
     const key = getCellHistoryKey(cell);
-    const existing = histories.get(key);
+    const existing = cellEditHistories.get(key);
     if (existing) {
       return existing;
+    }
+    if (cellEditHistories.size >= MAX_TRACKED_CELL_HISTORIES) {
+      const oldestKey = cellEditHistories.keys().next().value;
+      if (oldestKey !== void 0) {
+        cellEditHistories.delete(oldestKey);
+      }
     }
     const history = {
       undoStack: [],
       redoStack: [],
       lastValue: readCellDisplayValue(cell)
     };
-    histories.set(key, history);
+    cellEditHistories.set(key, history);
     return history;
   }
-  function getCellEditHistory(histories, cell) {
-    return histories.get(getCellHistoryKey(cell));
+  function getCellEditHistory(cell) {
+    return cellEditHistories.get(getCellHistoryKey(cell));
   }
   function getCellHistoryKey(cell) {
     return [
@@ -25119,8 +25199,8 @@
       cell.dataset.column ?? ""
     ].join(":");
   }
-  function recordCellEditHistory(histories, cell) {
-    const history = ensureCellEditHistory(histories, cell);
+  function recordCellEditHistory(cell) {
+    const history = ensureCellEditHistory(cell);
     const snapshot = captureCellEditSnapshot(cell);
     const previousSnapshot = history.undoStack[history.undoStack.length - 1];
     if (previousSnapshot && previousSnapshot.value === snapshot.value && previousSnapshot.caretOffset === snapshot.caretOffset) {
@@ -25130,11 +25210,11 @@
     history.redoStack = [];
     history.lastValue = snapshot.value;
   }
-  function syncCellEditHistory(histories, cell) {
-    ensureCellEditHistory(histories, cell).lastValue = readCellDisplayValue(cell);
+  function syncCellEditHistory(cell) {
+    ensureCellEditHistory(cell).lastValue = readCellDisplayValue(cell);
   }
-  function restoreCellEditHistory(histories, cell, direction) {
-    const history = ensureCellEditHistory(histories, cell);
+  function restoreCellEditHistory(cell, direction) {
+    const history = ensureCellEditHistory(cell);
     const sourceStack = direction === "undo" ? history.undoStack : history.redoStack;
     const targetStack = direction === "undo" ? history.redoStack : history.undoStack;
     const snapshot = sourceStack.pop();
@@ -25157,6 +25237,15 @@
     if (event.inputType === "insertText") {
       const insert2 = event.data ?? "";
       return replaceCellTextRange(value, from, to, insert2);
+    }
+    if (event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop" || event.inputType === "insertReplacementText") {
+      const insert2 = event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
+      return replaceCellTextRange(
+        value,
+        from,
+        to,
+        insert2.replace(/\r\n?/g, "\n")
+      );
     }
     if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
       return replaceCellTextRange(value, from, to, "\n");
@@ -25200,14 +25289,11 @@
       caretOffset: from + insert2.length
     };
   }
-  function applyCellEditSnapshotChange(view2, table, cell, histories, snapshot, scheduleTableLayout) {
-    recordCellEditHistory(histories, cell);
+  function applyCellEditSnapshotChange(view2, table, cell, snapshot, scheduleTableLayout) {
+    recordCellEditHistory(cell);
     applyCellEditSnapshot(cell, snapshot);
-    syncCellEditHistory(histories, cell);
-    if (applyLiveCellEdit(view2, table, cell)) {
-      scheduleTableLayout();
-      return;
-    }
+    syncCellEditHistory(cell);
+    applyLiveCellEdit(view2, table, cell);
     scheduleTableLayout();
   }
   function captureCellEditSnapshot(cell) {
@@ -25219,19 +25305,6 @@
   function applyCellEditSnapshot(cell, snapshot) {
     setCellPlainText(cell, snapshot.value);
     setCellCaretOffset(cell, snapshot.caretOffset);
-  }
-  function setCellPlainText(cell, value) {
-    if (cell.childNodes.length === 1 && cell.firstChild instanceof Text) {
-      if (cell.firstChild.data !== value) {
-        cell.firstChild.data = value;
-      }
-      return;
-    }
-    if (cell.childNodes.length === 0) {
-      cell.append(cell.ownerDocument.createTextNode(value));
-      return;
-    }
-    cell.replaceChildren(cell.ownerDocument.createTextNode(value));
   }
   function getCellEditHistoryDirection(event) {
     const key = event.key.toLowerCase();
@@ -25253,569 +25326,416 @@
   function isUnmodifiedVerticalArrow(event) {
     return (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey(event);
   }
-  function getCellCaretOffset(cell) {
-    const selection = cell.ownerDocument.defaultView?.getSelection();
-    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell)) {
-      return readCellDisplayValue(cell).length;
+
+  // src/editor/table/tableLayout.ts
+  var chWidthCache = /* @__PURE__ */ new WeakMap();
+  var cssLengthCache = /* @__PURE__ */ new WeakMap();
+  function appendColumnSizing(tableElement, table, columnSizing) {
+    const colgroup = document.createElement("colgroup");
+    const lineNumberCol = document.createElement("col");
+    lineNumberCol.className = "mlrt-table-source-line-col";
+    colgroup.append(lineNumberCol);
+    for (let column = 0; column < table.columnCount; column++) {
+      const col = document.createElement("col");
+      col.className = "mlrt-table-sized-col";
+      col.style.width = `${columnSizing.columns[column].widthCh.toFixed(4)}ch`;
+      colgroup.append(col);
     }
-    const range = selection.getRangeAt(0).cloneRange();
-    const measuringRange = cell.ownerDocument.createRange();
-    measuringRange.selectNodeContents(cell);
-    measuringRange.setEnd(range.endContainer, range.endOffset);
-    const offset = measuringRange.toString().replace(/\u00a0/g, " ").length;
-    range.detach();
-    measuringRange.detach();
-    return offset;
+    tableElement.append(colgroup);
   }
-  function getCellSelectionOffsets(cell) {
-    const selection = cell.ownerDocument.defaultView?.getSelection();
-    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell) || !isNodeInside(selection.focusNode, cell)) {
-      return null;
-    }
-    return {
-      anchor: getCellNodeOffset(cell, selection.anchorNode, selection.anchorOffset),
-      head: getCellNodeOffset(cell, selection.focusNode, selection.focusOffset)
+  function applyColumnSizing(wrapper, columnSizing) {
+    wrapper.style.setProperty(
+      "--mlrt-table-data-width",
+      `${columnSizing.dataWidthCh.toFixed(4)}ch`
+    );
+    wrapper.querySelectorAll(".mlrt-table-sized-col").forEach((col, column) => {
+      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(4)}ch`;
+    });
+  }
+  function applyCurrentColumnSizing(wrapper, table) {
+    applyColumnSizing(
+      wrapper,
+      measureTableColumnSizing(
+        table,
+        measureAvailableDataWidthCh(wrapper),
+        readActiveCellSizingOverride(wrapper)
+      )
+    );
+  }
+  function bindTableLayout(wrapper, tableScroll, tableElement, scrollbar, scrollbarThumb, table) {
+    const syncScrollbar = () => syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
+    let pendingAnimationFrame = 0;
+    const syncLayout = () => {
+      pendingAnimationFrame = 0;
+      applyCurrentColumnSizing(wrapper, getTableWidgetTable(wrapper) ?? table);
+      const tableHeight = tableElement.getBoundingClientRect().height;
+      syncScrollbar();
+      const scrollbarHeight = scrollbar.hidden ? 0 : scrollbar.getBoundingClientRect().height;
+      wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
     };
-  }
-  function getCellNodeOffset(cell, node, offset) {
-    if (!node) {
-      return readCellDisplayValue(cell).length;
-    }
-    const measuringRange = cell.ownerDocument.createRange();
-    measuringRange.selectNodeContents(cell);
-    measuringRange.setEnd(node, offset);
-    const measuredOffset = measuringRange.toString().replace(/\u00a0/g, " ").length;
-    measuringRange.detach();
-    return measuredOffset;
-  }
-  function setCellCaretOffset(cell, offset) {
-    const selection = cell.ownerDocument.defaultView?.getSelection();
-    if (!selection) {
-      return;
-    }
-    const walker = cell.ownerDocument.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
-    let remainingOffset = Math.max(0, offset);
-    let textNode = walker.nextNode();
-    while (textNode) {
-      const length = textNode.textContent?.length ?? 0;
-      if (remainingOffset <= length) {
-        const range = cell.ownerDocument.createRange();
-        range.setStart(textNode, remainingOffset);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        range.detach();
+    const scheduleLayout = () => {
+      if (pendingAnimationFrame !== 0) {
         return;
       }
-      remainingOffset -= length;
-      textNode = walker.nextNode();
-    }
-    focusCellAtEnd(cell);
-  }
-  function isCaretAtVerticalBoundary(cell, rowDelta) {
-    const selection = cell.ownerDocument.defaultView?.getSelection();
-    if (!selection || selection.rangeCount === 0 || !selection.isCollapsed || !isNodeInside(selection.anchorNode, cell)) {
-      return false;
-    }
-    const caretRect = getCaretRect(selection.getRangeAt(0));
-    const lineBounds = getCellLineBounds(cell);
-    if (!caretRect || !lineBounds) {
-      return true;
-    }
-    const styles = getComputedStyle(cell);
-    const parsedLineHeight = parseFloat(styles.lineHeight);
-    const tolerance = Number.isFinite(parsedLineHeight) ? Math.max(2, parsedLineHeight * 0.25) : 3;
-    return rowDelta < 0 ? caretRect.top <= lineBounds.firstTop + tolerance : caretRect.bottom >= lineBounds.lastBottom - tolerance;
-  }
-  function isNodeInside(node, element) {
-    return node === element || node !== null && element.contains(node);
-  }
-  function getCaretRect(range) {
-    const directRect = firstUsefulRect(range.getClientRects());
-    if (directRect) {
-      return directRect;
-    }
-    const doc2 = getNodeDocument(range.startContainer);
-    if (!doc2) {
-      return null;
-    }
-    const marker = doc2.createElement("span");
-    marker.textContent = "\u200B";
-    marker.style.display = "inline-block";
-    marker.style.width = "0";
-    marker.style.height = "1em";
-    marker.style.overflow = "hidden";
-    marker.style.padding = "0";
-    marker.style.margin = "0";
-    marker.style.border = "0";
-    const restoreRange = range.cloneRange();
-    const markerRange = range.cloneRange();
-    markerRange.insertNode(marker);
-    const markerRect = marker.getBoundingClientRect();
-    marker.remove();
-    const selection = doc2.defaultView?.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(restoreRange);
-    return markerRect.height > 0 ? markerRect : null;
-  }
-  function getNodeDocument(node) {
-    return node.nodeType === Node.DOCUMENT_NODE ? node : node.ownerDocument;
-  }
-  function getCellLineBounds(cell) {
-    const range = cell.ownerDocument.createRange();
-    range.selectNodeContents(cell);
-    const rects = Array.from(range.getClientRects()).filter(
-      (rect) => rect.height > 0 && rect.width >= 0
-    );
-    range.detach();
-    if (rects.length === 0) {
-      const cellRect = cell.getBoundingClientRect();
-      return cellRect.height > 0 ? { firstTop: cellRect.top, lastBottom: cellRect.bottom } : null;
-    }
-    return rects.reduce(
-      (bounds, rect) => ({
-        firstTop: Math.min(bounds.firstTop, rect.top),
-        lastBottom: Math.max(bounds.lastBottom, rect.bottom)
-      }),
-      { firstTop: Number.POSITIVE_INFINITY, lastBottom: Number.NEGATIVE_INFINITY }
-    );
-  }
-  function firstUsefulRect(rects) {
-    for (let index = 0; index < rects.length; index++) {
-      const rect = rects.item(index);
-      if (rect && rect.height > 0) {
-        return rect;
+      pendingAnimationFrame = requestElementAnimationFrame(wrapper, syncLayout);
+    };
+    const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleLayout) : void 0;
+    resizeObserver?.observe(tableElement);
+    resizeObserver?.observe(tableScroll);
+    tableScroll.addEventListener("scroll", syncScrollbar);
+    scheduleLayout();
+    setTableWidgetCleanup(wrapper, () => {
+      if (pendingAnimationFrame !== 0) {
+        cancelElementAnimationFrame(wrapper, pendingAnimationFrame);
+        pendingAnimationFrame = 0;
       }
-    }
-    return null;
+      resizeObserver?.disconnect();
+      tableScroll.removeEventListener("scroll", syncScrollbar);
+    });
+    return scheduleLayout;
   }
-  function focusCellAtEnd(cell) {
-    cell.focus();
-    const selection = window.getSelection();
-    if (!selection) {
+  function measureAvailableDataWidthCh(wrapper) {
+    const scroller = wrapper.closest(".cm-scroller");
+    if (!scroller) {
+      return void 0;
+    }
+    const styles = getComputedStyle(scroller);
+    const gutterWidth = resolveCssLengthPx(
+      scroller,
+      styles.getPropertyValue("--mlrt-live-gutter-width")
+    );
+    const rightPadding = resolveCssLengthPx(
+      scroller,
+      styles.getPropertyValue("--mlrt-editor-right-padding")
+    );
+    const chWidth = measureChWidth(wrapper);
+    const columnCount = getTableWidgetTable(wrapper)?.columnCount ?? 1;
+    const borderAllowancePx = columnCount + 2;
+    const availablePx = Math.max(
+      0,
+      scroller.clientWidth - gutterWidth - rightPadding - borderAllowancePx
+    );
+    return chWidth > 0 ? availablePx / chWidth : void 0;
+  }
+  function syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb) {
+    const maxScrollLeft = Math.max(
+      0,
+      tableScroll.scrollWidth - tableScroll.clientWidth
+    );
+    const hasOverflow = maxScrollLeft > 1;
+    scrollbar.hidden = !hasOverflow;
+    if (!hasOverflow) {
+      if (tableScroll.scrollLeft !== 0) {
+        tableScroll.scrollLeft = 0;
+      }
+      scrollbarThumb.style.width = "0px";
+      scrollbarThumb.style.transform = "translateX(0px)";
       return;
     }
-    const range = document.createRange();
-    range.selectNodeContents(cell);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
+    const trackWidth = Math.max(0, scrollbar.clientWidth);
+    const thumbWidth = Math.max(
+      24,
+      tableScroll.clientWidth / tableScroll.scrollWidth * trackWidth
+    );
+    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
+    const thumbLeft = maxScrollLeft > 0 ? tableScroll.scrollLeft / maxScrollLeft * maxThumbLeft : 0;
+    scrollbarThumb.style.width = `${thumbWidth}px`;
+    scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
+  }
+  function measureChWidth(element) {
+    const styles = getComputedStyle(element);
+    const cacheKey = [
+      styles.fontFamily,
+      styles.fontSize,
+      styles.fontWeight,
+      styles.fontStretch,
+      styles.fontStyle,
+      styles.letterSpacing,
+      styles.fontFeatureSettings,
+      styles.fontVariationSettings
+    ].join("|");
+    const cached = chWidthCache.get(element);
+    if (cached?.key === cacheKey) {
+      return cached.width;
+    }
+    const probe = element.ownerDocument.createElement("span");
+    probe.textContent = "0";
+    probe.style.position = "absolute";
+    probe.style.left = "-10000px";
+    probe.style.top = "0";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.whiteSpace = "pre";
+    probe.style.fontFamily = styles.fontFamily;
+    probe.style.fontSize = styles.fontSize;
+    probe.style.fontWeight = styles.fontWeight;
+    probe.style.fontStretch = styles.fontStretch;
+    probe.style.fontStyle = styles.fontStyle;
+    probe.style.letterSpacing = styles.letterSpacing;
+    probe.style.fontFeatureSettings = styles.fontFeatureSettings;
+    probe.style.fontVariationSettings = styles.fontVariationSettings;
+    const host = element.ownerDocument.body ?? element.ownerDocument.documentElement;
+    host.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    chWidthCache.set(element, { key: cacheKey, width });
+    return width;
+  }
+  function resolveCssLengthPx(element, value) {
+    const direct = Number.parseFloat(value);
+    if (Number.isFinite(direct) && value.trim().endsWith("px")) {
+      return direct;
+    }
+    const cachedLengths = cssLengthCache.get(element);
+    const cached = cachedLengths?.get(value);
+    if (cached !== void 0) {
+      return cached;
+    }
+    const probe = element.ownerDocument.createElement("span");
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.width = value.trim() || "0px";
+    element.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    const resolved = Number.isFinite(width) ? width : 0;
+    if (cachedLengths) {
+      cachedLengths.set(value, resolved);
+    } else {
+      cssLengthCache.set(element, /* @__PURE__ */ new Map([[value, resolved]]));
+    }
+    return resolved;
   }
 
-  // src/live-v4/LiveStateField.ts
-  function createLiveStateField({
-    parser: parser5 = createTableFirstParser()
-  } = {}) {
-    const buildState = (viewState) => {
-      const text = viewState.doc.toString();
-      const model = parser5.parse(text);
-      const projection = buildLiveProjection(model);
-      const tables = parseMarkdownTables(text);
-      return {
-        projection,
-        decorations: Decoration.set(
-          tables.flatMap((table) => [
-            Decoration.widget({
-              widget: new RenderedTableWidget(table),
-              block: true,
-              side: -1
-            }).range(table.from),
-            ...[table.header, table.delimiter, ...table.body].map(
-              (row) => Decoration.line({
-                class: "mm-live-v4-hidden-table-source-line"
-              }).range(row.from)
-            )
-          ]),
-          true
-        )
-      };
-    };
-    const liveStateField = StateField.define({
+  // src/editor/table/TableWidget.ts
+  var RenderedTableWidget = class _RenderedTableWidget extends WidgetType {
+    constructor(table) {
+      super();
+      this.table = table;
+    }
+    table;
+    eq(widget) {
+      return widget instanceof _RenderedTableWidget && widget.table.from === this.table.from && isTablePreservedForLiveEdit(this.table.from);
+    }
+    updateDOM(dom, _view) {
+      if (!canPatchTableDOM(dom, this.table)) {
+        return false;
+      }
+      patchTableDOM(dom, this.table);
+      return true;
+    }
+    toDOM(view2) {
+      const wrapper = document.createElement("section");
+      wrapper.className = "mlrt-table-widget";
+      wrapper.dataset.srcFrom = String(this.table.from);
+      wrapper.dataset.srcTo = String(this.table.to);
+      wrapper.contentEditable = "false";
+      setTableWidgetTable(wrapper, this.table);
+      const columnSizing = measureTableColumnSizing(this.table);
+      applyColumnSizing(wrapper, columnSizing);
+      const tableElement = document.createElement("table");
+      tableElement.className = "mlrt-table";
+      appendColumnSizing(tableElement, this.table, columnSizing);
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      appendCells({
+        table: this.table,
+        sourceRow: this.table.header,
+        tableRow: headerRow,
+        tagName: "th",
+        rowKind: "header",
+        rowIndex: 0
+      });
+      thead.append(headerRow);
+      tableElement.append(thead);
+      const tbody = document.createElement("tbody");
+      this.table.body.forEach((sourceRow, rowIndex) => {
+        const tableRow = document.createElement("tr");
+        appendCells({
+          table: this.table,
+          sourceRow,
+          tableRow,
+          tagName: "td",
+          rowKind: "body",
+          rowIndex
+        });
+        tbody.append(tableRow);
+      });
+      tableElement.append(tbody);
+      const tableScroll = document.createElement("div");
+      tableScroll.className = "mlrt-table-scroll";
+      tableScroll.append(tableElement);
+      const scrollbar = document.createElement("div");
+      scrollbar.className = "mlrt-table-scrollbar";
+      const scrollbarThumb = document.createElement("div");
+      scrollbarThumb.className = "mlrt-table-scrollbar-thumb";
+      scrollbar.append(scrollbarThumb);
+      wrapper.append(tableScroll, scrollbar);
+      const scheduleTableLayout = bindTableLayout(
+        wrapper,
+        tableScroll,
+        tableElement,
+        scrollbar,
+        scrollbarThumb,
+        this.table
+      );
+      bindTableEditing(wrapper, view2, this.table, scheduleTableLayout);
+      return wrapper;
+    }
+    destroy(dom) {
+      getTableWidgetCleanup(dom)?.();
+    }
+    ignoreEvent() {
+      return true;
+    }
+  };
+  function canPatchTableDOM(dom, table) {
+    if (!dom.classList.contains("mlrt-table-widget")) {
+      return false;
+    }
+    const headerRows = dom.querySelectorAll("thead tr");
+    const bodyRows = dom.querySelectorAll("tbody tr");
+    if (headerRows.length !== 1 || bodyRows.length !== table.body.length) {
+      return false;
+    }
+    const sizedColumns = dom.querySelectorAll(".mlrt-table-sized-col");
+    if (sizedColumns.length !== table.columnCount) {
+      return false;
+    }
+    const rows = [...Array.from(headerRows), ...Array.from(bodyRows)];
+    for (const row of rows) {
+      if (row.querySelectorAll(".mlrt-table-cell").length !== table.columnCount) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function patchTableDOM(dom, table) {
+    setTableWidgetTable(dom, table);
+    dom.dataset.srcFrom = String(table.from);
+    dom.dataset.srcTo = String(table.to);
+    patchTableRowDOM(dom, table, table.header, "header", 0);
+    table.body.forEach((row, rowIndex) => {
+      patchTableRowDOM(dom, table, row, "body", rowIndex);
+    });
+    applyCurrentColumnSizing(dom, table);
+  }
+  function patchTableRowDOM(dom, table, sourceRow, rowKind, rowIndex) {
+    const lineCell = dom.querySelector(
+      `.mlrt-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`
+    );
+    if (lineCell) {
+      const sourceLineText = String(sourceRow.lineIndex + 1);
+      if (lineCell.textContent !== sourceLineText) {
+        lineCell.textContent = sourceLineText;
+      }
+    }
+    const values2 = rowToDisplayValues(sourceRow, table.columnCount);
+    for (let column = 0; column < table.columnCount; column++) {
+      const cell = queryCell(dom, rowKind, rowIndex, column);
+      if (!cell) {
+        continue;
+      }
+      const value = values2[column] ?? "";
+      const isActive = cell.ownerDocument.activeElement === cell;
+      const isApplyingHostDocument2 = dom.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true";
+      syncCellSourceMetadata(cell, table, sourceRow, column, value);
+      if ((!isActive || isApplyingHostDocument2) && cell.textContent !== value) {
+        setCellPlainText(cell, value);
+      }
+    }
+  }
+  function appendCells(options) {
+    appendSourceLineCell(options);
+    const values2 = rowToDisplayValues(
+      options.sourceRow,
+      options.table.columnCount
+    );
+    values2.forEach((value, column) => {
+      const cell = document.createElement(options.tagName);
+      cell.className = "mlrt-table-cell";
+      cell.contentEditable = "true";
+      cell.spellcheck = false;
+      cell.textContent = value;
+      cell.dataset.rowKind = options.rowKind;
+      cell.dataset.rowIndex = String(options.rowIndex);
+      cell.dataset.column = String(column);
+      syncCellSourceMetadata(cell, options.table, options.sourceRow, column, value);
+      options.tableRow.append(cell);
+    });
+  }
+  function appendSourceLineCell(options) {
+    const cell = document.createElement(options.tagName);
+    cell.className = "mlrt-table-source-line";
+    cell.contentEditable = "false";
+    cell.dataset.sourceLine = String(options.sourceRow.lineIndex + 1);
+    cell.textContent = String(options.sourceRow.lineIndex + 1);
+    cell.setAttribute("aria-hidden", "true");
+    options.tableRow.append(cell);
+  }
+
+  // src/editor/tableDecorations.ts
+  function createTableDecorations() {
+    const field = StateField.define({
       create(state) {
-        return buildState(state);
+        return buildTableDecorationSets(state.doc);
       },
       update(value, transaction) {
         if (!transaction.docChanged) {
           return value;
         }
-        const liveEdit = transaction.annotation(tableCellLiveEdit);
-        if (liveEdit) {
+        if (transaction.annotation(tableCellLiveEditAnnotation)) {
           return {
-            projection: value.projection,
-            decorations: value.decorations.map(transaction.changes)
+            decorations: value.decorations.map(transaction.changes),
+            gutterMarkers: value.gutterMarkers.map(transaction.changes)
           };
         }
-        return buildState(transaction.state);
+        return buildTableDecorationSets(transaction.state.doc);
       },
-      provide(field) {
-        return EditorView.decorations.from(field, (value) => value.decorations);
+      provide(field2) {
+        return [
+          EditorView.decorations.from(field2, (value) => value.decorations),
+          lineNumberMarkers.from(field2, (value) => value.gutterMarkers),
+          EditorView.atomicRanges.of(
+            (view2) => view2.state.field(field2).decorations
+          )
+        ];
       }
     });
-    const liveAtomicRanges = EditorView.atomicRanges.of((view2) => {
-      try {
-        return view2.state.field(liveStateField).decorations;
-      } catch {
-        return Decoration.none;
-      }
-    });
-    return {
-      liveStateField,
-      liveAtomicRanges,
-      readLiveState(state) {
-        try {
-          return state.field(liveStateField);
-        } catch {
-          return {
-            projection: buildLiveProjection(createEmptyLiveDocModel()),
-            decorations: Decoration.none
-          };
-        }
-      }
-    };
+    return field;
   }
-
-  // src/live-v4/PointerController.ts
-  function createPointerController() {
-    return {
-      handlePointer() {
-        return false;
-      }
-    };
-  }
-
-  // src/live-v4/LiveRuntime.ts
-  function createLiveRuntime(options) {
-    const parser5 = createTableFirstParser();
-    const { liveStateField, liveAtomicRanges } = createLiveStateField({ parser: parser5 });
-    const pointerController = createPointerController();
-    const livePointerHandlers = EditorView.domEventHandlers({
-      mousedown(_event, view2) {
-        return pointerController.handlePointer(view2);
-      },
-      touchstart(_event, view2) {
-        return pointerController.handlePointer(view2);
-      }
-    });
-    return {
-      extensions: [
-        EditorView.theme({
-          "&": {
-            height: "100%",
-            color: "var(--vscode-editor-foreground, #d4d4d4)",
-            backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
-          },
-          ".cm-scroller": {
-            overflowX: "hidden !important",
-            overflowY: "auto !important",
-            height: "100%",
-            fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
-            fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
-            fontWeight: "var(--mlrt-editor-font-weight, normal)",
-            lineHeight: "var(--mlrt-editor-line-height, normal)",
-            letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
-            fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
-            fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)"
-          },
-          ".cm-gutters": {
-            backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e))",
-            color: "var(--vscode-editorLineNumber-foreground, #858585)",
-            borderRight: "none",
-            boxSizing: "border-box",
-            paddingLeft: "var(--mlrt-editor-gutter-left-padding, 18px)",
-            fontFamily: "var(--mlrt-editor-font-family, var(--vscode-editor-font-family, monospace))",
-            fontSize: "var(--mlrt-editor-font-size, var(--vscode-editor-font-size, 13px))",
-            fontWeight: "var(--mlrt-editor-font-weight, normal)",
-            lineHeight: "var(--mlrt-editor-line-height, normal)",
-            letterSpacing: "var(--mlrt-editor-letter-spacing, normal)",
-            fontFeatureSettings: "var(--mlrt-editor-font-feature-settings, normal)",
-            fontVariationSettings: "var(--mlrt-editor-font-variation-settings, normal)"
-          },
-          ".cm-activeLineGutter": {
-            backgroundColor: "transparent",
-            color: "var(--vscode-editorLineNumber-activeForeground, #c6c6c6)"
-          },
-          ".cm-lineNumbers .cm-gutterElement": {
-            boxSizing: "border-box",
-            width: "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
-            minHeight: "var(--mlrt-editor-line-height, 1.5em)",
-            minWidth: "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
-            maxWidth: "calc(var(--mlrt-editor-line-number-width, 22px) + var(--mlrt-editor-gutter-right-padding, 26px))",
-            padding: "0 var(--mlrt-editor-gutter-right-padding, 26px) 0 0"
-          },
-          '.cm-lineNumbers .cm-gutterElement[style*="visibility: hidden"]': {
-            minHeight: "0"
-          },
-          ".cm-content": {
-            minHeight: "100%",
-            boxSizing: "border-box",
-            padding: "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
-            caretColor: "var(--vscode-editorCursor-foreground, #aeafad)"
-          },
-          ".cm-line": {
-            color: "var(--vscode-editor-foreground, #d4d4d4)",
-            padding: "0"
-          },
-          ".cm-activeLine": {
-            backgroundColor: "var(--vscode-editor-lineHighlightBackground, transparent)"
-          },
-          ".cm-cursor, .cm-dropCursor": {
-            borderLeftColor: "var(--vscode-editorCursor-foreground, #aeafad)",
-            borderLeftWidth: "var(--mlrt-editor-cursor-width, 1px)"
-          },
-          "&.mm-live-v4-table-cell-focused .cm-activeLine": {
-            backgroundColor: "transparent"
-          },
-          "&.mm-live-v4-table-cell-focused .cm-cursor": {
-            display: "none"
-          }
-        }),
-        createTableBoundaryArrowNavigation(),
-        highlightActiveLine(),
-        highlightActiveLineGutter(),
-        lineNumbers(),
-        createTableLineNumberSuppressions(),
-        createEditorGeometrySync(),
-        createTableCellFocusClassSync(),
-        createTableSourceChangeFilter(),
-        createTableSourceSelectionGuard({
-          tableCellSelector: ".mm-live-v4-table-cell"
-        }),
-        markdown(),
-        ...options.lineWrapping ? [EditorView.lineWrapping] : [],
-        liveStateField,
-        liveAtomicRanges,
-        livePointerHandlers
-      ]
-    };
-  }
-  function createTableBoundaryArrowNavigation() {
-    return keymap.of([
-      {
-        key: "ArrowDown",
-        run: (view2) => focusTableAcrossBoundary(view2, "down")
-      },
-      {
-        key: "ArrowUp",
-        run: (view2) => focusTableAcrossBoundary(view2, "up")
-      }
-    ]);
-  }
-  function focusTableAcrossBoundary(view2, direction) {
-    if (!view2.state.selection.main.empty || isRenderedTableCellFocused(view2)) {
-      return false;
-    }
-    const head = view2.state.selection.main.head;
-    const line = view2.state.doc.lineAt(head);
-    const tables = parseMarkdownTables(view2.state.doc.toString());
+  function buildTableDecorationSets(doc2) {
+    const tables = getParsedTables(doc2);
+    const gutterBuilder = new RangeSetBuilder();
+    const decorations2 = Decoration.set(
+      tables.flatMap((table) => [
+        Decoration.widget({
+          widget: new RenderedTableWidget(table),
+          block: true,
+          side: -1
+        }).range(table.from),
+        ...[table.header, table.delimiter, ...table.body].map(
+          (row) => Decoration.line({
+            class: "mlrt-hidden-table-source-line"
+          }).range(row.from)
+        )
+      ]),
+      true
+    );
     for (const table of tables) {
-      const afterTable = getPositionAfterTable3(view2, table);
-      if (direction === "down" && line.number === table.startLine) {
-        return focusRenderedTableCell(view2, table, "first");
-      }
-      if (direction === "up" && line.from === afterTable && head >= afterTable) {
-        return focusRenderedTableCell(view2, table, "last");
-      }
-      if (head >= table.from && head <= table.to) {
-        return focusRenderedTableCell(
-          view2,
-          table,
-          direction === "down" ? "first" : "last"
-        );
+      for (const row of [table.header, table.delimiter, ...table.body]) {
+        gutterBuilder.add(row.from, row.from, hiddenLineNumberMarker);
       }
     }
-    return false;
-  }
-  function focusRenderedTableCell(view2, table, target) {
-    const wrapper = view2.dom.querySelector(
-      `.mm-live-v4-table-widget[data-src-from="${table.from}"]`
-    );
-    const cells = Array.from(
-      wrapper?.querySelectorAll(".mm-live-v4-table-cell") ?? []
-    );
-    const cell = target === "first" ? cells[0] : cells[cells.length - 1];
-    if (!cell) {
-      return false;
-    }
-    focusElementAtEnd(cell);
-    return true;
-  }
-  function focusElementAtEnd(element) {
-    element.focus();
-    const selection = element.ownerDocument.defaultView?.getSelection();
-    if (!selection) {
-      return;
-    }
-    const range = element.ownerDocument.createRange();
-    range.selectNodeContents(element);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-  function isRenderedTableCellFocused(view2) {
-    const activeElement = view2.dom.ownerDocument.activeElement;
-    return activeElement instanceof HTMLElement && Boolean(activeElement.closest(".mm-live-v4-table-cell"));
-  }
-  function getPositionAfterTable3(view2, table) {
-    const doc2 = view2.state.doc;
-    return table.to < doc2.length && doc2.sliceString(table.to, table.to + 1) === "\n" ? table.to + 1 : table.to;
-  }
-  function createEditorGeometrySync() {
-    return ViewPlugin.fromClass(
-      class {
-        measureKey = {};
-        lastGutterWidth = -1;
-        lastContentWidth = -1;
-        resizeObserver;
-        observedTableWidgets = /* @__PURE__ */ new Set();
-        constructor(view2) {
-          const ResizeObserverCtor = view2.dom.ownerDocument.defaultView?.ResizeObserver;
-          if (ResizeObserverCtor) {
-            this.resizeObserver = new ResizeObserverCtor(() => {
-              this.schedule(view2, true);
-            });
-            this.resizeObserver.observe(view2.dom);
-            this.resizeObserver.observe(view2.scrollDOM);
-          }
-          this.schedule(view2);
-        }
-        update(update) {
-          this.syncObservedTableWidgets(update.view);
-          if (update.transactions.some(
-            (transaction) => transaction.annotation(tableCellLiveEdit)
-          )) {
-            return;
-          }
-          if (update.geometryChanged || update.viewportChanged || update.docChanged) {
-            this.schedule(update.view);
-          }
-        }
-        destroy() {
-          this.resizeObserver?.disconnect();
-          this.observedTableWidgets.clear();
-        }
-        schedule(view2, forceContentRemeasure = false) {
-          if (forceContentRemeasure) {
-            forceCodeMirrorContentRemeasure(view2);
-          }
-          view2.requestMeasure({
-            key: this.measureKey,
-            read: (measuredView) => ({
-              gutterWidth: measuredView.dom.querySelector(".cm-gutters")?.offsetWidth ?? 0,
-              contentWidth: measuredView.scrollDOM.clientWidth
-            }),
-            write: (metrics, measuredView) => {
-              this.syncObservedTableWidgets(measuredView);
-              const scrollerStyle = measuredView.scrollDOM.style;
-              if (metrics.gutterWidth > 0 && metrics.gutterWidth !== this.lastGutterWidth) {
-                this.lastGutterWidth = metrics.gutterWidth;
-                scrollerStyle.setProperty(
-                  "--mlrt-live-gutter-width",
-                  `${metrics.gutterWidth}px`
-                );
-              }
-              if (metrics.contentWidth > 0 && metrics.contentWidth !== this.lastContentWidth) {
-                this.lastContentWidth = metrics.contentWidth;
-                scrollerStyle.setProperty(
-                  "--mlrt-live-content-width",
-                  `calc(${metrics.contentWidth}px - var(--mlrt-editor-right-padding, 26px))`
-                );
-              }
-            }
-          });
-        }
-        syncObservedTableWidgets(view2) {
-          if (!this.resizeObserver) {
-            return;
-          }
-          const widgets = new Set(
-            Array.from(view2.dom.querySelectorAll(".mm-live-v4-table-widget"))
-          );
-          for (const widget of widgets) {
-            if (!this.observedTableWidgets.has(widget)) {
-              this.resizeObserver.observe(widget);
-            }
-          }
-          for (const widget of this.observedTableWidgets) {
-            if (!widgets.has(widget)) {
-              this.resizeObserver.unobserve(widget);
-            }
-          }
-          this.observedTableWidgets.clear();
-          for (const widget of widgets) {
-            this.observedTableWidgets.add(widget);
-          }
-        }
-      }
-    );
-  }
-  function forceCodeMirrorContentRemeasure(view2) {
-    const viewState = view2.viewState;
-    if (viewState) {
-      viewState.mustMeasureContent = "refresh";
-    }
-  }
-  function createTableCellFocusClassSync() {
-    return ViewPlugin.fromClass(
-      class {
-        constructor(view2) {
-          this.view = view2;
-          this.syncFocusClass = () => this.sync();
-          const doc2 = view2.dom.ownerDocument;
-          doc2.addEventListener("focusin", this.syncFocusClass, true);
-          doc2.addEventListener("focusout", this.syncFocusClass, true);
-          this.sync();
-        }
-        view;
-        syncFocusClass;
-        update(update) {
-          if (update.focusChanged || update.selectionSet || update.docChanged) {
-            this.sync();
-          }
-        }
-        destroy() {
-          const doc2 = this.view.dom.ownerDocument;
-          doc2.removeEventListener("focusin", this.syncFocusClass, true);
-          doc2.removeEventListener("focusout", this.syncFocusClass, true);
-        }
-        sync() {
-          queueMicrotask(() => {
-            const activeElement = this.view.dom.ownerDocument.activeElement;
-            const hasTableCellFocus = activeElement instanceof HTMLElement && Boolean(activeElement.closest(".mm-live-v4-table-cell"));
-            this.view.dom.classList.toggle(
-              "mm-live-v4-table-cell-focused",
-              hasTableCellFocus
-            );
-          });
-        }
-      }
-    );
-  }
-  function createTableLineNumberSuppressions() {
-    const tableLineNumberSuppressions = StateField.define(
-      {
-        create(state) {
-          return buildTableLineNumberSuppressions(state.doc.toString());
-        },
-        update(value, transaction) {
-          if (!transaction.docChanged) {
-            return value;
-          }
-          if (transaction.annotation(tableCellLiveEdit)) {
-            return value.map(transaction.changes);
-          }
-          return buildTableLineNumberSuppressions(
-            transaction.state.doc.toString()
-          );
-        },
-        provide(field) {
-          return lineNumberMarkers.from(field);
-        }
-      }
-    );
-    return tableLineNumberSuppressions;
+    return {
+      decorations: decorations2,
+      gutterMarkers: gutterBuilder.finish()
+    };
   }
   var hiddenLineNumberMarker = new class extends GutterMarker {
-    elementClass = "mm-live-v4-hidden-table-source-gutter";
+    elementClass = "mlrt-hidden-table-source-gutter";
     eq(other) {
       return other === this;
     }
@@ -25823,14 +25743,25 @@
       return view2.dom.ownerDocument.createTextNode("");
     }
   }();
-  function buildTableLineNumberSuppressions(text) {
-    const builder = new RangeSetBuilder();
-    for (const table of parseMarkdownTables(text)) {
-      for (const row of [table.header, table.delimiter, ...table.body]) {
-        builder.add(row.from, row.from, hiddenLineNumberMarker);
-      }
-    }
-    return builder.finish();
+
+  // src/editor/liveEditorExtensions.ts
+  function createLiveEditorExtensions(options) {
+    return [
+      createEditorTheme(),
+      createTableBoundaryArrowNavigation(),
+      highlightActiveLine(),
+      highlightActiveLineGutter(),
+      lineNumbers(),
+      createEditorGeometrySync(),
+      createTableCellFocusClassSync(),
+      createTableSourceChangeFilter(),
+      createTableSourceSelectionGuard({
+        tableCellSelector: TABLE_CELL_SELECTOR
+      }),
+      markdown(),
+      ...options.lineWrapping ? [EditorView.lineWrapping] : [],
+      createTableDecorations()
+    ];
   }
 
   // src/webview/liveEditor.ts
@@ -25848,20 +25779,21 @@
   var hostDocumentApplyToken = 0;
   var pendingWebviewEchoes = [];
   var pendingHostUndoFocusStack = [];
+  var MAX_PENDING_HOST_UNDO_FOCUS = 200;
   try {
-    const runtime = createLiveRuntime(readEditorOptions());
+    const editorExtensions = createLiveEditorExtensions(readEditorOptions());
     const initialDocument = readInitialDocument();
     app.replaceChildren();
-    app.className = "mm-live-v4-shell";
+    app.className = "mlrt-editor-shell";
     const editorMount = document.createElement("div");
-    editorMount.className = "mm-live-v4-editor-mount";
+    editorMount.className = "mlrt-editor-mount";
     app.append(editorMount);
     view = new EditorView({
       parent: editorMount,
       state: EditorState.create({
         doc: initialDocument,
         extensions: [
-          ...runtime.extensions,
+          ...editorExtensions,
           EditorView.updateListener.of((update) => {
             if (update.selectionSet || update.focusChanged || update.docChanged) {
               recordDebug("editor-update", {
@@ -25880,7 +25812,7 @@
                   commitSequence
                 );
               } else {
-                pendingHostUndoFocusStack.push({
+                pushPendingHostUndoFocus({
                   beforeText: update.startState.doc.toString(),
                   restore: lastTableCellCommit ? { kind: "tableCell", detail: lastTableCellCommit } : {
                     kind: "editor",
@@ -25939,17 +25871,19 @@
       return;
     }
     const undoFocus = popPendingHostUndoFocus(text);
-    const fallbackSelection = clampEditorPosition(
-      view.state.selection.main.head,
-      text.length
-    );
-    markHostDocumentApplyInProgress();
-    blurActiveTableCell();
-    applyingFromHost = true;
     const hostChange = computeMinimalTextChange(currentText, text);
+    markHostDocumentApplyInProgress();
+    const returnFocusToEditor = undoFocus?.restore.kind === "editor";
+    if (returnFocusToEditor) {
+      blurActiveTableCell();
+    }
+    applyingFromHost = true;
     view.dispatch({
       changes: hostChange,
-      selection: undoFocus ? selectionForHostUndoRestore(undoFocus.restore, text.length) : EditorSelection.cursor(fallbackSelection, 1),
+      selection: undoFocus?.restore.kind === "editor" ? EditorSelection.cursor(
+        clampEditorPosition(undoFocus.restore.anchor, text.length),
+        1
+      ) : void 0,
       annotations: allowTableSourceChange.of(true)
     });
     applyingFromHost = false;
@@ -25981,7 +25915,7 @@
     if (!(activeElement instanceof HTMLElement)) {
       return;
     }
-    activeElement.closest(".mm-live-v4-table-cell")?.blur();
+    findCell(activeElement)?.blur();
   }
   function installEditorCommandBridge(root) {
     const ownerDocument = root.ownerDocument;
@@ -25989,7 +25923,7 @@
       "pointerdown",
       (event) => {
         if (event.target instanceof Element) {
-          if (event.target.closest(".mm-live-v4-table-cell")) {
+          if (event.target.closest(TABLE_CELL_SELECTOR)) {
             return;
           }
           if (!root.contains(event.target)) {
@@ -26047,7 +25981,7 @@
   function pushTableCellCommitUndoFocus(beforeText, commitSequence) {
     let currentText = beforeText;
     for (const step of commitSequence.steps) {
-      pendingHostUndoFocusStack.push({
+      pushPendingHostUndoFocus({
         beforeText: currentText,
         restore: {
           kind: "tableCell",
@@ -26055,6 +25989,15 @@
         }
       });
       currentText = applyDocumentChange(currentText, step.change);
+    }
+  }
+  function pushPendingHostUndoFocus(pendingFocus) {
+    pendingHostUndoFocusStack.push(pendingFocus);
+    if (pendingHostUndoFocusStack.length > MAX_PENDING_HOST_UNDO_FOCUS) {
+      pendingHostUndoFocusStack.splice(
+        0,
+        pendingHostUndoFocusStack.length - MAX_PENDING_HOST_UNDO_FOCUS
+      );
     }
   }
   function postEditorCommand(command) {
@@ -26134,16 +26077,12 @@
     }
     return null;
   }
-  function selectionForHostUndoRestore(restore, documentLength) {
-    const anchor = restore.kind === "tableCell" ? restore.detail.from : restore.anchor;
-    return EditorSelection.cursor(clampEditorPosition(anchor, documentLength), 1);
-  }
   function clampEditorPosition(position, documentLength) {
     return Math.min(documentLength, Math.max(0, position));
   }
   function getTableCellCommitSequence(update) {
     for (const transaction of update.transactions) {
-      const sequence = transaction.annotation(tableCellCommitSequence);
+      const sequence = transaction.annotation(tableCellCommitSequenceAnnotation);
       if (sequence) {
         return sequence;
       }
@@ -26225,7 +26164,7 @@
         activeElement: summarizeTarget(document.activeElement)
       });
     });
-    root.addEventListener("mlrt:table-cell-commit", (event) => {
+    root.addEventListener(TABLE_CELL_COMMIT_EVENT, (event) => {
       if (event instanceof CustomEvent && isTableCellCommitDetail(event.detail)) {
         lastTableCellCommit = event.detail;
       }
@@ -26240,7 +26179,7 @@
   function focusTableCellAfterRender(detail) {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const tableSelector = `.mm-live-v4-table-cell[data-table-from="${detail.tableFrom}"]`;
+        const tableSelector = `${TABLE_CELL_SELECTOR}[data-table-from="${detail.tableFrom}"]`;
         const selector = [
           tableSelector,
           `[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
@@ -26249,7 +26188,7 @@
         ].join("");
         const cell = document.querySelector(selector) ?? document.querySelector(
           [
-            `.mm-live-v4-table-cell[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
+            `${TABLE_CELL_SELECTOR}[data-row-kind="${cssEscapeAttribute(detail.rowKind)}"]`,
             `[data-row-index="${detail.rowIndex}"]`,
             `[data-column="${detail.column}"]`
           ].join("")
@@ -26258,41 +26197,9 @@
           return;
         }
         cell.focus();
-        setElementCaretOffset(cell, detail.restoreCaretOffset);
+        setCellCaretOffset(cell, detail.restoreCaretOffset);
       });
     });
-  }
-  function setElementCaretOffset(element, offset) {
-    const selection = element.ownerDocument.defaultView?.getSelection();
-    if (!selection) {
-      return;
-    }
-    const walker = element.ownerDocument.createTreeWalker(
-      element,
-      NodeFilter.SHOW_TEXT
-    );
-    let remainingOffset = Math.max(0, offset);
-    let textNode = walker.nextNode();
-    while (textNode) {
-      const length = textNode.textContent?.length ?? 0;
-      if (remainingOffset <= length) {
-        const range2 = element.ownerDocument.createRange();
-        range2.setStart(textNode, remainingOffset);
-        range2.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range2);
-        range2.detach();
-        return;
-      }
-      remainingOffset -= length;
-      textNode = walker.nextNode();
-    }
-    const range = element.ownerDocument.createRange();
-    range.selectNodeContents(element);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    range.detach();
   }
   function cssEscapeAttribute(value) {
     return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');

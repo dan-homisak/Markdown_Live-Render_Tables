@@ -2,7 +2,7 @@
   "name": "markdown-live-render-tables",
   "displayName": "Markdown Live Editor",
   "description": "A VS Code extension for editing markdown in a live rendered editor.",
-  "version": "0.1.63",
+  "version": "0.1.66",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -10,12 +10,6 @@
   },
   "categories": [
     "Other"
-  ],
-  "activationEvents": [
-    "onStartupFinished",
-    "onLanguage:markdown",
-    "onCustomEditor:markdownLiveRenderTables.liveEditor",
-    "onCustomEditor:markdownLiveRenderTables.tableEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -62,19 +56,6 @@
           }
         ],
         "priority": "option"
-      },
-      {
-        "viewType": "markdownLiveRenderTables.tableEditor",
-        "displayName": "Markdown Live Editor (Legacy)",
-        "selector": [
-          {
-            "filenamePattern": "*.md"
-          },
-          {
-            "filenamePattern": "*.markdown"
-          }
-        ],
-        "priority": "option"
       }
     ],
     "menus": {
@@ -88,7 +69,7 @@
     }
   },
   "scripts": {
-    "bundle:webview": "esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/liveEditor.js && esbuild src/webview/tableEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/tableEditor.js",
+    "bundle:webview": "esbuild src/webview/liveEditor.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=media/liveEditor.js",
     "compile": "tsc -p ./ && npm run bundle:webview",
     "package": "vsce package --allow-missing-repository --out markdown-live-render-tables-latest.vsix",
     "package:windows": "npm run package && node scripts/prepare-windows-install-bundle.mjs",
