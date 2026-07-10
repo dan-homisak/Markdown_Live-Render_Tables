@@ -15,6 +15,7 @@ import {
 import { focusCellAtEnd, TABLE_CELL_SELECTOR } from "./cellSelection";
 import { measureChWidth } from "./tableLayout";
 import { getTableWidgetTable } from "./tableWidgetState";
+import { selectTableColumn, selectTableRow } from "./tableRangeSelection";
 
 /**
  * Notion-style, proximity-driven structure controls for a rendered table.
@@ -80,6 +81,7 @@ interface StructureMenuEntry {
 }
 
 type StructureMenuIcon =
+  | "select"
   | "insert-column-left"
   | "insert-column-right"
   | "insert-row-above"
@@ -250,6 +252,21 @@ export function bindTableStructureControls(
     const canDelete = currentTable().columnCount > 1;
     openMenu(anchor, [
       {
+        icon: "select",
+        label: "Select column",
+        action: "select-column",
+        apply: () => {
+          const current = currentTable();
+          closeMenu();
+          selectTableColumn(
+            wrapper,
+            current.from,
+            column,
+            current.body.length + 1,
+          );
+        },
+      },
+      {
         icon: "insert-column-left",
         label: "Insert column left",
         action: "insert-column-left",
@@ -295,6 +312,16 @@ export function bindTableStructureControls(
     if (rowKind === "header") {
       openMenu(anchor, [
         {
+          icon: "select",
+          label: "Select row",
+          action: "select-row",
+          apply: () => {
+            const current = currentTable();
+            closeMenu();
+            selectTableRow(wrapper, current.from, 0, current.columnCount);
+          },
+        },
+        {
           icon: "insert-row-below",
           label: "Insert row below",
           action: "insert-row-below",
@@ -309,6 +336,21 @@ export function bindTableStructureControls(
     }
 
     openMenu(anchor, [
+      {
+        icon: "select",
+        label: "Select row",
+        action: "select-row",
+        apply: () => {
+          const current = currentTable();
+          closeMenu();
+          selectTableRow(
+            wrapper,
+            current.from,
+            rowIndex + 1,
+            current.columnCount,
+          );
+        },
+      },
       {
         icon: "insert-row-above",
         label: "Insert row above",
@@ -747,6 +789,9 @@ function createStructureMenuIcon(
   };
 
   switch (icon) {
+    case "select":
+      appendPath("M3 3h10v10H3V3Zm1 1v8h8V4H4Zm2 2h4v4H6V6Z");
+      break;
     case "insert-column-left":
       appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
       appendPath("M2 4h1v8H2V4Zm4 3h2V5h1v2h2v1H9v2H8V8H6V7Z");

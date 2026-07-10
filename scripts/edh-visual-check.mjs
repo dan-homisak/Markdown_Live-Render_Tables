@@ -20,6 +20,45 @@ const userDataDir = mkdtempSync(path.join(os.tmpdir(), "mlrt-edh-"));
 const qaDir = path.join(repoRoot, "qa");
 const pixelTolerance = 0.5;
 await mkdir(qaDir, { recursive: true });
+const fixturePath = path.join(userDataDir, "TestTable.md");
+await writeFile(
+  fixturePath,
+  [
+    "Text up here at. ",
+    "",
+    "More text. ",
+    "",
+    "- list",
+    "  - nested bullet",
+    "  - 2",
+    "- continued",
+    "",
+    "",
+    "11",
+    "",
+    "| Key | Value |",
+    "|---|---|",
+    "| Long | This is a very long cell intended to test wrapping behavior in table renderers. It includes **bold text**, `inline code`, a [link](https://example.com), and a long token: abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz. Test edit. Another. This is another edit. |",
+    "",
+    "17",
+    "",
+    "",
+    "20",
+    "",
+    "| Key | Value |  |",
+    "|---|---| --- |",
+    "|  |  |  |",
+    "| Short | short cell. This is resizing the cell now |  |",
+    "|  |  |  |",
+    "|  |  | test |",
+    "",
+    "26",
+    "",
+    "more test here",
+    "",
+  ].join("\n"),
+  "utf8",
+);
 console.log(`Using Electron DevTools port ${port}`);
 
 const child = spawn(
@@ -32,7 +71,7 @@ const child = spawn(
     "--disable-workspace-trust",
     "--skip-release-notes",
     "--skip-welcome",
-    path.join(repoRoot, "TestTable.md"),
+    fixturePath,
   ],
   { stdio: "ignore", env: createElectronEnv() },
 );
@@ -282,6 +321,173 @@ try {
   );
   assertTableCellEditShortcuts(editShortcuts);
   console.log("TABLE CELL EDIT SHORTCUTS CHECK:", editShortcuts);
+  const clipboardSelection = await evaluateJson(
+    liveClient,
+    tableClipboardSelectionExpression(),
+  );
+  assertTableClipboardSelection(clipboardSelection);
+  console.log("TABLE CLIPBOARD SELECTION CHECK:", clipboardSelection);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-selection.png"),
+  );
+  const trustedCopySetup = await evaluateJson(
+    liveClient,
+    tableTrustedCopySetupExpression(),
+  );
+  assertTableTrustedCopySetup(trustedCopySetup);
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    modifiers: 4,
+    key: "c",
+    code: "KeyC",
+    windowsVirtualKeyCode: 67,
+  });
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    modifiers: 4,
+    key: "c",
+    code: "KeyC",
+    windowsVirtualKeyCode: 67,
+  });
+  await sleep(150);
+  const trustedCopy = await evaluateJson(
+    liveClient,
+    tableTrustedCopyResultExpression(),
+  );
+  assertTableTrustedCopy(trustedCopy);
+  console.log("TABLE TRUSTED COPY CHECK:", trustedCopy);
+  const clipboardMenu = await evaluateJson(
+    liveClient,
+    tableClipboardMenuExpression(),
+  );
+  assertTableClipboardMenu(clipboardMenu);
+  console.log("TABLE CLIPBOARD MENU CHECK:", clipboardMenu);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-clipboard-menu.png"),
+  );
+  const crossBoundarySetup = await evaluateJson(
+    liveClient,
+    tableCrossBoundaryDragSetupExpression(),
+  );
+  assertTableCrossBoundaryDragSetup(crossBoundarySetup);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: crossBoundarySetup.startX,
+    y: crossBoundarySetup.startY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: crossBoundarySetup.plainX,
+    y: crossBoundarySetup.plainY,
+    button: "left",
+  });
+  await sleep(80);
+  const crossBoundaryIntermediate = await evaluateJson(
+    liveClient,
+    tableCrossBoundaryDragResultExpression(),
+  );
+  assertTableCrossBoundaryDrag(crossBoundaryIntermediate, 1);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: crossBoundarySetup.endX,
+    y: crossBoundarySetup.endY,
+    button: "left",
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: crossBoundarySetup.endX,
+    y: crossBoundarySetup.endY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(150);
+  const crossBoundaryDrag = await evaluateJson(
+    liveClient,
+    tableCrossBoundaryDragResultExpression(),
+  );
+  assertTableCrossBoundaryDrag(crossBoundaryDrag, 2);
+  console.log("TABLE CROSS-BOUNDARY DRAG CHECK:", crossBoundaryDrag);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-document-drag.png"),
+  );
+  await evaluateJson(liveClient, clearCrossBoundaryDragExpression());
+  const documentToTableSetup = await evaluateJson(
+    liveClient,
+    documentToTableDragSetupExpression(),
+  );
+  assertDocumentToTableDragSetup(documentToTableSetup);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: documentToTableSetup.startX,
+    y: documentToTableSetup.startY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: documentToTableSetup.firstX,
+    y: documentToTableSetup.firstY,
+    button: "left",
+  });
+  await sleep(80);
+  const firstMixedCell = await evaluateJson(
+    liveClient,
+    documentToTableDragResultExpression(),
+  );
+  assertDocumentToTableDragResult(firstMixedCell, 1);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: documentToTableSetup.secondX,
+    y: documentToTableSetup.secondY,
+    button: "left",
+  });
+  await sleep(80);
+  const secondMixedCell = await evaluateJson(
+    liveClient,
+    documentToTableDragResultExpression(),
+  );
+  assertDocumentToTableDragResult(secondMixedCell, 2);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: documentToTableSetup.finalX,
+    y: documentToTableSetup.finalY,
+    button: "left",
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: documentToTableSetup.finalX,
+    y: documentToTableSetup.finalY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(120);
+  const finalMixedCells = await evaluateJson(
+    liveClient,
+    documentToTableDragResultExpression(),
+  );
+  assertDocumentToTableDragResult(finalMixedCells, 8);
+  console.log("DOCUMENT-TO-TABLE CELL DRAG CHECK:", finalMixedCells);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-document-to-table-cells.png"),
+  );
+  const mixedDelete = await evaluateJson(
+    liveClient,
+    documentToTableDeleteExpression(),
+  );
+  assertDocumentToTableDelete(mixedDelete);
+  console.log("MIXED DOCUMENT/TABLE DELETE CHECK:", mixedDelete);
+  const documentClipboard = await evaluateJson(
+    liveClient,
+    documentClipboardExpression(),
+  );
+  assertDocumentClipboard(documentClipboard);
+  console.log("DOCUMENT CLIPBOARD CHECK:", documentClipboard);
   const trustedUndoSetup = await evaluateJson(
     liveClient,
     tableTrustedUndoSetupExpression(),
@@ -2015,6 +2221,595 @@ function tableCellEditShortcutsExpression() {
   })()`;
 }
 
+function tableClipboardSelectionExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    if (!root) return JSON.stringify({ ok: false, reason: 'missing live root' });
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    const cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (!view || !wrapper || !cell) {
+      return JSON.stringify({ ok: false, reason: 'missing clipboard targets' });
+    }
+    const beforeDoc = view.state.doc.toString();
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    const key = (target, keyValue, options = {}) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: keyValue, bubbles: true, cancelable: true, ...options,
+    }));
+    cell.focus();
+    const escapedDefault = key(cell, 'Escape');
+    await wait();
+    const singleSelected = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+    const wrapperFocused = root.activeElement === wrapper;
+    key(wrapper, 'ArrowRight', { shiftKey: true });
+    await wait();
+    const rangeSelected = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+
+    const outsideLine = Array.from(root.querySelectorAll('.cm-line')).find((line) =>
+      !line.classList.contains('mlrt-hidden-table-source-line')
+    );
+    outsideLine?.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 77,
+    }));
+    outsideLine?.dispatchEvent(new root.defaultView.PointerEvent('pointerup', {
+      bubbles: true, cancelable: true, button: 0, buttons: 0, pointerId: 77,
+    }));
+    await wait();
+    const outsideClickCleared = wrapper.querySelectorAll('.mlrt-table-cell-selected').length === 0;
+    cell.focus();
+    key(cell, 'Escape');
+    key(wrapper, 'ArrowRight', { shiftKey: true });
+    await wait();
+
+    const transfer = new root.defaultView.DataTransfer();
+    const copyEvent = new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: transfer, bubbles: true, cancelable: true,
+    });
+    wrapper.dispatchEvent(copyEvent);
+    const smartPlain = transfer.getData('text/plain');
+    const smartHtml = transfer.getData('text/html');
+    const privateData = transfer.getData('application/x-markdown-live-editor+json');
+
+    cell.focus();
+    key(cell, 'Escape');
+    await wait();
+    const cutTransfer = new root.defaultView.DataTransfer();
+    wrapper.dispatchEvent(new root.defaultView.ClipboardEvent('cut', {
+      clipboardData: cutTransfer, bubbles: true, cancelable: true,
+    }));
+    const cutDidNotChangeSource = view.state.doc.toString() === beforeDoc;
+    const hasPendingCutClass = wrapper.classList.contains('mlrt-table-cut-pending');
+    const moveSourceText = cell.innerText;
+    const moveDestination = wrapper.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (moveDestination) {
+      moveDestination.focus();
+      key(moveDestination, 'Escape');
+      wrapper.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+        clipboardData: cutTransfer, bubbles: true, cancelable: true,
+      }));
+      await wait();
+    }
+    const afterMoveWrapper = root.querySelector('.mlrt-table-widget');
+    const movedSource = afterMoveWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const movedDestination = afterMoveWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    const moveCompleted = (movedSource?.innerText ?? '') === '' && movedDestination?.innerText === moveSourceText;
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 999039, debug: false },
+    }));
+    await wait();
+
+    const pasteWrapper = root.querySelector('.mlrt-table-widget');
+    const pasteCell = pasteWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    pasteCell?.focus();
+    if (pasteCell) key(pasteCell, 'Escape');
+    const pasteTransfer = new root.defaultView.DataTransfer();
+    pasteTransfer.setData('text/plain', 'Clip A\\tClip B\\r\\nClip C\\tClip D');
+    pasteWrapper?.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+      clipboardData: pasteTransfer, bubbles: true, cancelable: true,
+    }));
+    await wait();
+    const afterPaste = view.state.doc.toString();
+    const pasteApplied = ['Clip A', 'Clip B', 'Clip C', 'Clip D'].every((value) => afterPaste.includes(value));
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 999040, debug: false },
+    }));
+    await wait();
+    const htmlWrapper = root.querySelector('.mlrt-table-widget');
+    const htmlCell = htmlWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (htmlWrapper && htmlCell) {
+      htmlCell.focus();
+      key(htmlCell, 'Escape');
+      const htmlTransfer = new root.defaultView.DataTransfer();
+      htmlTransfer.setData('text/html', '<table><tr><td>Visible 42<span style="display:none">FormulaSecret</span></td><td>Word</td></tr><tr><td rowspan="2">Merged</td><td>Second</td></tr><tr><td>Third</td></tr></table>');
+      htmlTransfer.setData('text/plain', 'Visible 42\\tWord\\r\\nMerged\\tSecond\\r\\n\\tThird');
+      htmlWrapper.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+        clipboardData: htmlTransfer, bubbles: true, cancelable: true,
+      }));
+      await wait();
+    }
+    const afterHtmlPaste = view.state.doc.toString();
+    const htmlPasteApplied = ['Visible 42', 'Word', 'Merged', 'Second', 'Third'].every((value) => afterHtmlPaste.includes(value));
+    const hiddenOfficeTextExcluded = !afterHtmlPaste.includes('FormulaSecret');
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 999041, debug: false },
+    }));
+    await wait();
+    const restoredWrapper = root.querySelector('.mlrt-table-widget');
+    const restoredCell = restoredWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (restoredWrapper && restoredCell) {
+      restoredCell.focus();
+      key(restoredCell, 'Escape');
+      key(restoredWrapper, 'ArrowRight', { shiftKey: true });
+      await wait();
+    }
+    return JSON.stringify({
+      ok: true,
+      escapedDefault,
+      singleSelected,
+      rangeSelected,
+      outsideClickCleared,
+      wrapperFocused,
+      smartHasTabs: smartPlain.includes('\\t'),
+      smartHasPipes: smartPlain.includes('|'),
+      smartHasHtmlTable: smartHtml.includes('<table'),
+      hasPrivateData: privateData.length > 0,
+      cutDidNotChangeSource,
+      hasPendingCutClass,
+      moveCompleted,
+      pasteApplied,
+      htmlPasteApplied,
+      hiddenOfficeTextExcluded,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
+}
+
+function tableTrustedCopySetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const wrapper = root?.querySelector('.mlrt-table-widget');
+    const cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (!root || !wrapper || !cell) {
+      return JSON.stringify({ ok: false, reason: 'missing trusted copy targets' });
+    }
+    const key = (target, keyValue, options = {}) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: keyValue, bubbles: true, cancelable: true, ...options,
+    }));
+    cell.focus();
+    key(cell, 'Escape');
+    key(wrapper, 'ArrowRight', { shiftKey: true });
+    root.defaultView.__MLRT_TRUSTED_COPY_RESULT__ = { seen: false };
+    root.addEventListener('copy', (event) => {
+      const transfer = event.clipboardData;
+      root.defaultView.__MLRT_TRUSTED_COPY_RESULT__ = {
+        seen: true,
+        plain: transfer?.getData('text/plain') ?? '',
+        html: transfer?.getData('text/html') ?? '',
+        privateData: transfer?.getData('application/x-markdown-live-editor+json') ?? '',
+      };
+    }, { once: true });
+    return JSON.stringify({
+      ok: true,
+      wrapperFocused: root.activeElement === wrapper,
+      selectedCount: wrapper.querySelectorAll('.mlrt-table-cell-selected').length,
+    });
+  })()`;
+}
+
+function tableTrustedCopyResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_TRUSTED_COPY_RESULT__);
+    const result = root?.defaultView.__MLRT_TRUSTED_COPY_RESULT__ ?? { seen: false };
+    return JSON.stringify({
+      ok: true,
+      seen: result.seen,
+      plainHasTabs: result.plain?.includes('\\t') ?? false,
+      plainHasPipes: result.plain?.includes('|') ?? false,
+      htmlHasTable: result.html?.includes('<table') ?? false,
+      hasPrivateData: (result.privateData?.length ?? 0) > 0,
+    });
+  })()`;
+}
+
+function tableCrossBoundaryDragSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrappers = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? []);
+    const wrapper = wrappers[0];
+    const destinationWrapper = wrappers[1];
+    const cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const destinationCell = destinationWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (!root || !view || !wrapper || !cell || !destinationCell) {
+      return JSON.stringify({ ok: false, reason: 'missing cross-boundary drag targets' });
+    }
+    root.querySelector('.mlrt-clipboard-menu')?.remove();
+    const cellRect = cell.getBoundingClientRect();
+    const tableFrom = Number(wrapper.dataset.srcFrom);
+    const afterTableText = view.state.doc.toString().indexOf('17', tableFrom);
+    const plain = view.coordsAtPos(afterTableText >= 0 ? afterTableText : view.state.doc.length);
+    const destinationRect = destinationCell.getBoundingClientRect();
+    root.defaultView.__MLRT_CROSS_DRAG_TABLE__ = {
+      from: tableFrom,
+      to: Number(wrapper.dataset.srcTo ?? tableFrom),
+    };
+    return JSON.stringify({
+      ok: Boolean(plain),
+      startX: cellRect.left + Math.min(12, cellRect.width / 2),
+      startY: cellRect.top + Math.min(10, cellRect.height / 2),
+      plainX: (plain?.left ?? cellRect.left) + 8,
+      plainY: (plain?.top ?? cellRect.bottom + 24) + 8,
+      endX: destinationRect.left + Math.min(12, destinationRect.width / 2),
+      endY: destinationRect.top + Math.min(10, destinationRect.height / 2),
+    });
+  })()`;
+}
+
+function tableCrossBoundaryDragResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_CROSS_DRAG_TABLE__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const table = root?.defaultView.__MLRT_CROSS_DRAG_TABLE__;
+    const range = view?.state.selection.main;
+    const selectedTables = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? [])
+      .filter((wrapper) => wrapper.querySelector('.mlrt-document-range-selected'));
+    return JSON.stringify({
+      ok: Boolean(root && view && table && range),
+      selectionEmpty: range?.empty ?? true,
+      selectionFrom: range?.from ?? null,
+      selectionTo: range?.to ?? null,
+      tableFrom: table?.from ?? null,
+      selectedDocumentCells: root?.querySelectorAll('.mlrt-document-range-selected').length ?? 0,
+      selectedDocumentTables: selectedTables.length,
+      completelySelectedDocumentTables: selectedTables.filter((wrapper) =>
+        wrapper.querySelectorAll('.mlrt-document-range-selected').length ===
+          wrapper.querySelectorAll('.mlrt-table-cell').length
+      ).length,
+      selectedRangeCells: root?.querySelectorAll('.mlrt-table-cell-selected').length ?? 0,
+    });
+  })()`;
+}
+
+function clearCrossBoundaryDragExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_CROSS_DRAG_TABLE__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    view?.dispatch({ selection: { anchor: 0 } });
+    return JSON.stringify({ ok: Boolean(view) });
+  })()`;
+}
+
+function documentToTableDragSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelectorAll('.mlrt-table-widget').length >= 2);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrappers = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? []);
+    const target = wrappers[1];
+    const first = target?.querySelector('.mlrt-table-cell[data-row-kind="header"][data-column="0"]');
+    const second = target?.querySelector('.mlrt-table-cell[data-row-kind="header"][data-column="1"]');
+    const final = target?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="1"][data-column="1"]');
+    if (!root || !view || !first || !second || !final) {
+      return JSON.stringify({ ok: false, reason: 'missing document-to-table drag targets' });
+    }
+    const source = view.state.doc.toString();
+    const startPosition = source.indexOf('\\n20\\n') + 1;
+    const start = view.coordsAtPos(startPosition);
+    const firstRect = first.getBoundingClientRect();
+    const secondRect = second.getBoundingClientRect();
+    const finalRect = final.getBoundingClientRect();
+    root.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__ = {
+      beforeDoc: source,
+      targetTableFrom: Number(target.dataset.srcFrom),
+    };
+    return JSON.stringify({
+      ok: Boolean(start),
+      startX: (start?.left ?? 0) + 3,
+      startY: (start?.top ?? 0) + 8,
+      firstX: firstRect.left + Math.min(8, firstRect.width / 2),
+      firstY: firstRect.top + Math.min(8, firstRect.height / 2),
+      secondX: secondRect.left + Math.min(8, secondRect.width / 2),
+      secondY: secondRect.top + Math.min(8, secondRect.height / 2),
+      finalX: finalRect.left + Math.min(8, finalRect.width / 2),
+      finalY: finalRect.top + Math.min(8, finalRect.height / 2),
+    });
+  })()`;
+}
+
+function documentToTableDragResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_DOCUMENT_TABLE_DRAG__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root?.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__;
+    const wrapper = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? [])
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.targetTableFrom);
+    const range = view?.state.selection.main;
+    const nativeSelection = root?.defaultView.getSelection();
+    return JSON.stringify({
+      ok: Boolean(root && view && wrapper && range),
+      selectionEmpty: range?.empty ?? true,
+      selectedCellCount: wrapper?.querySelectorAll('.mlrt-document-range-selected').length ?? 0,
+      rectangularCellCount: root?.querySelectorAll('.mlrt-table-cell-selected').length ?? 0,
+      nativeSelectionCollapsed: nativeSelection?.isCollapsed ?? true,
+    });
+  })()`;
+}
+
+function documentToTableDeleteExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_DOCUMENT_TABLE_DRAG__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root?.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__;
+    if (!root || !view || !state) {
+      return JSON.stringify({ ok: false, reason: 'missing mixed delete state' });
+    }
+    root.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Delete', code: 'Delete', bubbles: true, cancelable: true,
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    const afterDelete = view.state.doc.toString();
+    const targetTableRemoved = !Array.from(root.querySelectorAll('.mlrt-table-widget'))
+      .some((wrapper) => Number(wrapper.dataset.srcFrom) === state.targetTableFrom);
+    const firstTableRemains = afterDelete.includes('| Key | Value |') && afterDelete.includes('| Long |');
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: state.beforeDoc, revision: 999044, debug: false },
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    return JSON.stringify({
+      ok: true,
+      docChanged: afterDelete !== state.beforeDoc,
+      targetTableRemoved,
+      firstTableRemains,
+      restoredDoc: view.state.doc.toString() === state.beforeDoc,
+    });
+  })()`;
+}
+
+function tableClipboardMenuExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const wrapper = root?.querySelector('.mlrt-table-widget');
+    const cell = wrapper?.querySelector('.mlrt-table-cell-selected') ?? wrapper?.querySelector('.mlrt-table-cell');
+    if (!root || !wrapper || !cell) {
+      return JSON.stringify({ ok: false, reason: 'missing menu target' });
+    }
+    const rect = cell.getBoundingClientRect();
+    const selectedBeforeRightClick = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+    cell.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      buttons: 2,
+      pointerId: 91,
+      clientX: rect.left + Math.min(20, rect.width / 2),
+      clientY: rect.top + Math.min(10, rect.height / 2),
+    }));
+    cell.dispatchEvent(new root.defaultView.MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + Math.min(20, rect.width / 2),
+      clientY: rect.top + Math.min(10, rect.height / 2),
+    }));
+    const menu = wrapper.querySelector('.mlrt-clipboard-menu');
+    const actions = Array.from(menu?.querySelectorAll('button') ?? []).map((button) => button.dataset.action);
+    const selectedAfterRightClick = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+    return JSON.stringify({
+      ok: true,
+      hasMenu: Boolean(menu),
+      itemCount: actions.length,
+      hasCut: actions.includes('cut'),
+      hasSmartCopy: actions.includes('copy-smart'),
+      hasMarkdownCopy: actions.includes('copy-markdown'),
+      hasAutoPaste: actions.includes('paste-auto'),
+      hasMarkdownPaste: actions.includes('paste-markdown'),
+      hasSettings: actions.includes('settings'),
+      selectedBeforeRightClick,
+      selectedAfterRightClick,
+    });
+  })()`;
+}
+
+function documentClipboardExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false, reason: 'missing document targets' });
+    root.querySelector('.mlrt-clipboard-menu')?.remove();
+    const beforeDoc = view.state.doc.toString();
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    view.focus();
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    await wait();
+    const selectedTableCellCount = root.querySelectorAll('.mlrt-document-range-selected').length;
+    const selectedRangeBeforeContext = view.state.selection.main.toJSON();
+    const contextCell = root.querySelector('.mlrt-table-cell');
+    const contextRect = contextCell?.getBoundingClientRect();
+    contextCell?.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 2, buttons: 2, pointerId: 92,
+      clientX: (contextRect?.left ?? 0) + 6,
+      clientY: (contextRect?.top ?? 0) + 6,
+    }));
+    contextCell?.dispatchEvent(new root.defaultView.MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: (contextRect?.left ?? 0) + 6,
+      clientY: (contextRect?.top ?? 0) + 6,
+    }));
+    const documentContextMenuPreserved = Boolean(root.querySelector('.mlrt-document-clipboard-menu')) &&
+      JSON.stringify(view.state.selection.main.toJSON()) === JSON.stringify(selectedRangeBeforeContext) &&
+      root.querySelectorAll('.mlrt-document-range-selected').length === selectedTableCellCount;
+    root.querySelector('.mlrt-document-clipboard-menu')?.remove();
+    const contextLine = Array.from(root.querySelectorAll('.cm-line')).find((line) =>
+      !line.classList.contains('mlrt-hidden-table-source-line') && line.textContent.includes('Text up here')
+    );
+    const contextLineRect = contextLine?.getBoundingClientRect();
+    contextLine?.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 2, buttons: 2, pointerId: 93,
+      clientX: (contextLineRect?.left ?? 0) + 20,
+      clientY: (contextLineRect?.top ?? 0) + 8,
+    }));
+    contextLine?.dispatchEvent(new root.defaultView.MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: (contextLineRect?.left ?? 0) + 20,
+      clientY: (contextLineRect?.top ?? 0) + 8,
+    }));
+    const documentTextContextMenuPreserved = Boolean(root.querySelector('.mlrt-document-clipboard-menu')) &&
+      JSON.stringify(view.state.selection.main.toJSON()) === JSON.stringify(selectedRangeBeforeContext);
+    root.querySelector('.mlrt-document-clipboard-menu')?.remove();
+    const transfer = new root.defaultView.DataTransfer();
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: transfer, bubbles: true, cancelable: true,
+    }));
+    const smartPlain = transfer.getData('text/plain');
+    const smartHtml = transfer.getData('text/html');
+    const privateData = transfer.getData('application/x-markdown-live-editor+json');
+    let privateKind = null;
+    try { privateKind = JSON.parse(privateData).kind; } catch {}
+
+    root.documentElement.dataset.mlrtDefaultCopyMode = 'rich';
+    const richTransfer = new root.defaultView.DataTransfer();
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: richTransfer, bubbles: true, cancelable: true,
+    }));
+    const richHtml = richTransfer.getData('text/html');
+
+    const oldCopyMode = 'smart';
+    root.documentElement.dataset.mlrtDefaultCopyMode = 'markdown';
+    const markdownTransfer = new root.defaultView.DataTransfer();
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: markdownTransfer, bubbles: true, cancelable: true,
+    }));
+    root.documentElement.dataset.mlrtDefaultCopyMode = oldCopyMode ?? 'smart';
+    const markdownPlain = markdownTransfer.getData('text/plain');
+
+    const cutTransfer = new root.defaultView.DataTransfer();
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('cut', {
+      clipboardData: cutTransfer, bubbles: true, cancelable: true,
+    }));
+    const cutDeferred = view.state.doc.toString() === beforeDoc;
+    const documentCutClass = view.dom.classList.contains('mlrt-document-cut-pending');
+    root.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    }));
+
+    const documentMoveText = beforeDoc.split('\\n')[0];
+    view.focus();
+    view.dispatch({ selection: { anchor: 0, head: documentMoveText.length } });
+    const documentMoveTransfer = new root.defaultView.DataTransfer();
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('cut', {
+      clipboardData: documentMoveTransfer, bubbles: true, cancelable: true,
+    }));
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+      clipboardData: documentMoveTransfer, bubbles: true, cancelable: true,
+    }));
+    await wait();
+    const afterDocumentMove = view.state.doc.toString();
+    const documentMoveCompleted = !afterDocumentMove.startsWith(documentMoveText) && afterDocumentMove.endsWith(documentMoveText);
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 999043, debug: false },
+    }));
+    await wait();
+
+    view.focus();
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    const pasteTransfer = new root.defaultView.DataTransfer();
+    pasteTransfer.setData('text/html', '<h2>Imported Heading</h2><ul><li>Imported item</li></ul><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>');
+    pasteTransfer.setData('text/plain', 'Imported Heading\\nImported item\\nA\\tB\\n1\\t2');
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+      clipboardData: pasteTransfer, bubbles: true, cancelable: true,
+    }));
+    await wait();
+    const afterPaste = view.state.doc.toString();
+    const importedHeading = afterPaste.includes('Imported Heading') && !afterPaste.includes('<h2');
+    const importedList = afterPaste.includes('-   Imported item') || afterPaste.includes('- Imported item');
+    const importedTable = afterPaste.includes('| A | B |') && afterPaste.includes('| 1 | 2 |');
+
+    view.focus();
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    const excelTransfer = new root.defaultView.DataTransfer();
+    excelTransfer.setData('text/html', '<style>.plain{border:none}.grid{border:1px solid #000000}</style><table><tbody><tr><td class="plain">Text line</td><td class="plain"></td></tr><tr><td class="plain">• item</td><td class="plain"></td></tr><tr><td class="grid"><b>Key</b></td><td class="grid"><b>Value</b></td></tr><tr><td class="grid">Long</td><td class="grid">Visible <b>bold</b></td></tr><tr><td class="plain">After</td><td class="plain"></td></tr></tbody></table>');
+    excelTransfer.setData('text/plain', 'Text line\\t\\r\\n• item\\t\\r\\nKey\\tValue\\r\\nLong\\tVisible bold\\r\\nAfter\\t');
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+      clipboardData: excelTransfer, bubbles: true, cancelable: true,
+    }));
+    await wait();
+    const afterExcelPaste = view.state.doc.toString();
+    const excelRoundTripNoRawHtml = !/<table[\\s>]/i.test(afterExcelPaste) &&
+      afterExcelPaste.includes('Text line') &&
+      afterExcelPaste.includes('- item') &&
+      afterExcelPaste.includes('| **Key** | **Value** |') &&
+      afterExcelPaste.includes('| Long | Visible **bold** |') &&
+      afterExcelPaste.includes('After');
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 999042, debug: false },
+    }));
+    await wait();
+    return JSON.stringify({
+      ok: true,
+      selectedTableCellCount,
+      documentContextMenuPreserved,
+      documentTextContextMenuPreserved,
+      smartHasHtmlTable: smartHtml.includes('<table'),
+      smartUsesBlackBorders: /border:1px solid #000000/i.test(smartHtml),
+      smartUsesWorksheetLayout: smartHtml.includes('data-mlrt-clipboard-layout="worksheet"'),
+      smartContainsNestedList: /<(ul|ol)(\\s|>)/i.test(smartHtml),
+      smartContainsRichCellMarkup: /<(strong|a)(\\s|>)/i.test(smartHtml),
+      richUsesWorksheetLayout: richHtml.includes('data-mlrt-clipboard-layout="worksheet"'),
+      richUsesBlackBorders: /border:1px solid #000000/i.test(richHtml),
+      richPreservesSupportedFormatting: /<span style="font-weight:700">bold text<\\/span>/i.test(richHtml) && /<a href="https:\\/\\/example.com"/i.test(richHtml),
+      smartLeakedPipeTable: smartPlain.includes('| Key |') || smartPlain.includes('| Value |'),
+      privateKind,
+      markdownHasPipeTable: markdownPlain.includes('| Key |') || markdownPlain.includes('| Value |'),
+      cutDeferred,
+      documentCutClass,
+      documentMoveCompleted,
+      importedHeading,
+      importedList,
+      importedTable,
+      excelRoundTripNoRawHtml,
+      restoredDoc: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
+}
+
 function tableTrustedUndoSetupExpression() {
   return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
@@ -3401,6 +4196,190 @@ function assertTableCellEditShortcuts(result) {
 	  ) {
     throw new Error(
       `Table cell edit shortcuts check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableClipboardSelection(result) {
+  if (
+    !result?.ok ||
+    result.escapedDefault ||
+    result.singleSelected !== 1 ||
+    result.rangeSelected !== 2 ||
+    !result.outsideClickCleared ||
+    !result.wrapperFocused ||
+    !result.smartHasTabs ||
+    result.smartHasPipes ||
+    !result.smartHasHtmlTable ||
+    !result.hasPrivateData ||
+    !result.cutDidNotChangeSource ||
+    !result.hasPendingCutClass ||
+    !result.moveCompleted ||
+    !result.pasteApplied ||
+    !result.htmlPasteApplied ||
+    !result.hiddenOfficeTextExcluded ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table clipboard selection check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableTrustedCopySetup(result) {
+  if (!result?.ok || !result.wrapperFocused || result.selectedCount !== 2) {
+    throw new Error(
+      `Table trusted copy setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableTrustedCopy(result) {
+  if (
+    !result?.ok ||
+    !result.seen ||
+    !result.plainHasTabs ||
+    result.plainHasPipes ||
+    !result.htmlHasTable ||
+    !result.hasPrivateData
+  ) {
+    throw new Error(
+      `Table trusted copy check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableCrossBoundaryDragSetup(result) {
+  if (
+    !result?.ok ||
+    ![
+      result.startX,
+      result.startY,
+      result.plainX,
+      result.plainY,
+      result.endX,
+      result.endY,
+    ].every(Number.isFinite)
+  ) {
+    throw new Error(
+      `Table cross-boundary drag setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableCrossBoundaryDrag(result, expectedTableCount) {
+  if (
+    !result?.ok ||
+    result.selectionEmpty ||
+    result.selectionFrom > result.tableFrom ||
+    result.selectionTo <= result.tableFrom ||
+    result.selectedDocumentCells < 1 ||
+    result.selectedDocumentTables !== expectedTableCount ||
+    result.completelySelectedDocumentTables !== expectedTableCount ||
+    result.selectedRangeCells !== 0
+  ) {
+    throw new Error(
+      `Table cross-boundary drag check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertDocumentToTableDragSetup(result) {
+  if (
+    !result?.ok ||
+    ![
+      result.startX,
+      result.startY,
+      result.firstX,
+      result.firstY,
+      result.secondX,
+      result.secondY,
+      result.finalX,
+      result.finalY,
+    ].every(Number.isFinite)
+  ) {
+    throw new Error(
+      `Document-to-table drag setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertDocumentToTableDragResult(result, expectedCellCount) {
+  if (
+    !result?.ok ||
+    result.selectionEmpty ||
+    result.selectedCellCount !== expectedCellCount ||
+    result.rectangularCellCount !== 0 ||
+    !result.nativeSelectionCollapsed
+  ) {
+    throw new Error(
+      `Document-to-table drag check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertDocumentToTableDelete(result) {
+  if (
+    !result?.ok ||
+    !result.docChanged ||
+    !result.targetTableRemoved ||
+    !result.firstTableRemains ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Mixed document/table delete check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableClipboardMenu(result) {
+  if (
+    !result?.ok ||
+    !result.hasMenu ||
+    result.itemCount < 12 ||
+    !result.hasCut ||
+    !result.hasSmartCopy ||
+    !result.hasMarkdownCopy ||
+    !result.hasAutoPaste ||
+    !result.hasMarkdownPaste ||
+    !result.hasSettings ||
+    result.selectedBeforeRightClick < 1 ||
+    result.selectedAfterRightClick !== result.selectedBeforeRightClick
+  ) {
+    throw new Error(
+      `Table clipboard menu check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertDocumentClipboard(result) {
+  if (
+    !result?.ok ||
+    result.selectedTableCellCount < 1 ||
+    !result.documentContextMenuPreserved ||
+    !result.documentTextContextMenuPreserved ||
+    !result.smartHasHtmlTable ||
+    !result.smartUsesBlackBorders ||
+    !result.smartUsesWorksheetLayout ||
+    result.smartContainsNestedList ||
+    result.smartContainsRichCellMarkup ||
+    !result.richUsesWorksheetLayout ||
+    !result.richUsesBlackBorders ||
+    !result.richPreservesSupportedFormatting ||
+    result.smartLeakedPipeTable ||
+    result.privateKind !== 'document' ||
+    !result.markdownHasPipeTable ||
+    !result.cutDeferred ||
+    !result.documentCutClass ||
+    !result.documentMoveCompleted ||
+    !result.importedHeading ||
+    !result.importedList ||
+    !result.importedTable ||
+    !result.excelRoundTripNoRawHtml ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Document clipboard check failed: ${JSON.stringify(result)}`,
     );
   }
 }

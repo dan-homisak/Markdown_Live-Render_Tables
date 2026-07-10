@@ -7,6 +7,8 @@ import {
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 const DEBUG_SETTING = "debug";
+const DEFAULT_COPY_MODE_SETTING = "clipboard.defaultCopyMode";
+const DEFAULT_PASTE_MODE_SETTING = "clipboard.defaultPasteMode";
 const REOPEN_ACTIVE_EDITOR_WITH_COMMAND = "reopenActiveEditorWith";
 const DEFAULT_EDITOR_ID = "default";
 
@@ -99,6 +101,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         text,
         revision: documentRevision,
         debug: isDebugEnabled(),
+        editorOptions: getEditorOptions(document.uri),
         source,
         ackId,
       } satisfies HostSetDocumentMessage);
@@ -162,6 +165,16 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           postDocument();
         }
       }),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (
+          event.affectsConfiguration(
+            "markdownLiveRenderTables.clipboard",
+            document.uri,
+          )
+        ) {
+          postDocument();
+        }
+      }),
       webviewPanel.onDidChangeViewState((event) => {
         if (event.webviewPanel.active) {
           this.activeLiveDocumentUri = document.uri;
@@ -189,6 +202,14 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
                 `Markdown live editor could not run ${message.command}: ${String(error)}`,
               );
             });
+          return;
+        }
+
+        if (isOpenClipboardSettingsMessage(message)) {
+          void vscode.commands.executeCommand(
+            "workbench.action.openSettings",
+            "@ext:dan-homisak.markdown-live-render-tables clipboard",
+          );
           return;
         }
 
@@ -426,6 +447,11 @@ interface HostSetDocumentMessage {
   debug: boolean;
   source?: "host" | "webviewAck";
   ackId?: number;
+  editorOptions: ReturnType<typeof getEditorOptions>;
+}
+
+interface OpenClipboardSettingsMessage {
+  type: "openClipboardSettings";
 }
 
 function isReadyMessage(message: unknown): message is ReadyMessage {
@@ -489,6 +515,12 @@ function isEditorCommandMessage(
     message.type === "editorCommand" &&
     (message.command === "undo" || message.command === "redo")
   );
+}
+
+function isOpenClipboardSettingsMessage(
+  message: unknown,
+): message is OpenClipboardSettingsMessage {
+  return isMessageRecord(message) && message.type === "openClipboardSettings";
 }
 
 function isMessageRecord(message: unknown): message is Record<string, unknown> {
@@ -628,15 +660,43 @@ function getEditorMetricsCss(documentUri: vscode.Uri): string {
  * for markdown files (VS Code defaults markdown to "on"), so the webview
  * matches what the stock editor would do for the same document.
  */
-function getEditorOptions(documentUri: vscode.Uri): { lineWrapping: boolean } {
+function getEditorOptions(documentUri: vscode.Uri): {
+  lineWrapping: boolean;
+  documentUri: string;
+  defaultCopyMode: "smart" | "rich" | "plain" | "markdown";
+  defaultPasteMode: "auto" | "rich" | "plain" | "markdown";
+} {
   const editorConfig = vscode.workspace.getConfiguration("editor", {
     uri: documentUri,
     languageId: "markdown",
   });
   const wordWrap = editorConfig.get<string>("wordWrap", "on");
+  const extensionConfig = vscode.workspace.getConfiguration(
+    "markdownLiveRenderTables",
+    documentUri,
+  );
   return {
     lineWrapping: wordWrap !== "off",
+    documentUri: documentUri.toString(),
+    defaultCopyMode: readEnumSetting(
+      extensionConfig.get<string>(DEFAULT_COPY_MODE_SETTING, "smart"),
+      ["smart", "rich", "plain", "markdown"] as const,
+      "smart",
+    ),
+    defaultPasteMode: readEnumSetting(
+      extensionConfig.get<string>(DEFAULT_PASTE_MODE_SETTING, "auto"),
+      ["auto", "rich", "plain", "markdown"] as const,
+      "auto",
+    ),
   };
+}
+
+function readEnumSetting<const T extends readonly string[]>(
+  value: string,
+  allowed: T,
+  fallback: T[number],
+): T[number] {
+  return allowed.includes(value) ? (value as T[number]) : fallback;
 }
 
 function getFontFeatureSettings(

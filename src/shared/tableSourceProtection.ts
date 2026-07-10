@@ -142,6 +142,13 @@ function findSafeSelectionAnchor(
 ): number | undefined {
   const tables = getParsedTables(state.doc);
   const range = state.selection.main;
+  // Non-empty selections are allowed to cross hidden table source. Clipboard
+  // handling serializes those ranges explicitly, and document edits still go
+  // through the change filter below. Only collapsed cursors must be bounced
+  // out of replacement widgets.
+  if (!range.empty) {
+    return undefined;
+  }
   const table = tables.find((candidate) =>
     rangeTouchesTableSource(state, range, candidate),
   );

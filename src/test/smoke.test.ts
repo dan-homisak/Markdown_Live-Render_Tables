@@ -584,6 +584,12 @@ const packageJson = JSON.parse(
       displayName?: string;
       priority?: string;
     }>;
+    configuration?: {
+      properties?: Record<
+        string,
+        { default?: unknown; enum?: unknown[]; type?: string }
+      >;
+    };
   };
 };
 const extensionSource = fs.readFileSync(
@@ -610,6 +616,30 @@ const tableWidgetSource = fs.readFileSync(
 assert.equal(
   packageJson.contributes?.customEditors?.[0]?.viewType,
   "markdownLiveRenderTables.liveEditor",
+);
+assert.deepEqual(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultCopyMode"
+  ]?.enum,
+  ["smart", "rich", "plain", "markdown"],
+);
+assert.equal(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultCopyMode"
+  ]?.default,
+  "smart",
+);
+assert.deepEqual(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultPasteMode"
+  ]?.enum,
+  ["auto", "rich", "plain", "markdown"],
+);
+assert.equal(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultPasteMode"
+  ]?.default,
+  "auto",
 );
 assert.equal(packageJson.contributes?.customEditors?.[0]?.priority, "option");
 assert.equal(

@@ -15,6 +15,8 @@ import {
   bindTableLayout,
 } from "./tableLayout";
 import { bindTableStructureControls } from "./tableStructureControls";
+import { bindTableRangeSelection } from "./tableRangeSelection";
+import { bindTableClipboard } from "./tableClipboard";
 import {
   getTableWidgetCleanup,
   isTablePreservedForLiveEdit,
@@ -119,6 +121,12 @@ export class RenderedTableWidget extends WidgetType {
       this.table,
     );
     bindTableEditing(wrapper, view, this.table, scheduleTableLayout);
+    const rangeSelectionCleanup = bindTableRangeSelection(
+      wrapper,
+      view,
+      this.table,
+    );
+    const clipboardCleanup = bindTableClipboard(wrapper, view, this.table);
     const layoutCleanup = getTableWidgetCleanup(wrapper);
     const structureControlsCleanup = bindTableStructureControls({
       wrapper,
@@ -129,6 +137,8 @@ export class RenderedTableWidget extends WidgetType {
     });
     setTableWidgetCleanup(wrapper, () => {
       layoutCleanup?.();
+      rangeSelectionCleanup();
+      clipboardCleanup();
       structureControlsCleanup();
     });
     return wrapper;

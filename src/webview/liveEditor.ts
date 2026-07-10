@@ -19,6 +19,14 @@ import {
 import { TABLE_CELL_COMMIT_EVENT } from "../editor/table/tableCellEditing";
 import { allowTableSourceChange } from "../shared/tableSourceProtection";
 import { normalizeDocumentText } from "../shared/documentChangeMapping";
+import {
+  ClipboardCopyMode,
+  ClipboardPasteMode,
+} from "../shared/clipboardModel";
+import {
+  installDocumentClipboard,
+  syncDocumentRangeSelection,
+} from "../editor/documentClipboard";
 
 declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
@@ -41,6 +49,7 @@ interface HostSetDocumentMessage {
   debug: boolean;
   source?: "host" | "webviewAck";
   ackId?: number;
+  editorOptions: EditorOptions;
 }
 
 interface DocumentChangeMessage {
@@ -79,6 +88,9 @@ type HostUndoRestoreTarget =
 
 interface EditorOptions {
   lineWrapping: boolean;
+  documentUri: string;
+  defaultCopyMode: ClipboardCopyMode;
+  defaultPasteMode: ClipboardPasteMode;
 }
 
 const vscode = acquireVsCodeApi();
@@ -95,12 +107,13 @@ let view: EditorView;
 let lastTableCellCommit: TableCellCommitDetail | null = null;
 let nextWebviewChangeId = 1;
 let hostDocumentApplyToken = 0;
+let editorOptions = readEditorOptions();
 const pendingWebviewEchoes: { id: number; text: string }[] = [];
 const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
 const MAX_PENDING_HOST_UNDO_FOCUS = 200;
 
 try {
-  const editorExtensions = createLiveEditorExtensions(readEditorOptions());
+  const editorExtensions = createLiveEditorExtensions(editorOptions);
   const initialDocument = readInitialDocument();
   app.replaceChildren();
   app.className = "mlrt-editor-shell";
@@ -115,6 +128,7 @@ try {
         ...editorExtensions,
         EditorView.updateListener.of((update) => {
           if (update.selectionSet || update.focusChanged || update.docChanged) {
+            syncDocumentRangeSelection(update.view);
             recordDebug("editor-update", {
               docChanged: update.docChanged,
               focusChanged: update.focusChanged,
@@ -153,9 +167,15 @@ try {
     }),
   });
   window.__MLRT_EDITOR_VIEW__ = view;
+  applyClipboardOptions(editorOptions);
   updateStatus(initialDocument, "embedded");
   installEditorCommandBridge(app);
+  installDocumentClipboard(app, view);
+  syncDocumentRangeSelection(view);
   installCursorDebugListeners(app);
+  view.dom.addEventListener("mlrt:open-clipboard-settings", () => {
+    vscode.postMessage({ type: "openClipboardSettings" });
+  });
 } catch (error) {
   app.replaceChildren(renderStartupError(error));
   throw error;
@@ -169,6 +189,8 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 
   hostRevision = message.revision;
   debugEnabled = message.debug;
+  editorOptions = normalizeEditorOptions(message.editorOptions);
+  applyClipboardOptions(editorOptions);
   if (message.source === "webviewAck") {
     if (typeof message.ackId === "number") {
       acknowledgeWebviewEcho(
@@ -525,16 +547,61 @@ function readInitialDocument(): string {
 function readEditorOptions(): EditorOptions {
   const options = window.__MLRT_EDITOR_OPTIONS__;
   if (!options || typeof options !== "object") {
-    return { lineWrapping: true };
+    return {
+      lineWrapping: true,
+      documentUri: "",
+      defaultCopyMode: "smart",
+      defaultPasteMode: "auto",
+    };
   }
   const optionRecord = options as Record<string, unknown>;
 
-  return {
+  return normalizeEditorOptions({
     lineWrapping:
       typeof optionRecord.lineWrapping === "boolean"
         ? optionRecord.lineWrapping
         : true,
+    documentUri:
+      typeof optionRecord.documentUri === "string"
+        ? optionRecord.documentUri
+        : "",
+    defaultCopyMode: optionRecord.defaultCopyMode,
+    defaultPasteMode: optionRecord.defaultPasteMode,
+  });
+}
+
+function normalizeEditorOptions(value: unknown): EditorOptions {
+  const record =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const defaultCopyMode = record.defaultCopyMode;
+  const defaultPasteMode = record.defaultPasteMode;
+  return {
+    lineWrapping:
+      typeof record.lineWrapping === "boolean" ? record.lineWrapping : true,
+    documentUri:
+      typeof record.documentUri === "string" ? record.documentUri : "",
+    defaultCopyMode:
+      defaultCopyMode === "rich" ||
+      defaultCopyMode === "plain" ||
+      defaultCopyMode === "markdown"
+        ? defaultCopyMode
+        : "smart",
+    defaultPasteMode:
+      defaultPasteMode === "rich" ||
+      defaultPasteMode === "plain" ||
+      defaultPasteMode === "markdown"
+        ? defaultPasteMode
+        : "auto",
   };
+}
+
+function applyClipboardOptions(options: EditorOptions): void {
+  const root = document.documentElement;
+  root.dataset.mlrtDocumentUri = options.documentUri;
+  root.dataset.mlrtDefaultCopyMode = options.defaultCopyMode;
+  root.dataset.mlrtDefaultPasteMode = options.defaultPasteMode;
 }
 
 function postDocumentChanges(

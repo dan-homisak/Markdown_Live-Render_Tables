@@ -21,6 +21,33 @@ In V1, tables support:
 - Shift-Enter multiline cells
 - escaped pipes
 - alignment preservation
+- rectangular cell, row, and column selection
+- Excel-style multi-cell copy and paste with safe table expansion
+- Smart, Rich, Plain Text, and Markdown clipboard representations
+
+### Table selection and clipboard
+
+Click a cell to edit it normally. Press `Escape` to select the cell, then use
+the arrow keys to move the selection or `Shift` plus an arrow key to extend a
+rectangular range. `Shift`-click and dragging across cell boundaries also
+create ranges. Row and column action handles include selection commands.
+
+Normal copy publishes a clean HTML table for Word, Outlook, OneNote, Notion,
+and other rich editors, tab-delimited plain text for spreadsheets and text
+fields, and a private lossless representation for pasting back into Markdown
+Live Editor. Raw pipe-delimited Markdown is only placed on the public
+clipboard by **Copy Markdown**. Right-click a selected range to choose an
+explicit copy or paste representation.
+
+The defaults are configurable with:
+
+- `markdownLiveRenderTables.clipboard.defaultCopyMode`
+- `markdownLiveRenderTables.clipboard.defaultPasteMode`
+
+Cut uses a safe deferred move: source cells remain until the clipboard is
+pasted elsewhere in the same document. Pasting into another document or app
+behaves as copy so the extension never deletes data after an external paste it
+cannot observe.
 
 Broader markdown live rendering is planned for V2.
 
