@@ -24996,7 +24996,6 @@
       if (!cell) {
         return;
       }
-      event.stopPropagation();
       const currentTable = getCurrentTable();
       const historyDirection = getCellEditHistoryDirection(event);
       if (historyDirection) {
@@ -25010,12 +25009,14 @@
           return;
         }
         event.preventDefault();
+        event.stopPropagation();
         applyLiveCellEdit(view2, currentTable, cell);
         scheduleTableLayout();
         return;
       }
       if (event.key === "Enter" && isPlainKey(event)) {
         event.preventDefault();
+        event.stopPropagation();
         commitCellEdit(view2, currentTable, cell, {
           selectionAnchor: positionAfterTable(view2.state.doc, currentTable)
         });
@@ -25032,6 +25033,7 @@
           return;
         }
         event.preventDefault();
+        event.stopPropagation();
         applyCellEditSnapshotChange(
           view2,
           currentTable,
@@ -25048,6 +25050,7 @@
         }
         const target = resolveVerticalCell(cell, rowDelta);
         event.preventDefault();
+        event.stopPropagation();
         if (target === "before-table") {
           commitCellEdit(view2, currentTable, cell, {
             selectionAnchor: positionBeforeTable(currentTable)
@@ -25070,6 +25073,7 @@
       }
       if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
+        event.stopPropagation();
         const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
         commitCellEdit(view2, currentTable, cell);
         focusCellAfterRender(currentTable.from, target);

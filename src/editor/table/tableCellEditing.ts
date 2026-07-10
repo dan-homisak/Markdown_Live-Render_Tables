@@ -185,7 +185,10 @@ export function bindTableEditing(
       return;
     }
 
-    event.stopPropagation();
+    // Let unhandled keys continue through the webview. VS Code's keyboard
+    // command relay relies on that path for workbench commands such as Save,
+    // Find, and user-defined keybindings. Stop propagation only when this
+    // handler replaces the key's native behavior below.
     const currentTable = getCurrentTable();
 
     const historyDirection = getCellEditHistoryDirection(event);
@@ -200,6 +203,7 @@ export function bindTableEditing(
         return;
       }
       event.preventDefault();
+      event.stopPropagation();
       applyLiveCellEdit(view, currentTable, cell);
       scheduleTableLayout();
       return;
@@ -207,6 +211,7 @@ export function bindTableEditing(
 
     if (event.key === "Enter" && isPlainKey(event)) {
       event.preventDefault();
+      event.stopPropagation();
       commitCellEdit(view, currentTable, cell, {
         selectionAnchor: positionAfterTable(view.state.doc, currentTable),
       });
@@ -231,6 +236,7 @@ export function bindTableEditing(
       }
 
       event.preventDefault();
+      event.stopPropagation();
       applyCellEditSnapshotChange(
         view,
         currentTable,
@@ -249,6 +255,7 @@ export function bindTableEditing(
 
       const target = resolveVerticalCell(cell, rowDelta);
       event.preventDefault();
+      event.stopPropagation();
       if (target === "before-table") {
         commitCellEdit(view, currentTable, cell, {
           selectionAnchor: positionBeforeTable(currentTable),
@@ -278,6 +285,7 @@ export function bindTableEditing(
       !event.metaKey
     ) {
       event.preventDefault();
+      event.stopPropagation();
       const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
       commitCellEdit(view, currentTable, cell);
       focusCellAfterRender(currentTable.from, target);

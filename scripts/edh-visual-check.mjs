@@ -1967,6 +1967,25 @@ function tableCellEditShortcutsExpression() {
     await waitForRender();
     cell = queryCell();
     const afterShiftEnterText = cell?.innerText ?? null;
+    let saveShortcutBubbled = false;
+    const commandBoundary = cell?.closest('.mlrt-table-widget')?.parentElement;
+    const observeSaveShortcut = (event) => {
+      if (event.key === 's' && event.metaKey) {
+        saveShortcutBubbled = true;
+        // Stop at the table's parent so this synthetic event exercises the
+        // table boundary without invoking the actual workbench Save command.
+        event.stopPropagation();
+      }
+    };
+    commandBoundary?.addEventListener('keydown', observeSaveShortcut);
+    const saveShortcutDefaultAllowed = cell ? key(cell, {
+      key: 's',
+      code: 'KeyS',
+      metaKey: true,
+      keyCode: 83,
+      which: 83,
+    }) : null;
+    commandBoundary?.removeEventListener('keydown', observeSaveShortcut);
     const afterDoc = view.state.doc.toString();
     root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
       data: {
@@ -1988,6 +2007,8 @@ function tableCellEditShortcutsExpression() {
       undoSelectionCollapsed,
       afterShiftEnterText,
       hasLineBreak: /\\n/.test(afterShiftEnterText ?? ''),
+      saveShortcutDefaultAllowed,
+      saveShortcutBubbled,
       docChanged: afterDoc !== beforeDoc,
       restoredDoc: view.state.doc.toString() === beforeDoc,
     });
@@ -3372,6 +3393,8 @@ function assertTableCellEditShortcuts(result) {
 	    result.afterUndoText === "bas" ||
 	    !result.undoSelectionCollapsed ||
 	    !result.hasLineBreak ||
+	    !result.saveShortcutDefaultAllowed ||
+	    !result.saveShortcutBubbled ||
 	    !result.afterShiftEnterText.includes("next") ||
 	    !result.docChanged ||
 	    !result.restoredDoc

@@ -170,69 +170,16 @@ if ! grep -q "measureAvailableDataWidthCh" "$INSTALLED_DIR/media/liveEditor.js";
 fi
 echo "Verified installed payload markers."
 
-log "Reloading the VS Code window(s) for this project"
-PROJECT_NAME="$(basename "$PROJECT_DIR")"
-RELOAD_OK=0
-if [[ "${SKIP_RELOAD:-0}" == "1" ]]; then
-  echo "SKIP_RELOAD=1 set; not reloading. Run 'Developer: Reload Window' to apply the new build."
-elif command -v osascript >/dev/null 2>&1; then
-  if osascript - "$PROJECT_NAME" 2>/dev/null <<'APPLESCRIPT'
-on run argv
-  set targetName to item 1 of argv
-  tell application "Visual Studio Code" to activate
-  delay 0.3
-  tell application "System Events"
-    if not (exists process "Code") then error "VS Code process was not found."
-    tell process "Code"
-      set reloadedCount to 0
-      repeat with w in windows
-        if (name of w) contains targetName then
-          perform action "AXRaise" of w
-          delay 0.2
-          keystroke "p" using {command down, shift down}
-          delay 0.3
-          keystroke ">Developer: Reload Window"
-          delay 0.2
-          key code 36
-          set reloadedCount to reloadedCount + 1
-          delay 0.5
-        end if
-      end repeat
-      if reloadedCount is 0 then error "No VS Code window for this project was found."
-    end tell
-  end tell
-end run
-APPLESCRIPT
-  then
-    RELOAD_OK=1
-    echo "Reloaded the VS Code window(s) titled with '$PROJECT_NAME'."
-  else
-    echo "Automatic reload was skipped or blocked (Accessibility permission or no matching window)."
-  fi
-else
-  echo "osascript is unavailable; automatic reload skipped."
-fi
-
 log "Done"
 echo "Installed: $VSIX_PATH"
-
-if (( RELOAD_OK == 0 )) && [[ "${SKIP_RELOAD:-0}" != "1" ]]; then
-  cat <<BANNER
+cat <<BANNER
 
 ========================================================================
-  ACTION REQUIRED: could not auto-reload your VS Code window.
+  RELOAD REQUIRED: VS Code has installed ${EXTENSION_ID}@${EXPECTED_VERSION}.
 
-  Because the version was bumped to ${EXPECTED_VERSION}, VS Code will
-  show a "reload to update" prompt automatically -- click it.
-
-  Or run it yourself in the project window:
+  The active VS Code window is intentionally not reloaded. Use VS Code's
+  "Reload Required" notification to activate this build, or run:
     Developer: Reload Window   (Cmd+R)
-
-  To enable fully automatic reloads, grant Accessibility permission to
-  your terminal:
-  System Settings > Privacy & Security > Accessibility > enable your
-  terminal app (Terminal / iTerm / VS Code).
 ========================================================================
 
 BANNER
-fi
