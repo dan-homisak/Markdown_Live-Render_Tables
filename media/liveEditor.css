@@ -38,17 +38,28 @@ body,
 }
 
 .cm-editor {
+  /* A cool, high-clarity blue keeps table selection recognizably native to
+     this editor while remaining distinct from its subdued inner grid. */
+  --mlrt-selection-accent: #3b9cff;
   --mlrt-selection-fill: color-mix(
     in srgb,
-    var(--vscode-editor-selectionBackground, rgba(38, 79, 120, 0.75)) 38%,
+    var(--mlrt-selection-accent) 13%,
     transparent
   );
   --mlrt-selection-grid: color-mix(
     in srgb,
-    var(--vscode-focusBorder, #007fd4) 38%,
-    var(--vscode-editorWidget-border, #454545)
+    var(--mlrt-selection-accent) 15%,
+    color-mix(
+      in srgb,
+      var(--vscode-editorWidget-border, #454545) 48%,
+      var(--vscode-editor-background, #1e1e1e)
+    )
   );
-  --mlrt-selection-edge: var(--vscode-focusBorder, #007fd4);
+  --mlrt-selection-edge: color-mix(
+    in srgb,
+    var(--mlrt-selection-accent) 84%,
+    transparent
+  );
   height: 100%;
   min-height: 0;
   background: var(--vscode-editor-background, #1e1e1e);
@@ -262,8 +273,9 @@ body,
   box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
 }
 
-/* A selected range reads as one rectangle: a strong outer focus border with
-   a continuous editor-selection tint. Edge classes avoid outlining every cell. */
+/* A selected range reads as one surface. Its cells have no native borders;
+   single-pixel shadows restore only the interior hairlines. The one outer
+   border is a separate frame positioned by the selection controller. */
 .mlrt-table-selection-mode {
   outline: none;
 }
@@ -272,49 +284,48 @@ body,
   .mlrt-table-cell-selected,
   .mlrt-document-range-selected
 ) {
-  --mlrt-selection-top: inset 0 0 transparent;
-  --mlrt-selection-right: inset 0 0 transparent;
-  --mlrt-selection-bottom: inset 0 0 transparent;
-  --mlrt-selection-left: inset 0 0 transparent;
+  --mlrt-selection-inner-top: inset 0 0 transparent;
+  --mlrt-selection-inner-left: inset 0 0 transparent;
   position: relative;
   background: var(--mlrt-selection-fill);
-  border-color: var(--mlrt-selection-grid);
+  border-color: transparent;
   color: var(--vscode-editor-selectionForeground, inherit);
   box-shadow:
-    var(--mlrt-selection-top),
-    var(--mlrt-selection-right),
-    var(--mlrt-selection-bottom),
-    var(--mlrt-selection-left);
+    var(--mlrt-selection-inner-top),
+    var(--mlrt-selection-inner-left);
 }
 
-.mlrt-table-cell.mlrt-table-selection-top {
-  --mlrt-selection-top: inset 0 2px var(--mlrt-selection-edge);
+.mlrt-table .mlrt-table-cell:is(
+  .mlrt-table-cell-selected,
+  .mlrt-document-range-selected
+):not(.mlrt-table-selection-top) {
+  --mlrt-selection-inner-top: inset 0 1px var(--mlrt-selection-grid);
 }
 
-.mlrt-table-cell.mlrt-table-selection-right {
-  --mlrt-selection-right: inset -2px 0 var(--mlrt-selection-edge);
+.mlrt-table .mlrt-table-cell:is(
+  .mlrt-table-cell-selected,
+  .mlrt-document-range-selected
+):not(.mlrt-table-selection-left) {
+  --mlrt-selection-inner-left: inset 1px 0 var(--mlrt-selection-grid);
 }
 
-.mlrt-table-cell.mlrt-table-selection-bottom {
-  --mlrt-selection-bottom: inset 0 -2px var(--mlrt-selection-edge);
-}
-
-.mlrt-table-cell.mlrt-table-selection-left {
-  --mlrt-selection-left: inset 2px 0 var(--mlrt-selection-edge);
+.mlrt-table-selection-outline {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  border: 2px solid var(--mlrt-selection-edge);
+  border-radius: 5px;
+  pointer-events: none;
 }
 
 .mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-cell-selected {
-  --mlrt-selection-top: inset 0 0 transparent;
-  --mlrt-selection-right: inset 0 0 transparent;
-  --mlrt-selection-bottom: inset 0 0 transparent;
-  --mlrt-selection-left: inset 0 0 transparent;
   background: var(
     --vscode-list-inactiveSelectionBackground,
     rgba(55, 80, 120, 0.35)
   );
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-cell-selected::after {
+.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-cell-selected::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -323,19 +334,19 @@ body,
   pointer-events: none;
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-top::after {
+.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-top::before {
   border-top: 1px dashed var(--mlrt-selection-edge);
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-right::after {
+.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-right::before {
   border-right: 1px dashed var(--mlrt-selection-edge);
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-bottom::after {
+.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-bottom::before {
   border-bottom: 1px dashed var(--mlrt-selection-edge);
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-left::after {
+.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-left::before {
   border-left: 1px dashed var(--mlrt-selection-edge);
 }
 

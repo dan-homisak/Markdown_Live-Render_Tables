@@ -26773,6 +26773,7 @@
       );
       cell2.setAttribute("aria-selected", selected ? "true" : "false");
     });
+    syncTableSelectionOutline(selection.wrapper);
   }
   function restoreSelectionClasses(wrapper) {
     const selection = states.get(wrapper.ownerDocument)?.selection;
@@ -26800,6 +26801,42 @@
       );
       cell2.removeAttribute("aria-selected");
     });
+    syncTableSelectionOutline(wrapper);
+  }
+  function syncTableSelectionOutline(wrapper) {
+    const scroll = wrapper.querySelector(".mlrt-table-scroll");
+    const existing = scroll?.querySelector(
+      ":scope > .mlrt-table-selection-outline"
+    );
+    if (!scroll || wrapper.classList.contains("mlrt-table-cut-pending")) {
+      existing?.remove();
+      return;
+    }
+    const selected = Array.from(
+      wrapper.querySelectorAll(
+        `${TABLE_CELL_SELECTOR}.mlrt-table-cell-selected, ${TABLE_CELL_SELECTOR}.mlrt-document-range-selected`
+      )
+    );
+    if (selected.length === 0) {
+      existing?.remove();
+      return;
+    }
+    const scrollRect = scroll.getBoundingClientRect();
+    const rectangles = selected.map((cell2) => cell2.getBoundingClientRect());
+    const left = Math.min(...rectangles.map((rect) => rect.left));
+    const top2 = Math.min(...rectangles.map((rect) => rect.top));
+    const right = Math.max(...rectangles.map((rect) => rect.right));
+    const bottom = Math.max(...rectangles.map((rect) => rect.bottom));
+    const outline = existing ?? wrapper.ownerDocument.createElement("div");
+    outline.className = "mlrt-table-selection-outline";
+    outline.setAttribute("aria-hidden", "true");
+    outline.style.left = `${left - scrollRect.left + scroll.scrollLeft}px`;
+    outline.style.top = `${top2 - scrollRect.top + scroll.scrollTop}px`;
+    outline.style.width = `${right - left}px`;
+    outline.style.height = `${bottom - top2}px`;
+    if (!existing) {
+      scroll.append(outline);
+    }
   }
   function dispatchSelectionChange(wrapper) {
     wrapper.dispatchEvent(
@@ -36690,6 +36727,7 @@
           selected && !selectedAddresses.has(`${row}:${column + 1}`)
         );
       });
+      syncTableSelectionOutline(wrapper);
     });
   }
   function renderedCellRow(cell2) {

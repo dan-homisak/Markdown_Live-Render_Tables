@@ -23,6 +23,7 @@ import { findCell } from "./table/cellSelection";
 import {
   clearTableRangeSelection,
   getTableRangeSelection,
+  syncTableSelectionOutline,
 } from "./table/tableRangeSelection";
 
 interface ClipboardReadData {
@@ -458,6 +459,7 @@ export function syncDocumentRangeSelection(view: EditorView): void {
           selected && !selectedAddresses.has(`${row}:${column + 1}`),
         );
       });
+      syncTableSelectionOutline(wrapper);
     });
 }
 
