@@ -589,6 +589,16 @@ try {
   );
   assertTableArrowNavigation(arrowNavigation);
   console.log("TABLE ARROW NAVIGATION CHECK:", arrowNavigation);
+  const selectionGeometry = await evaluateJson(
+    liveClient,
+    tableSelectionGeometryExpression(),
+  );
+  assertTableSelectionGeometry(selectionGeometry);
+  console.log("TABLE SELECTION GEOMETRY CHECK:", selectionGeometry);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-selection-geometry.png"),
+  );
   await captureWorkbenchScreenshot(
     wb,
     path.join(qaDir, "edh-enter-after-table.png"),
@@ -2366,6 +2376,76 @@ function tableClipboardSelectionExpression() {
       htmlPasteApplied,
       hiddenOfficeTextExcluded,
       restoredDoc: view.state.doc.toString() === beforeDoc,
+    });
+  })()`;
+}
+
+function tableSelectionGeometryExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false, reason: 'missing live root' });
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    const key = (target, keyValue, options = {}) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: keyValue, bubbles: true, cancelable: true, ...options,
+    }));
+    const text = [
+      '| Key | Value | Note |',
+      '| --- | --- | --- |',
+      '| One | Alpha | First |',
+      '| Two | Bravo | Second |',
+      '| Three | Charlie | Third |',
+      '| Four | Delta | Fourth |',
+    ].join('\\n');
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text, revision: 999071, debug: false },
+    }));
+    await wait();
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    const cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (!wrapper || !cell) return JSON.stringify({ ok: false, reason: 'missing geometry table' });
+    cell.focus();
+    key(cell, 'Escape');
+    key(wrapper, 'ArrowRight', { shiftKey: true });
+    key(wrapper, 'ArrowDown', { shiftKey: true });
+    key(wrapper, 'ArrowDown', { shiftKey: true });
+    await wait();
+    const rect = (element) => {
+      const box = element.getBoundingClientRect();
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    };
+    const selected = Array.from(wrapper.querySelectorAll('.mlrt-table-cell-selected'));
+    const selectedRects = selected.map(rect);
+    const bounds = {
+      left: Math.min(...selectedRects.map((box) => box.left)),
+      top: Math.min(...selectedRects.map((box) => box.top)),
+      right: Math.max(...selectedRects.map((box) => box.right)),
+      bottom: Math.max(...selectedRects.map((box) => box.bottom)),
+    };
+    const outline = wrapper.querySelector('.mlrt-table-selection-outline');
+    const outlineRect = outline ? rect(outline) : null;
+    const rightNeighbor = wrapper.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="2"]');
+    const bottomNeighbor = wrapper.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="3"][data-column="0"]');
+    const outlineStyles = outline ? {
+      borderTopColor: root.defaultView.getComputedStyle(outline).borderTopColor,
+      borderTopWidth: root.defaultView.getComputedStyle(outline).borderTopWidth,
+      borderRadius: root.defaultView.getComputedStyle(outline).borderRadius,
+    } : null;
+    const hasInsetShadow = (cell) => root.defaultView.getComputedStyle(cell).boxShadow.includes('inset');
+    const interiorDividerCells = [selected[1], selected[2], selected[3], selected[4], selected[5]];
+    return JSON.stringify({
+      ok: Boolean(outline) && selected.length === 6,
+      selectedCount: selected.length,
+      outlineBoundsAligned: Boolean(outlineRect) && ['left', 'top', 'right', 'bottom'].every((side) => Math.abs(outlineRect[side] - bounds[side]) <= 0.5),
+      interiorDividersPresent: interiorDividerCells.every(hasInsetShadow),
+      rightNeighborAligned: Boolean(rightNeighbor) && Math.abs(rect(rightNeighbor).left - bounds.right) <= 0.5,
+      bottomNeighborAligned: Boolean(bottomNeighbor) && Math.abs(rect(bottomNeighbor).top - bounds.bottom) <= 0.5,
+      outlineStyles,
+      edgeClasses: selected.map((cell) => cell.className),
+      bounds, outlineRect,
     });
   })()`;
 }
@@ -4222,6 +4302,23 @@ function assertTableClipboardSelection(result) {
   ) {
     throw new Error(
       `Table clipboard selection check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableSelectionGeometry(result) {
+  if (
+    !result?.ok ||
+    !result.outlineBoundsAligned ||
+    !result.interiorDividersPresent ||
+    !result.rightNeighborAligned ||
+    !result.bottomNeighborAligned ||
+    result.outlineStyles?.borderTopColor === "rgba(0, 0, 0, 0)" ||
+    result.outlineStyles?.borderTopWidth !== "1px" ||
+    result.outlineStyles?.borderRadius !== "0px"
+  ) {
+    throw new Error(
+      `Table selection geometry check failed: ${JSON.stringify(result)}`,
     );
   }
 }

@@ -772,9 +772,8 @@ function clearSelectionClasses(wrapper: HTMLElement | undefined): void {
 }
 
 /**
- * The individual cells own only the light fill and hairline dividers. A single
- * frame owns the selection perimeter so adjacent cell borders can never make
- * the inside of a rectangular selection appear heavier than its outside.
+ * The frame owns the selection perimeter. Individual cells own their inset
+ * dividers, so every separator stays aligned to the real row height.
  */
 export function syncTableSelectionOutline(wrapper: HTMLElement): void {
   const scroll = wrapper.querySelector<HTMLElement>(".mlrt-table-scroll");

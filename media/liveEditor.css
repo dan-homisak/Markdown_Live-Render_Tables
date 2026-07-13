@@ -273,9 +273,11 @@ body,
   box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
 }
 
-/* A selected range reads as one surface. Its cells have no native borders;
-   single-pixel shadows restore only the interior hairlines. The one outer
-   border is a separate frame positioned by the selection controller. */
+/* A selected range reads as one surface. A single overlay owns the blue frame
+   and every hairline divider, so grid intersections are clean and continuous.
+   Keeping the perimeter out of the cells is especially important at the
+   sticky source-line gutter: per-cell left borders fragment there as rows
+   change height. */
 .mlrt-table-selection-mode {
   outline: none;
 }
@@ -295,6 +297,8 @@ body,
     var(--mlrt-selection-inner-left);
 }
 
+/* Cell-owned inset strokes follow each row's real box, including wrapped
+   content. The frame below owns only the outside edge. */
 .mlrt-table .mlrt-table-cell:is(
   .mlrt-table-cell-selected,
   .mlrt-document-range-selected
@@ -313,8 +317,7 @@ body,
   position: absolute;
   z-index: 5;
   box-sizing: border-box;
-  border: 2px solid var(--mlrt-selection-edge);
-  border-radius: 5px;
+  border: 1px solid var(--mlrt-selection-edge);
   pointer-events: none;
 }
 
