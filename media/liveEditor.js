@@ -24067,6 +24067,340 @@
   var tableCellCommitSequenceAnnotation = Annotation.define();
   var tableCellLiveEditAnnotation = Annotation.define();
 
+  // src/shared/clipboardModel.ts
+  var MLRT_CLIPBOARD_MIME = "application/x-markdown-live-editor+json";
+  var MLRT_CLIPBOARD_VERSION = 1;
+  var VALID_ALIGNMENTS = /* @__PURE__ */ new Set([
+    "left",
+    "center",
+    "right"
+  ]);
+  function normalizeCellText(value) {
+    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+  }
+  function validateClipboardPayload(value) {
+    if (!isRecord(value) || value.version !== MLRT_CLIPBOARD_VERSION) {
+      return null;
+    }
+    if (typeof value.sourceDocument !== "string") {
+      return null;
+    }
+    const cutToken = value.cutToken === void 0 || typeof value.cutToken === "string" ? value.cutToken : null;
+    if (cutToken === null) {
+      return null;
+    }
+    if (value.kind === "document") {
+      if (typeof value.markdown !== "string") {
+        return null;
+      }
+      return {
+        version: MLRT_CLIPBOARD_VERSION,
+        kind: "document",
+        sourceDocument: value.sourceDocument,
+        markdown: normalizeCellText(value.markdown),
+        ...cutToken ? { cutToken } : {}
+      };
+    }
+    if (value.kind !== "grid" || !Array.isArray(value.rows) || value.rows.length === 0 || !Array.isArray(value.alignments) || typeof value.includesHeader !== "boolean" || value.exactMarkdown !== void 0 && typeof value.exactMarkdown !== "string") {
+      return null;
+    }
+    const width = Array.isArray(value.rows[0]) ? value.rows[0].length : 0;
+    if (width === 0) {
+      return null;
+    }
+    const rows = [];
+    for (const candidateRow of value.rows) {
+      if (!Array.isArray(candidateRow) || candidateRow.length !== width) {
+        return null;
+      }
+      const row = [];
+      for (const candidateCell of candidateRow) {
+        if (!isRecord(candidateCell) || typeof candidateCell.text !== "string" || candidateCell.markdown !== void 0 && typeof candidateCell.markdown !== "string") {
+          return null;
+        }
+        const text3 = normalizeCellText(candidateCell.text);
+        const markdown2 = candidateCell.markdown;
+        row.push({
+          text: text3,
+          ...typeof markdown2 === "string" && isSafeRawCellSource(markdown2, text3) ? { markdown: markdown2 } : {}
+        });
+      }
+      rows.push(row);
+    }
+    const alignments = [];
+    for (let column = 0; column < width; column++) {
+      const alignment = value.alignments[column];
+      alignments.push(
+        typeof alignment === "string" && VALID_ALIGNMENTS.has(alignment) ? alignment : "left"
+      );
+    }
+    return {
+      version: MLRT_CLIPBOARD_VERSION,
+      kind: "grid",
+      sourceDocument: value.sourceDocument,
+      rows,
+      alignments,
+      includesHeader: value.includesHeader,
+      ...typeof value.exactMarkdown === "string" ? { exactMarkdown: normalizeCellText(value.exactMarkdown) } : {},
+      ...cutToken ? { cutToken } : {}
+    };
+  }
+  function parseClipboardPayload(text3) {
+    try {
+      return validateClipboardPayload(JSON.parse(text3));
+    } catch {
+      return null;
+    }
+  }
+  function serializeDelimitedGrid(rows, delimiter2) {
+    return rows.map((row) => row.map((value) => quoteDelimited(value, delimiter2)).join(delimiter2)).join("\r\n");
+  }
+  function parseDelimitedGrid(input, delimiter2) {
+    const text3 = normalizeCellText(input);
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let index = 0; index < text3.length; index++) {
+      const character = text3[index];
+      if (quoted) {
+        if (character === '"') {
+          if (text3[index + 1] === '"') {
+            field += '"';
+            index++;
+          } else {
+            quoted = false;
+          }
+        } else {
+          field += character;
+        }
+        continue;
+      }
+      if (character === '"' && field.length === 0) {
+        quoted = true;
+        continue;
+      }
+      if (character === delimiter2) {
+        row.push(field);
+        field = "";
+        continue;
+      }
+      if (character === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+        continue;
+      }
+      field += character;
+    }
+    if (quoted) {
+      return null;
+    }
+    row.push(field);
+    rows.push(row);
+    if (rows.length > 1 && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "" && text3.endsWith("\n")) {
+      rows.pop();
+    }
+    const width = Math.max(...rows.map((candidate) => candidate.length));
+    return rows.map((candidate) => [
+      ...candidate,
+      ...Array.from({ length: width - candidate.length }, () => "")
+    ]);
+  }
+  function gridToMarkdown(rows, alignments = []) {
+    if (rows.length === 0 || rows[0].length === 0) {
+      return "";
+    }
+    const width = rows[0].length;
+    const sourceRows = rows.map(
+      (row) => `|${Array.from(
+        { length: width },
+        (_, column) => sourceCellForMarkdown(row[column])
+      ).join("|")}|`
+    );
+    const delimiter2 = `|${Array.from(
+      { length: width },
+      (_, column) => alignmentDelimiter(alignments[column] ?? "left")
+    ).join("|")}|`;
+    return [sourceRows[0], delimiter2, ...sourceRows.slice(1)].join("\n");
+  }
+  function gridToHtml(rows, options = {}) {
+    const alignments = options.alignments ?? [];
+    const metadata = options.embeddedPayload ? `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute(options.embeddedPayload)}">` : "";
+    const body = rows.map((row, rowIndex) => {
+      const tagName = rowIndex === 0 && options.headerRow !== false ? "th" : "td";
+      return `<tr>${row.map((cell2, column) => {
+        const alignment = alignments[column] ?? "left";
+        const style = `text-align:${alignment};border:1px solid #000000;padding:2px 6px;vertical-align:top;white-space:pre-wrap`;
+        const content2 = options.rich && options.richCells?.[rowIndex]?.[column] !== void 0 ? options.richCells[rowIndex][column] : cellTextToHtml(cell2.text);
+        return `<${tagName} style="${style}">${content2}</${tagName}>`;
+      }).join("")}</tr>`;
+    }).join("");
+    return `${metadata}<table style="border-collapse:collapse">${body}</table>`;
+  }
+  function tableRectanglePayload(table2, rectangle, sourceDocument, cutToken) {
+    const rows = tableDataRows(table2);
+    const selected = rows.slice(rectangle.top, rectangle.bottom + 1).map((row) => row.slice(rectangle.left, rectangle.right + 1));
+    const fullTable = rectangle.top === 0 && rectangle.bottom === rows.length - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1;
+    return {
+      version: MLRT_CLIPBOARD_VERSION,
+      kind: "grid",
+      sourceDocument,
+      rows: selected,
+      alignments: table2.alignments.slice(rectangle.left, rectangle.right + 1),
+      includesHeader: rectangle.top === 0,
+      ...fullTable ? { exactMarkdown: tableSourceText(table2) } : {},
+      ...cutToken ? { cutToken } : {}
+    };
+  }
+  function resolveGridPasteRows(source, destination) {
+    if (source.length === 0 || source[0]?.length === 0) {
+      return null;
+    }
+    const sourceHeight = source.length;
+    const sourceWidth = source[0].length;
+    if (source.some((row) => row.length !== sourceWidth)) {
+      return null;
+    }
+    const destinationHeight = destination.bottom - destination.top + 1;
+    const destinationWidth = destination.right - destination.left + 1;
+    const isSingleAnchor = destinationHeight === 1 && destinationWidth === 1;
+    if (isSingleAnchor) {
+      return source.map((row) => row.map(cloneCell));
+    }
+    if (destinationHeight % sourceHeight !== 0 || destinationWidth % sourceWidth !== 0) {
+      return null;
+    }
+    return Array.from(
+      { length: destinationHeight },
+      (_, row) => Array.from(
+        { length: destinationWidth },
+        (_2, column) => cloneCell(source[row % sourceHeight][column % sourceWidth])
+      )
+    );
+  }
+  function buildGridPasteEdit(table2, plan) {
+    const sourceHeight = plan.rows.length;
+    const sourceWidth = plan.rows[0]?.length ?? 0;
+    const requiredRows = Math.max(
+      table2.body.length + 1,
+      plan.destination.top + sourceHeight
+    );
+    const requiredColumns = Math.max(
+      table2.columnCount,
+      plan.destination.left + sourceWidth
+    );
+    const dataRows = [table2.header, ...table2.body];
+    const rawRows = Array.from(
+      { length: requiredRows },
+      (_, rowIndex) => Array.from(
+        { length: requiredColumns },
+        (_2, column) => existingRawCell(dataRows[rowIndex], column)
+      )
+    );
+    for (let row = 0; row < sourceHeight; row++) {
+      for (let column = 0; column < sourceWidth; column++) {
+        const targetRow = plan.destination.top + row;
+        const targetColumn = plan.destination.left + column;
+        const sourceCell = plan.rows[row][column];
+        const existingRaw = rawRows[targetRow][targetColumn];
+        rawRows[targetRow][targetColumn] = sourceCell.markdown ?? formatDisplayCellForDestination(sourceCell.text, existingRaw);
+      }
+    }
+    const delimiterRaw = Array.from({ length: requiredColumns }, (_, column) => {
+      if (column < table2.columnCount) {
+        return table2.delimiter.cells[column]?.raw ?? " --- ";
+      }
+      const sourceColumn = column - plan.destination.left;
+      const alignment = plan.sourceAlignments?.[sourceColumn] ?? "left";
+      return alignmentDelimiter(alignment);
+    });
+    const lines = [rawRows[0], delimiterRaw, ...rawRows.slice(1)].map(
+      (rawCells) => `|${rawCells.join("|")}|`
+    );
+    return {
+      from: table2.from,
+      to: table2.to,
+      insert: lines.join(tableLineSeparator(table2))
+    };
+  }
+  function buildGridClearEdit(table2, rectangle) {
+    const rows = Array.from(
+      { length: rectangle.bottom - rectangle.top + 1 },
+      () => Array.from(
+        { length: rectangle.right - rectangle.left + 1 },
+        () => ({ text: "" })
+      )
+    );
+    return buildGridPasteEdit(table2, { rows, destination: rectangle });
+  }
+  function tableDataRows(table2) {
+    return [table2.header, ...table2.body].map(
+      (row) => Array.from({ length: table2.columnCount }, (_, column) => ({
+        text: markdownCellToDisplayText(row.cells[column]?.raw ?? ""),
+        markdown: row.cells[column]?.raw ?? "  "
+      }))
+    );
+  }
+  function tableSourceText(table2) {
+    return [table2.header, table2.delimiter, ...table2.body].map((row) => row.text).join(tableLineSeparator(table2));
+  }
+  function existingRawCell(row, column) {
+    return row?.cells[column]?.raw ?? "  ";
+  }
+  function formatDisplayCellForDestination(text3, raw) {
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(raw);
+    const leading = leadingWhitespace || " ";
+    const trailing = trailingWhitespace || " ";
+    return `${leading}${formatMarkdownCell(normalizeCellText(text3), {
+      trim: false
+    })}${trailing}`;
+  }
+  function sourceCellForMarkdown(cell2) {
+    if (cell2?.markdown && isSafeRawCellSource(cell2.markdown, cell2.text)) {
+      return cell2.markdown;
+    }
+    return ` ${formatMarkdownCell(cell2?.text ?? "", { trim: false })} `;
+  }
+  function isSafeRawCellSource(raw, text3) {
+    return !raw.includes("|") && markdownCellToDisplayText(raw) === text3;
+  }
+  function alignmentDelimiter(alignment) {
+    if (alignment === "center") {
+      return " :---: ";
+    }
+    if (alignment === "right") {
+      return " ---: ";
+    }
+    return " --- ";
+  }
+  function tableLineSeparator(table2) {
+    return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
+  }
+  function quoteDelimited(value, delimiter2) {
+    const normalized = normalizeCellText(value);
+    if (normalized.includes(delimiter2) || normalized.includes('"') || normalized.includes("\n")) {
+      return `"${normalized.replace(/"/g, '""')}"`;
+    }
+    return normalized;
+  }
+  function cellTextToHtml(value) {
+    return escapeHtml(normalizeCellText(value)).replace(/\n/g, "<br>");
+  }
+  function escapeHtml(value) {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function escapeHtmlAttribute(value) {
+    return escapeHtml(value).replace(/\r?\n/g, "&#10;");
+  }
+  function cloneCell(cell2) {
+    return { text: cell2.text, ...cell2.markdown ? { markdown: cell2.markdown } : {} };
+  }
+  function isRecord(value) {
+    return Boolean(value) && typeof value === "object";
+  }
+
   // src/editor/table/cellSelection.ts
   var TABLE_CELL_SELECTOR = ".mlrt-table-cell";
   function findCell(target) {
@@ -24299,6 +24633,673 @@
     return null;
   }
 
+  // src/editor/table/tableRangeSelection.ts
+  var TABLE_SELECTION_CHANGE_EVENT = "mlrt:table-selection-change";
+  var TABLE_SELECTION_CLEAR_EVENT = "mlrt:table-selection-clear";
+  var states = /* @__PURE__ */ new WeakMap();
+  function bindTableRangeSelection(wrapper, view2, table2) {
+    wrapper.tabIndex = -1;
+    let suppressNativeMouseDrag = false;
+    let lastDocumentDragRange = null;
+    const onPointerDown = (event) => {
+      const cell2 = findCell(event.target);
+      if (!cell2 || !wrapper.contains(cell2)) {
+        return;
+      }
+      if (event.button !== 0) {
+        if (event.button === 2) {
+          event.preventDefault();
+        }
+        return;
+      }
+      const address = addressFromCell(cell2);
+      if (!address) {
+        return;
+      }
+      const state = stateFor(wrapper.ownerDocument);
+      if (event.shiftKey) {
+        const current = getTableRangeSelection(wrapper.ownerDocument);
+        const focusedCell = findCell(wrapper.ownerDocument.activeElement);
+        const focusedAddress = focusedCell && wrapper.contains(focusedCell) ? addressFromCell(focusedCell) : null;
+        const anchor = current?.wrapper === wrapper ? current.anchor : focusedAddress ?? address;
+        event.preventDefault();
+        setTableRangeSelection(wrapper, table2.from, anchor, address, true);
+        return;
+      }
+      state.pointerAnchor = address;
+      state.pointerId = event.pointerId;
+      state.pointerCrossedCells = false;
+      suppressNativeMouseDrag = false;
+      lastDocumentDragRange = null;
+      wrapper.ownerDocument.addEventListener("pointermove", onPointerMove, true);
+      wrapper.ownerDocument.addEventListener("pointerup", onPointerUp, true);
+      wrapper.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
+      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
+      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
+      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
+      if (state.selection?.wrapper === wrapper) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const updateDragSelection = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if ("pointerId" in event && state.pointerId !== -1 && state.pointerId !== event.pointerId || !state.pointerAnchor || (event.buttons & 1) === 0) {
+        return;
+      }
+      const target = wrapper.ownerDocument.elementFromPoint(
+        event.clientX,
+        event.clientY
+      );
+      const cell2 = findCell(target);
+      if (cell2 && wrapper.contains(cell2)) {
+        const address = addressFromCell(cell2);
+        if (!address || sameAddress(address, state.pointerAnchor)) {
+          return;
+        }
+        state.pointerCrossedCells = true;
+        suppressNativeMouseDrag = true;
+        event.preventDefault();
+        setTableRangeSelection(
+          wrapper,
+          table2.from,
+          state.pointerAnchor,
+          address,
+          true
+        );
+        return;
+      }
+      if (target && wrapper.contains(target)) {
+        return;
+      }
+      let documentPosition = view2.posAtCoords({
+        x: event.clientX,
+        y: event.clientY
+      });
+      const wrapperRect = wrapper.getBoundingClientRect();
+      if (documentPosition === null) {
+        documentPosition = event.clientY < wrapperRect.top ? 0 : view2.state.doc.length;
+      }
+      const tableFrom = Number(wrapper.dataset.srcFrom ?? table2.from);
+      const parsedTables = getParsedTables(view2.state.doc);
+      const currentTable = parsedTables.find(
+        (candidate) => candidate.from === tableFrom
+      );
+      const tableTo = currentTable?.to ?? tableFrom + (table2.to - table2.from);
+      const targetWrapper = target instanceof Element ? target.closest(".mlrt-table-widget") : null;
+      if (targetWrapper && targetWrapper !== wrapper) {
+        const targetFrom = Number(targetWrapper.dataset.srcFrom ?? "-1");
+        const targetTable = parsedTables.find(
+          (candidate) => candidate.from === targetFrom
+        );
+        if (targetTable) {
+          documentPosition = targetFrom >= tableFrom ? targetTable.to : targetTable.from;
+        }
+      }
+      const movingBeforeTable = documentPosition <= tableFrom || event.clientY < wrapperRect.top;
+      const movingAfterTable = documentPosition >= tableTo || event.clientY > wrapperRect.bottom;
+      if (!movingBeforeTable && !movingAfterTable) {
+        return;
+      }
+      state.pointerCrossedCells = true;
+      suppressNativeMouseDrag = true;
+      event.preventDefault();
+      event.stopPropagation();
+      clearTableRangeSelection(wrapper.ownerDocument);
+      clearNativeSelection(wrapper.ownerDocument);
+      if (!view2.hasFocus) {
+        view2.focus();
+      }
+      lastDocumentDragRange = {
+        anchor: movingBeforeTable ? tableTo : tableFrom,
+        head: documentPosition
+      };
+      view2.dispatch({
+        selection: EditorSelection.range(
+          lastDocumentDragRange.anchor,
+          lastDocumentDragRange.head
+        ),
+        scrollIntoView: true
+      });
+    };
+    const onPointerMove = (event) => {
+      updateDragSelection(event);
+    };
+    const onPointerUp = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerId !== event.pointerId) {
+        return;
+      }
+      state.pointerAnchor = null;
+      state.pointerId = null;
+      state.pointerCrossedCells = false;
+      queueMicrotask(restoreLastDocumentDragRange);
+      setTimeout(removeDocumentPointerListeners, 0);
+    };
+    const onMouseMove = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerAnchor && (event.buttons & 1) !== 0) {
+        updateDragSelection(event);
+      }
+      if (suppressNativeMouseDrag) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    const onMouseUp = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (suppressNativeMouseDrag) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (state.pointerId === -1) {
+        state.pointerAnchor = null;
+        state.pointerId = null;
+        state.pointerCrossedCells = false;
+        setTimeout(removeDocumentPointerListeners, 0);
+      }
+      queueMicrotask(restoreLastDocumentDragRange);
+    };
+    const onClickAfterDrag = (event) => {
+      if (!suppressNativeMouseDrag) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNativeMouseDrag = false;
+    };
+    const restoreLastDocumentDragRange = () => {
+      if (!lastDocumentDragRange) {
+        return;
+      }
+      view2.dispatch({
+        selection: EditorSelection.range(
+          lastDocumentDragRange.anchor,
+          lastDocumentDragRange.head
+        )
+      });
+    };
+    const onMouseDown = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (event.button !== 0 || state.pointerAnchor) {
+        return;
+      }
+      const cell2 = findCell(event.target);
+      const address = cell2 && wrapper.contains(cell2) ? addressFromCell(cell2) : null;
+      if (!address) {
+        return;
+      }
+      state.pointerAnchor = address;
+      state.pointerId = -1;
+      state.pointerCrossedCells = false;
+      suppressNativeMouseDrag = false;
+      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
+      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
+      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
+      if (state.selection?.wrapper === wrapper) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const removeDocumentPointerListeners = () => {
+      const finalRange = lastDocumentDragRange;
+      wrapper.ownerDocument.removeEventListener("pointermove", onPointerMove, true);
+      wrapper.ownerDocument.removeEventListener("pointerup", onPointerUp, true);
+      wrapper.ownerDocument.removeEventListener("pointercancel", onPointerUp, true);
+      wrapper.ownerDocument.removeEventListener("mousemove", onMouseMove, true);
+      wrapper.ownerDocument.removeEventListener("mouseup", onMouseUp, true);
+      wrapper.ownerDocument.removeEventListener("click", onClickAfterDrag, true);
+      suppressNativeMouseDrag = false;
+      lastDocumentDragRange = null;
+      if (finalRange) {
+        clearNativeSelection(wrapper.ownerDocument);
+        view2.dispatch({
+          selection: EditorSelection.range(finalRange.anchor, finalRange.head)
+        });
+      }
+    };
+    const onFocusIn = (event) => {
+      const cell2 = findCell(event.target);
+      if (cell2 && wrapper.contains(cell2)) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const onDocumentSelectionPointerDown = (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      const selection = getTableRangeSelection(wrapper.ownerDocument);
+      if (selection?.wrapper === wrapper && event.target instanceof Node && !wrapper.contains(event.target)) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const onKeyDown = (event) => {
+      const activeCell = findCell(event.target);
+      if (activeCell && wrapper.contains(activeCell)) {
+        if (event.key === "Escape") {
+          const address = addressFromCell(activeCell);
+          if (!address) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          activeCell.blur();
+          setTableRangeSelection(
+            wrapper,
+            Number(wrapper.dataset.srcFrom ?? table2.from),
+            address,
+            address,
+            true
+          );
+          return;
+        }
+        if (isSelectAll(event)) {
+          handleCellSelectAll(event, wrapper, table2, activeCell);
+        }
+        return;
+      }
+      const selection = getTableRangeSelection(wrapper.ownerDocument);
+      if (!selection || selection.wrapper !== wrapper) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (selection.pendingCutToken) {
+          setPendingCutToken(wrapper.ownerDocument, void 0);
+        } else {
+          clearTableRangeSelection(wrapper.ownerDocument);
+        }
+        return;
+      }
+      if (isSelectAll(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rectangle = selectionRectangle(selection);
+        const rowCount = table2.body.length + 1;
+        if (rectangle.top === 0 && rectangle.bottom === rowCount - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1) {
+          clearTableRangeSelection(wrapper.ownerDocument);
+          view2.focus();
+          view2.dispatch({
+            selection: EditorSelection.range(0, view2.state.doc.length),
+            scrollIntoView: true
+          });
+        } else {
+          setTableRangeSelection(
+            wrapper,
+            selection.tableFrom,
+            { row: 0, column: 0 },
+            { row: rowCount - 1, column: table2.columnCount - 1 },
+            true
+          );
+        }
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Tab") {
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = keyDelta(event);
+        const nextHead = clampAddress(
+          {
+            row: selection.head.row + delta.row,
+            column: selection.head.column + delta.column
+          },
+          table2
+        );
+        const nextAnchor = event.shiftKey ? selection.anchor : nextHead;
+        setTableRangeSelection(
+          wrapper,
+          selection.tableFrom,
+          nextAnchor,
+          nextHead,
+          true
+        );
+        return;
+      }
+      if (event.key === "Enter" || event.key === "F2") {
+        event.preventDefault();
+        event.stopPropagation();
+        const target = cellFromAddress(wrapper, selection.head);
+        clearTableRangeSelection(wrapper.ownerDocument);
+        if (target) {
+          focusCellAtEnd(target);
+        }
+        return;
+      }
+      if (event.key === "Backspace" || event.key === "Delete") {
+        event.preventDefault();
+        event.stopPropagation();
+        wrapper.dispatchEvent(
+          new CustomEvent(TABLE_SELECTION_CLEAR_EVENT, { bubbles: true })
+        );
+        return;
+      }
+      if (isPrintableKey(event)) {
+        const target = cellFromAddress(wrapper, selection.head);
+        event.preventDefault();
+        event.stopPropagation();
+        clearTableRangeSelection(wrapper.ownerDocument);
+        if (target) {
+          target.focus();
+          const nativeSelection = wrapper.ownerDocument.defaultView?.getSelection();
+          const range = wrapper.ownerDocument.createRange();
+          range.selectNodeContents(target);
+          nativeSelection?.removeAllRanges();
+          nativeSelection?.addRange(range);
+          wrapper.ownerDocument.execCommand("insertText", false, event.key);
+        }
+      }
+    };
+    wrapper.addEventListener("pointerdown", onPointerDown);
+    wrapper.addEventListener("mousedown", onMouseDown);
+    wrapper.addEventListener("focusin", onFocusIn);
+    wrapper.addEventListener("keydown", onKeyDown);
+    wrapper.ownerDocument.addEventListener(
+      "pointerdown",
+      onDocumentSelectionPointerDown,
+      true
+    );
+    restoreSelectionClasses(wrapper);
+    return () => {
+      wrapper.removeEventListener("pointerdown", onPointerDown);
+      wrapper.removeEventListener("mousedown", onMouseDown);
+      removeDocumentPointerListeners();
+      wrapper.removeEventListener("focusin", onFocusIn);
+      wrapper.removeEventListener("keydown", onKeyDown);
+      wrapper.ownerDocument.removeEventListener(
+        "pointerdown",
+        onDocumentSelectionPointerDown,
+        true
+      );
+    };
+  }
+  function getTableRangeSelection(doc2) {
+    const state = states.get(doc2)?.selection ?? null;
+    if (state && !state.wrapper.isConnected) {
+      const replacement = Array.from(
+        doc2.querySelectorAll(".mlrt-table-widget")
+      ).find(
+        (candidate) => Number(candidate.dataset.srcFrom ?? "-1") === state.tableFrom
+      );
+      if (replacement) {
+        state.wrapper = replacement;
+        applySelectionClasses(state);
+        return state;
+      }
+      return null;
+    }
+    return state;
+  }
+  function setTableRangeSelection(wrapper, tableFrom, anchor, head, focusWrapper) {
+    const doc2 = wrapper.ownerDocument;
+    const state = stateFor(doc2);
+    if (state.selection?.wrapper !== wrapper) {
+      clearSelectionClasses(state.selection?.wrapper);
+    }
+    const selection = {
+      version: MLRT_CLIPBOARD_VERSION,
+      wrapper,
+      tableFrom,
+      anchor,
+      head
+    };
+    state.selection = selection;
+    applySelectionClasses(selection);
+    clearNativeSelection(doc2);
+    if (focusWrapper) {
+      wrapper.focus({ preventScroll: true });
+    }
+    dispatchSelectionChange(wrapper);
+    return selection;
+  }
+  function selectTableRow(wrapper, tableFrom, row, columnCount) {
+    setTableRangeSelection(
+      wrapper,
+      tableFrom,
+      { row, column: 0 },
+      { row, column: Math.max(0, columnCount - 1) },
+      true
+    );
+  }
+  function selectTableColumn(wrapper, tableFrom, column, rowCount) {
+    setTableRangeSelection(
+      wrapper,
+      tableFrom,
+      { row: 0, column },
+      { row: Math.max(0, rowCount - 1), column },
+      true
+    );
+  }
+  function selectionRectangle(selection) {
+    return {
+      top: Math.min(selection.anchor.row, selection.head.row),
+      bottom: Math.max(selection.anchor.row, selection.head.row),
+      left: Math.min(selection.anchor.column, selection.head.column),
+      right: Math.max(selection.anchor.column, selection.head.column)
+    };
+  }
+  function isCellInSelection(selection, address) {
+    const rectangle = selectionRectangle(selection);
+    return address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right;
+  }
+  function clearTableRangeSelection(doc2) {
+    const state = states.get(doc2);
+    if (!state?.selection) {
+      return;
+    }
+    const wrapper = state.selection.wrapper;
+    clearSelectionClasses(wrapper);
+    state.selection = null;
+    dispatchSelectionChange(wrapper);
+  }
+  function setPendingCutToken(doc2, token) {
+    const selection = getTableRangeSelection(doc2);
+    if (!selection) {
+      return;
+    }
+    selection.pendingCutToken = token;
+    applySelectionClasses(selection);
+    dispatchSelectionChange(selection.wrapper);
+  }
+  function ensureContextCellSelection(wrapper, tableFrom, cell2) {
+    const address = addressFromCell(cell2);
+    if (!address) {
+      return null;
+    }
+    const current = getTableRangeSelection(wrapper.ownerDocument);
+    if (current?.wrapper === wrapper && isCellInSelection(current, address)) {
+      return current;
+    }
+    return setTableRangeSelection(wrapper, tableFrom, address, address, false);
+  }
+  function addressFromCell(cell2) {
+    const rowKind = cell2.dataset.rowKind;
+    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
+    const column = Number(cell2.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
+      return null;
+    }
+    return { row: rowKind === "header" ? 0 : rowIndex + 1, column };
+  }
+  function cellFromAddress(wrapper, address) {
+    const rowKind = address.row === 0 ? "header" : "body";
+    const rowIndex = address.row === 0 ? 0 : address.row - 1;
+    return wrapper.querySelector(
+      `${TABLE_CELL_SELECTOR}[data-row-kind="${rowKind}"][data-row-index="${rowIndex}"][data-column="${address.column}"]`
+    );
+  }
+  function handleCellSelectAll(event, wrapper, table2, activeCell) {
+    const selection = wrapper.ownerDocument.defaultView?.getSelection();
+    const valueLength = readCellDisplayValue(activeCell).length;
+    const selectedLength = selection?.toString().replace(/\u00a0/g, " ").length ?? 0;
+    if (selectedLength < valueLength) {
+      event.preventDefault();
+      event.stopPropagation();
+      const range = wrapper.ownerDocument.createRange();
+      range.selectNodeContents(activeCell);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    activeCell.blur();
+    setTableRangeSelection(
+      wrapper,
+      Number(wrapper.dataset.srcFrom ?? table2.from),
+      { row: 0, column: 0 },
+      { row: table2.body.length, column: table2.columnCount - 1 },
+      true
+    );
+  }
+  function applySelectionClasses(selection) {
+    const rectangle = selectionRectangle(selection);
+    selection.wrapper.classList.add("mlrt-table-selection-mode");
+    selection.wrapper.classList.toggle(
+      "mlrt-table-cut-pending",
+      Boolean(selection.pendingCutToken)
+    );
+    selection.wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
+      const address = addressFromCell(cell2);
+      const selected = Boolean(
+        address && address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right
+      );
+      cell2.classList.toggle("mlrt-table-cell-selected", selected);
+      cell2.classList.toggle(
+        "mlrt-table-selection-top",
+        selected && Boolean(address && address.row === rectangle.top)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-selection-bottom",
+        selected && Boolean(address && address.row === rectangle.bottom)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-selection-left",
+        selected && Boolean(address && address.column === rectangle.left)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-selection-right",
+        selected && Boolean(address && address.column === rectangle.right)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-cell-selection-head",
+        selected && Boolean(address && sameAddress(address, selection.head))
+      );
+      cell2.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    syncTableSelectionOutline(selection.wrapper);
+  }
+  function restoreSelectionClasses(wrapper) {
+    const selection = states.get(wrapper.ownerDocument)?.selection;
+    if (selection && selection.tableFrom === Number(wrapper.dataset.srcFrom ?? "-1")) {
+      selection.wrapper = wrapper;
+      applySelectionClasses(selection);
+    }
+  }
+  function clearSelectionClasses(wrapper) {
+    if (!wrapper) {
+      return;
+    }
+    wrapper.classList.remove(
+      "mlrt-table-selection-mode",
+      "mlrt-table-cut-pending"
+    );
+    wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
+      cell2.classList.remove(
+        "mlrt-table-cell-selected",
+        "mlrt-table-cell-selection-head",
+        "mlrt-table-selection-top",
+        "mlrt-table-selection-bottom",
+        "mlrt-table-selection-left",
+        "mlrt-table-selection-right"
+      );
+      cell2.removeAttribute("aria-selected");
+    });
+    syncTableSelectionOutline(wrapper);
+  }
+  function syncTableSelectionOutline(wrapper) {
+    const scroll = wrapper.querySelector(".mlrt-table-scroll");
+    const existing = scroll?.querySelector(
+      ":scope > .mlrt-table-selection-outline"
+    );
+    if (!scroll || wrapper.classList.contains("mlrt-table-cut-pending")) {
+      existing?.remove();
+      return;
+    }
+    const selected = Array.from(
+      wrapper.querySelectorAll(
+        `${TABLE_CELL_SELECTOR}.mlrt-table-cell-selected, ${TABLE_CELL_SELECTOR}.mlrt-document-range-selected`
+      )
+    );
+    if (selected.length === 0) {
+      existing?.remove();
+      return;
+    }
+    const scrollRect = scroll.getBoundingClientRect();
+    const rectangles = selected.map((cell2) => cell2.getBoundingClientRect());
+    const left = Math.min(...rectangles.map((rect) => rect.left));
+    const top2 = Math.min(...rectangles.map((rect) => rect.top));
+    const right = Math.max(...rectangles.map((rect) => rect.right));
+    const bottom = Math.max(...rectangles.map((rect) => rect.bottom));
+    const outline = existing ?? wrapper.ownerDocument.createElement("div");
+    outline.className = "mlrt-table-selection-outline";
+    outline.setAttribute("aria-hidden", "true");
+    outline.style.left = `${left - scrollRect.left + scroll.scrollLeft}px`;
+    outline.style.top = `${top2 - scrollRect.top + scroll.scrollTop}px`;
+    outline.style.width = `${right - left}px`;
+    outline.style.height = `${bottom - top2}px`;
+    if (!existing) {
+      scroll.append(outline);
+    }
+  }
+  function dispatchSelectionChange(wrapper) {
+    wrapper.dispatchEvent(
+      new CustomEvent(TABLE_SELECTION_CHANGE_EVENT, { bubbles: true })
+    );
+  }
+  function stateFor(doc2) {
+    const current = states.get(doc2);
+    if (current) {
+      return current;
+    }
+    const state = {
+      selection: null,
+      pointerAnchor: null,
+      pointerId: null,
+      pointerCrossedCells: false
+    };
+    states.set(doc2, state);
+    return state;
+  }
+  function clearNativeSelection(doc2) {
+    doc2.defaultView?.getSelection()?.removeAllRanges();
+  }
+  function clampAddress(address, table2) {
+    return {
+      row: Math.max(0, Math.min(table2.body.length, address.row)),
+      column: Math.max(0, Math.min(table2.columnCount - 1, address.column))
+    };
+  }
+  function keyDelta(event) {
+    if (event.key === "ArrowUp") {
+      return { row: -1, column: 0 };
+    }
+    if (event.key === "ArrowDown") {
+      return { row: 1, column: 0 };
+    }
+    if (event.key === "ArrowLeft" || event.key === "Tab" && event.shiftKey) {
+      return { row: 0, column: -1 };
+    }
+    return { row: 0, column: 1 };
+  }
+  function isSelectAll(event) {
+    return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a";
+  }
+  function isPrintableKey(event) {
+    return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
+  }
+  function sameAddress(left, right) {
+    return left.row === right.row && left.column === right.column;
+  }
+
   // src/editor/table/tableWidgetState.ts
   var TABLE_WIDGET_SELECTOR = ".mlrt-table-widget";
   var liveEditPreservedTableStarts = /* @__PURE__ */ new Set();
@@ -24369,14 +25370,8 @@
   function createEditorGeometrySync() {
     return ViewPlugin.fromClass(
       class {
-        measureKey = {};
-        lastGutterWidth = -1;
-        lastContentWidth = -1;
-        lastObservedScrollerWidth = -1;
-        resizeObserver;
-        observedTableWidgets = /* @__PURE__ */ new Set();
-        observedWidgetHeights = /* @__PURE__ */ new WeakMap();
         constructor(view2) {
+          this.view = view2;
           const ResizeObserverCtor = view2.dom.ownerDocument.defaultView?.ResizeObserver;
           if (ResizeObserverCtor) {
             this.lastObservedScrollerWidth = view2.scrollDOM.clientWidth;
@@ -24407,6 +25402,15 @@
           }
           this.schedule(view2);
         }
+        view;
+        measureKey = {};
+        lastGutterWidth = -1;
+        lastContentWidth = -1;
+        lastObservedScrollerWidth = -1;
+        resizeObserver;
+        selectionOutlineFrame;
+        observedTableWidgets = /* @__PURE__ */ new Set();
+        observedWidgetHeights = /* @__PURE__ */ new WeakMap();
         update(update) {
           this.syncObservedTableWidgets(update.view);
           if (update.transactions.some(
@@ -24420,6 +25424,10 @@
         }
         destroy() {
           this.resizeObserver?.disconnect();
+          const win = viewWindow(this.view);
+          if (this.selectionOutlineFrame !== void 0 && win) {
+            win.cancelAnimationFrame(this.selectionOutlineFrame);
+          }
           this.observedTableWidgets.clear();
         }
         schedule(view2, forceContentRemeasure = false) {
@@ -24449,6 +25457,26 @@
                   `calc(${metrics.contentWidth}px - var(--mlrt-editor-right-padding, 26px))`
                 );
               }
+              this.scheduleSelectionOutlineSync(measuredView);
+            }
+          });
+        }
+        /**
+         * Table cells can reflow one frame after the scroller width changes.
+         * The selection frame uses cell rectangles, so refresh it after that
+         * layout is committed rather than leaving it at the pre-resize width.
+         */
+        scheduleSelectionOutlineSync(view2) {
+          const win = viewWindow(view2);
+          if (!win || this.selectionOutlineFrame !== void 0) {
+            return;
+          }
+          this.selectionOutlineFrame = win.requestAnimationFrame(() => {
+            this.selectionOutlineFrame = void 0;
+            for (const widget of this.observedTableWidgets) {
+              if (widget instanceof HTMLElement && widget.isConnected) {
+                syncTableSelectionOutline(widget);
+              }
             }
           });
         }
@@ -24476,6 +25504,9 @@
         }
       }
     );
+  }
+  function viewWindow(view2) {
+    return view2.dom.ownerDocument.defaultView;
   }
   function forceCodeMirrorContentRemeasure(view2) {
     const viewState = view2.viewState;
@@ -25885,1007 +26916,6 @@
   }
   function getTableLineSeparator(table2) {
     return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
-  }
-
-  // src/shared/clipboardModel.ts
-  var MLRT_CLIPBOARD_MIME = "application/x-markdown-live-editor+json";
-  var MLRT_CLIPBOARD_VERSION = 1;
-  var VALID_ALIGNMENTS = /* @__PURE__ */ new Set([
-    "left",
-    "center",
-    "right"
-  ]);
-  function normalizeCellText(value) {
-    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
-  }
-  function validateClipboardPayload(value) {
-    if (!isRecord(value) || value.version !== MLRT_CLIPBOARD_VERSION) {
-      return null;
-    }
-    if (typeof value.sourceDocument !== "string") {
-      return null;
-    }
-    const cutToken = value.cutToken === void 0 || typeof value.cutToken === "string" ? value.cutToken : null;
-    if (cutToken === null) {
-      return null;
-    }
-    if (value.kind === "document") {
-      if (typeof value.markdown !== "string") {
-        return null;
-      }
-      return {
-        version: MLRT_CLIPBOARD_VERSION,
-        kind: "document",
-        sourceDocument: value.sourceDocument,
-        markdown: normalizeCellText(value.markdown),
-        ...cutToken ? { cutToken } : {}
-      };
-    }
-    if (value.kind !== "grid" || !Array.isArray(value.rows) || value.rows.length === 0 || !Array.isArray(value.alignments) || typeof value.includesHeader !== "boolean" || value.exactMarkdown !== void 0 && typeof value.exactMarkdown !== "string") {
-      return null;
-    }
-    const width = Array.isArray(value.rows[0]) ? value.rows[0].length : 0;
-    if (width === 0) {
-      return null;
-    }
-    const rows = [];
-    for (const candidateRow of value.rows) {
-      if (!Array.isArray(candidateRow) || candidateRow.length !== width) {
-        return null;
-      }
-      const row = [];
-      for (const candidateCell of candidateRow) {
-        if (!isRecord(candidateCell) || typeof candidateCell.text !== "string" || candidateCell.markdown !== void 0 && typeof candidateCell.markdown !== "string") {
-          return null;
-        }
-        const text3 = normalizeCellText(candidateCell.text);
-        const markdown2 = candidateCell.markdown;
-        row.push({
-          text: text3,
-          ...typeof markdown2 === "string" && isSafeRawCellSource(markdown2, text3) ? { markdown: markdown2 } : {}
-        });
-      }
-      rows.push(row);
-    }
-    const alignments = [];
-    for (let column = 0; column < width; column++) {
-      const alignment = value.alignments[column];
-      alignments.push(
-        typeof alignment === "string" && VALID_ALIGNMENTS.has(alignment) ? alignment : "left"
-      );
-    }
-    return {
-      version: MLRT_CLIPBOARD_VERSION,
-      kind: "grid",
-      sourceDocument: value.sourceDocument,
-      rows,
-      alignments,
-      includesHeader: value.includesHeader,
-      ...typeof value.exactMarkdown === "string" ? { exactMarkdown: normalizeCellText(value.exactMarkdown) } : {},
-      ...cutToken ? { cutToken } : {}
-    };
-  }
-  function parseClipboardPayload(text3) {
-    try {
-      return validateClipboardPayload(JSON.parse(text3));
-    } catch {
-      return null;
-    }
-  }
-  function serializeDelimitedGrid(rows, delimiter2) {
-    return rows.map((row) => row.map((value) => quoteDelimited(value, delimiter2)).join(delimiter2)).join("\r\n");
-  }
-  function parseDelimitedGrid(input, delimiter2) {
-    const text3 = normalizeCellText(input);
-    const rows = [];
-    let row = [];
-    let field = "";
-    let quoted = false;
-    for (let index = 0; index < text3.length; index++) {
-      const character = text3[index];
-      if (quoted) {
-        if (character === '"') {
-          if (text3[index + 1] === '"') {
-            field += '"';
-            index++;
-          } else {
-            quoted = false;
-          }
-        } else {
-          field += character;
-        }
-        continue;
-      }
-      if (character === '"' && field.length === 0) {
-        quoted = true;
-        continue;
-      }
-      if (character === delimiter2) {
-        row.push(field);
-        field = "";
-        continue;
-      }
-      if (character === "\n") {
-        row.push(field);
-        rows.push(row);
-        row = [];
-        field = "";
-        continue;
-      }
-      field += character;
-    }
-    if (quoted) {
-      return null;
-    }
-    row.push(field);
-    rows.push(row);
-    if (rows.length > 1 && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "" && text3.endsWith("\n")) {
-      rows.pop();
-    }
-    const width = Math.max(...rows.map((candidate) => candidate.length));
-    return rows.map((candidate) => [
-      ...candidate,
-      ...Array.from({ length: width - candidate.length }, () => "")
-    ]);
-  }
-  function gridToMarkdown(rows, alignments = []) {
-    if (rows.length === 0 || rows[0].length === 0) {
-      return "";
-    }
-    const width = rows[0].length;
-    const sourceRows = rows.map(
-      (row) => `|${Array.from(
-        { length: width },
-        (_, column) => sourceCellForMarkdown(row[column])
-      ).join("|")}|`
-    );
-    const delimiter2 = `|${Array.from(
-      { length: width },
-      (_, column) => alignmentDelimiter(alignments[column] ?? "left")
-    ).join("|")}|`;
-    return [sourceRows[0], delimiter2, ...sourceRows.slice(1)].join("\n");
-  }
-  function gridToHtml(rows, options = {}) {
-    const alignments = options.alignments ?? [];
-    const metadata = options.embeddedPayload ? `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute(options.embeddedPayload)}">` : "";
-    const body = rows.map((row, rowIndex) => {
-      const tagName = rowIndex === 0 && options.headerRow !== false ? "th" : "td";
-      return `<tr>${row.map((cell2, column) => {
-        const alignment = alignments[column] ?? "left";
-        const style = `text-align:${alignment};border:1px solid #000000;padding:2px 6px;vertical-align:top;white-space:pre-wrap`;
-        const content2 = options.rich && options.richCells?.[rowIndex]?.[column] !== void 0 ? options.richCells[rowIndex][column] : cellTextToHtml(cell2.text);
-        return `<${tagName} style="${style}">${content2}</${tagName}>`;
-      }).join("")}</tr>`;
-    }).join("");
-    return `${metadata}<table style="border-collapse:collapse">${body}</table>`;
-  }
-  function tableRectanglePayload(table2, rectangle, sourceDocument, cutToken) {
-    const rows = tableDataRows(table2);
-    const selected = rows.slice(rectangle.top, rectangle.bottom + 1).map((row) => row.slice(rectangle.left, rectangle.right + 1));
-    const fullTable = rectangle.top === 0 && rectangle.bottom === rows.length - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1;
-    return {
-      version: MLRT_CLIPBOARD_VERSION,
-      kind: "grid",
-      sourceDocument,
-      rows: selected,
-      alignments: table2.alignments.slice(rectangle.left, rectangle.right + 1),
-      includesHeader: rectangle.top === 0,
-      ...fullTable ? { exactMarkdown: tableSourceText(table2) } : {},
-      ...cutToken ? { cutToken } : {}
-    };
-  }
-  function resolveGridPasteRows(source, destination) {
-    if (source.length === 0 || source[0]?.length === 0) {
-      return null;
-    }
-    const sourceHeight = source.length;
-    const sourceWidth = source[0].length;
-    if (source.some((row) => row.length !== sourceWidth)) {
-      return null;
-    }
-    const destinationHeight = destination.bottom - destination.top + 1;
-    const destinationWidth = destination.right - destination.left + 1;
-    const isSingleAnchor = destinationHeight === 1 && destinationWidth === 1;
-    if (isSingleAnchor) {
-      return source.map((row) => row.map(cloneCell));
-    }
-    if (destinationHeight % sourceHeight !== 0 || destinationWidth % sourceWidth !== 0) {
-      return null;
-    }
-    return Array.from(
-      { length: destinationHeight },
-      (_, row) => Array.from(
-        { length: destinationWidth },
-        (_2, column) => cloneCell(source[row % sourceHeight][column % sourceWidth])
-      )
-    );
-  }
-  function buildGridPasteEdit(table2, plan) {
-    const sourceHeight = plan.rows.length;
-    const sourceWidth = plan.rows[0]?.length ?? 0;
-    const requiredRows = Math.max(
-      table2.body.length + 1,
-      plan.destination.top + sourceHeight
-    );
-    const requiredColumns = Math.max(
-      table2.columnCount,
-      plan.destination.left + sourceWidth
-    );
-    const dataRows = [table2.header, ...table2.body];
-    const rawRows = Array.from(
-      { length: requiredRows },
-      (_, rowIndex) => Array.from(
-        { length: requiredColumns },
-        (_2, column) => existingRawCell(dataRows[rowIndex], column)
-      )
-    );
-    for (let row = 0; row < sourceHeight; row++) {
-      for (let column = 0; column < sourceWidth; column++) {
-        const targetRow = plan.destination.top + row;
-        const targetColumn = plan.destination.left + column;
-        const sourceCell = plan.rows[row][column];
-        const existingRaw = rawRows[targetRow][targetColumn];
-        rawRows[targetRow][targetColumn] = sourceCell.markdown ?? formatDisplayCellForDestination(sourceCell.text, existingRaw);
-      }
-    }
-    const delimiterRaw = Array.from({ length: requiredColumns }, (_, column) => {
-      if (column < table2.columnCount) {
-        return table2.delimiter.cells[column]?.raw ?? " --- ";
-      }
-      const sourceColumn = column - plan.destination.left;
-      const alignment = plan.sourceAlignments?.[sourceColumn] ?? "left";
-      return alignmentDelimiter(alignment);
-    });
-    const lines = [rawRows[0], delimiterRaw, ...rawRows.slice(1)].map(
-      (rawCells) => `|${rawCells.join("|")}|`
-    );
-    return {
-      from: table2.from,
-      to: table2.to,
-      insert: lines.join(tableLineSeparator(table2))
-    };
-  }
-  function buildGridClearEdit(table2, rectangle) {
-    const rows = Array.from(
-      { length: rectangle.bottom - rectangle.top + 1 },
-      () => Array.from(
-        { length: rectangle.right - rectangle.left + 1 },
-        () => ({ text: "" })
-      )
-    );
-    return buildGridPasteEdit(table2, { rows, destination: rectangle });
-  }
-  function tableDataRows(table2) {
-    return [table2.header, ...table2.body].map(
-      (row) => Array.from({ length: table2.columnCount }, (_, column) => ({
-        text: markdownCellToDisplayText(row.cells[column]?.raw ?? ""),
-        markdown: row.cells[column]?.raw ?? "  "
-      }))
-    );
-  }
-  function tableSourceText(table2) {
-    return [table2.header, table2.delimiter, ...table2.body].map((row) => row.text).join(tableLineSeparator(table2));
-  }
-  function existingRawCell(row, column) {
-    return row?.cells[column]?.raw ?? "  ";
-  }
-  function formatDisplayCellForDestination(text3, raw) {
-    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(raw);
-    const leading = leadingWhitespace || " ";
-    const trailing = trailingWhitespace || " ";
-    return `${leading}${formatMarkdownCell(normalizeCellText(text3), {
-      trim: false
-    })}${trailing}`;
-  }
-  function sourceCellForMarkdown(cell2) {
-    if (cell2?.markdown && isSafeRawCellSource(cell2.markdown, cell2.text)) {
-      return cell2.markdown;
-    }
-    return ` ${formatMarkdownCell(cell2?.text ?? "", { trim: false })} `;
-  }
-  function isSafeRawCellSource(raw, text3) {
-    return !raw.includes("|") && markdownCellToDisplayText(raw) === text3;
-  }
-  function alignmentDelimiter(alignment) {
-    if (alignment === "center") {
-      return " :---: ";
-    }
-    if (alignment === "right") {
-      return " ---: ";
-    }
-    return " --- ";
-  }
-  function tableLineSeparator(table2) {
-    return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
-  }
-  function quoteDelimited(value, delimiter2) {
-    const normalized = normalizeCellText(value);
-    if (normalized.includes(delimiter2) || normalized.includes('"') || normalized.includes("\n")) {
-      return `"${normalized.replace(/"/g, '""')}"`;
-    }
-    return normalized;
-  }
-  function cellTextToHtml(value) {
-    return escapeHtml(normalizeCellText(value)).replace(/\n/g, "<br>");
-  }
-  function escapeHtml(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-  function escapeHtmlAttribute(value) {
-    return escapeHtml(value).replace(/\r?\n/g, "&#10;");
-  }
-  function cloneCell(cell2) {
-    return { text: cell2.text, ...cell2.markdown ? { markdown: cell2.markdown } : {} };
-  }
-  function isRecord(value) {
-    return Boolean(value) && typeof value === "object";
-  }
-
-  // src/editor/table/tableRangeSelection.ts
-  var TABLE_SELECTION_CHANGE_EVENT = "mlrt:table-selection-change";
-  var TABLE_SELECTION_CLEAR_EVENT = "mlrt:table-selection-clear";
-  var states = /* @__PURE__ */ new WeakMap();
-  function bindTableRangeSelection(wrapper, view2, table2) {
-    wrapper.tabIndex = -1;
-    let suppressNativeMouseDrag = false;
-    let lastDocumentDragRange = null;
-    const onPointerDown = (event) => {
-      const cell2 = findCell(event.target);
-      if (!cell2 || !wrapper.contains(cell2)) {
-        return;
-      }
-      if (event.button !== 0) {
-        if (event.button === 2) {
-          event.preventDefault();
-        }
-        return;
-      }
-      const address = addressFromCell(cell2);
-      if (!address) {
-        return;
-      }
-      const state = stateFor(wrapper.ownerDocument);
-      if (event.shiftKey) {
-        const current = getTableRangeSelection(wrapper.ownerDocument);
-        const focusedCell = findCell(wrapper.ownerDocument.activeElement);
-        const focusedAddress = focusedCell && wrapper.contains(focusedCell) ? addressFromCell(focusedCell) : null;
-        const anchor = current?.wrapper === wrapper ? current.anchor : focusedAddress ?? address;
-        event.preventDefault();
-        setTableRangeSelection(wrapper, table2.from, anchor, address, true);
-        return;
-      }
-      state.pointerAnchor = address;
-      state.pointerId = event.pointerId;
-      state.pointerCrossedCells = false;
-      suppressNativeMouseDrag = false;
-      lastDocumentDragRange = null;
-      wrapper.ownerDocument.addEventListener("pointermove", onPointerMove, true);
-      wrapper.ownerDocument.addEventListener("pointerup", onPointerUp, true);
-      wrapper.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
-      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
-      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
-      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
-      if (state.selection?.wrapper === wrapper) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const updateDragSelection = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if ("pointerId" in event && state.pointerId !== -1 && state.pointerId !== event.pointerId || !state.pointerAnchor || (event.buttons & 1) === 0) {
-        return;
-      }
-      const target = wrapper.ownerDocument.elementFromPoint(
-        event.clientX,
-        event.clientY
-      );
-      const cell2 = findCell(target);
-      if (cell2 && wrapper.contains(cell2)) {
-        const address = addressFromCell(cell2);
-        if (!address || sameAddress(address, state.pointerAnchor)) {
-          return;
-        }
-        state.pointerCrossedCells = true;
-        suppressNativeMouseDrag = true;
-        event.preventDefault();
-        setTableRangeSelection(
-          wrapper,
-          table2.from,
-          state.pointerAnchor,
-          address,
-          true
-        );
-        return;
-      }
-      if (target && wrapper.contains(target)) {
-        return;
-      }
-      let documentPosition = view2.posAtCoords({
-        x: event.clientX,
-        y: event.clientY
-      });
-      const wrapperRect = wrapper.getBoundingClientRect();
-      if (documentPosition === null) {
-        documentPosition = event.clientY < wrapperRect.top ? 0 : view2.state.doc.length;
-      }
-      const tableFrom = Number(wrapper.dataset.srcFrom ?? table2.from);
-      const parsedTables = getParsedTables(view2.state.doc);
-      const currentTable = parsedTables.find(
-        (candidate) => candidate.from === tableFrom
-      );
-      const tableTo = currentTable?.to ?? tableFrom + (table2.to - table2.from);
-      const targetWrapper = target instanceof Element ? target.closest(".mlrt-table-widget") : null;
-      if (targetWrapper && targetWrapper !== wrapper) {
-        const targetFrom = Number(targetWrapper.dataset.srcFrom ?? "-1");
-        const targetTable = parsedTables.find(
-          (candidate) => candidate.from === targetFrom
-        );
-        if (targetTable) {
-          documentPosition = targetFrom >= tableFrom ? targetTable.to : targetTable.from;
-        }
-      }
-      const movingBeforeTable = documentPosition <= tableFrom || event.clientY < wrapperRect.top;
-      const movingAfterTable = documentPosition >= tableTo || event.clientY > wrapperRect.bottom;
-      if (!movingBeforeTable && !movingAfterTable) {
-        return;
-      }
-      state.pointerCrossedCells = true;
-      suppressNativeMouseDrag = true;
-      event.preventDefault();
-      event.stopPropagation();
-      clearTableRangeSelection(wrapper.ownerDocument);
-      clearNativeSelection(wrapper.ownerDocument);
-      if (!view2.hasFocus) {
-        view2.focus();
-      }
-      lastDocumentDragRange = {
-        anchor: movingBeforeTable ? tableTo : tableFrom,
-        head: documentPosition
-      };
-      view2.dispatch({
-        selection: EditorSelection.range(
-          lastDocumentDragRange.anchor,
-          lastDocumentDragRange.head
-        ),
-        scrollIntoView: true
-      });
-    };
-    const onPointerMove = (event) => {
-      updateDragSelection(event);
-    };
-    const onPointerUp = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (state.pointerId !== event.pointerId) {
-        return;
-      }
-      state.pointerAnchor = null;
-      state.pointerId = null;
-      state.pointerCrossedCells = false;
-      queueMicrotask(restoreLastDocumentDragRange);
-      setTimeout(removeDocumentPointerListeners, 0);
-    };
-    const onMouseMove = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (state.pointerAnchor && (event.buttons & 1) !== 0) {
-        updateDragSelection(event);
-      }
-      if (suppressNativeMouseDrag) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    const onMouseUp = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (suppressNativeMouseDrag) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      if (state.pointerId === -1) {
-        state.pointerAnchor = null;
-        state.pointerId = null;
-        state.pointerCrossedCells = false;
-        setTimeout(removeDocumentPointerListeners, 0);
-      }
-      queueMicrotask(restoreLastDocumentDragRange);
-    };
-    const onClickAfterDrag = (event) => {
-      if (!suppressNativeMouseDrag) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      suppressNativeMouseDrag = false;
-    };
-    const restoreLastDocumentDragRange = () => {
-      if (!lastDocumentDragRange) {
-        return;
-      }
-      view2.dispatch({
-        selection: EditorSelection.range(
-          lastDocumentDragRange.anchor,
-          lastDocumentDragRange.head
-        )
-      });
-    };
-    const onMouseDown = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (event.button !== 0 || state.pointerAnchor) {
-        return;
-      }
-      const cell2 = findCell(event.target);
-      const address = cell2 && wrapper.contains(cell2) ? addressFromCell(cell2) : null;
-      if (!address) {
-        return;
-      }
-      state.pointerAnchor = address;
-      state.pointerId = -1;
-      state.pointerCrossedCells = false;
-      suppressNativeMouseDrag = false;
-      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
-      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
-      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
-      if (state.selection?.wrapper === wrapper) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const removeDocumentPointerListeners = () => {
-      const finalRange = lastDocumentDragRange;
-      wrapper.ownerDocument.removeEventListener("pointermove", onPointerMove, true);
-      wrapper.ownerDocument.removeEventListener("pointerup", onPointerUp, true);
-      wrapper.ownerDocument.removeEventListener("pointercancel", onPointerUp, true);
-      wrapper.ownerDocument.removeEventListener("mousemove", onMouseMove, true);
-      wrapper.ownerDocument.removeEventListener("mouseup", onMouseUp, true);
-      wrapper.ownerDocument.removeEventListener("click", onClickAfterDrag, true);
-      suppressNativeMouseDrag = false;
-      lastDocumentDragRange = null;
-      if (finalRange) {
-        clearNativeSelection(wrapper.ownerDocument);
-        view2.dispatch({
-          selection: EditorSelection.range(finalRange.anchor, finalRange.head)
-        });
-      }
-    };
-    const onFocusIn = (event) => {
-      const cell2 = findCell(event.target);
-      if (cell2 && wrapper.contains(cell2)) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const onDocumentSelectionPointerDown = (event) => {
-      if (event.button !== 0) {
-        return;
-      }
-      const selection = getTableRangeSelection(wrapper.ownerDocument);
-      if (selection?.wrapper === wrapper && event.target instanceof Node && !wrapper.contains(event.target)) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const onKeyDown = (event) => {
-      const activeCell = findCell(event.target);
-      if (activeCell && wrapper.contains(activeCell)) {
-        if (event.key === "Escape") {
-          const address = addressFromCell(activeCell);
-          if (!address) {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          activeCell.blur();
-          setTableRangeSelection(
-            wrapper,
-            Number(wrapper.dataset.srcFrom ?? table2.from),
-            address,
-            address,
-            true
-          );
-          return;
-        }
-        if (isSelectAll(event)) {
-          handleCellSelectAll(event, wrapper, table2, activeCell);
-        }
-        return;
-      }
-      const selection = getTableRangeSelection(wrapper.ownerDocument);
-      if (!selection || selection.wrapper !== wrapper) {
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (selection.pendingCutToken) {
-          setPendingCutToken(wrapper.ownerDocument, void 0);
-        } else {
-          clearTableRangeSelection(wrapper.ownerDocument);
-        }
-        return;
-      }
-      if (isSelectAll(event)) {
-        event.preventDefault();
-        event.stopPropagation();
-        const rectangle = selectionRectangle(selection);
-        const rowCount = table2.body.length + 1;
-        if (rectangle.top === 0 && rectangle.bottom === rowCount - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1) {
-          clearTableRangeSelection(wrapper.ownerDocument);
-          view2.focus();
-          view2.dispatch({
-            selection: EditorSelection.range(0, view2.state.doc.length),
-            scrollIntoView: true
-          });
-        } else {
-          setTableRangeSelection(
-            wrapper,
-            selection.tableFrom,
-            { row: 0, column: 0 },
-            { row: rowCount - 1, column: table2.columnCount - 1 },
-            true
-          );
-        }
-        return;
-      }
-      if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Tab") {
-        event.preventDefault();
-        event.stopPropagation();
-        const delta = keyDelta(event);
-        const nextHead = clampAddress(
-          {
-            row: selection.head.row + delta.row,
-            column: selection.head.column + delta.column
-          },
-          table2
-        );
-        const nextAnchor = event.shiftKey ? selection.anchor : nextHead;
-        setTableRangeSelection(
-          wrapper,
-          selection.tableFrom,
-          nextAnchor,
-          nextHead,
-          true
-        );
-        return;
-      }
-      if (event.key === "Enter" || event.key === "F2") {
-        event.preventDefault();
-        event.stopPropagation();
-        const target = cellFromAddress(wrapper, selection.head);
-        clearTableRangeSelection(wrapper.ownerDocument);
-        if (target) {
-          focusCellAtEnd(target);
-        }
-        return;
-      }
-      if (event.key === "Backspace" || event.key === "Delete") {
-        event.preventDefault();
-        event.stopPropagation();
-        wrapper.dispatchEvent(
-          new CustomEvent(TABLE_SELECTION_CLEAR_EVENT, { bubbles: true })
-        );
-        return;
-      }
-      if (isPrintableKey(event)) {
-        const target = cellFromAddress(wrapper, selection.head);
-        event.preventDefault();
-        event.stopPropagation();
-        clearTableRangeSelection(wrapper.ownerDocument);
-        if (target) {
-          target.focus();
-          const nativeSelection = wrapper.ownerDocument.defaultView?.getSelection();
-          const range = wrapper.ownerDocument.createRange();
-          range.selectNodeContents(target);
-          nativeSelection?.removeAllRanges();
-          nativeSelection?.addRange(range);
-          wrapper.ownerDocument.execCommand("insertText", false, event.key);
-        }
-      }
-    };
-    wrapper.addEventListener("pointerdown", onPointerDown);
-    wrapper.addEventListener("mousedown", onMouseDown);
-    wrapper.addEventListener("focusin", onFocusIn);
-    wrapper.addEventListener("keydown", onKeyDown);
-    wrapper.ownerDocument.addEventListener(
-      "pointerdown",
-      onDocumentSelectionPointerDown,
-      true
-    );
-    restoreSelectionClasses(wrapper);
-    return () => {
-      wrapper.removeEventListener("pointerdown", onPointerDown);
-      wrapper.removeEventListener("mousedown", onMouseDown);
-      removeDocumentPointerListeners();
-      wrapper.removeEventListener("focusin", onFocusIn);
-      wrapper.removeEventListener("keydown", onKeyDown);
-      wrapper.ownerDocument.removeEventListener(
-        "pointerdown",
-        onDocumentSelectionPointerDown,
-        true
-      );
-    };
-  }
-  function getTableRangeSelection(doc2) {
-    const state = states.get(doc2)?.selection ?? null;
-    if (state && !state.wrapper.isConnected) {
-      const replacement = Array.from(
-        doc2.querySelectorAll(".mlrt-table-widget")
-      ).find(
-        (candidate) => Number(candidate.dataset.srcFrom ?? "-1") === state.tableFrom
-      );
-      if (replacement) {
-        state.wrapper = replacement;
-        applySelectionClasses(state);
-        return state;
-      }
-      return null;
-    }
-    return state;
-  }
-  function setTableRangeSelection(wrapper, tableFrom, anchor, head, focusWrapper) {
-    const doc2 = wrapper.ownerDocument;
-    const state = stateFor(doc2);
-    if (state.selection?.wrapper !== wrapper) {
-      clearSelectionClasses(state.selection?.wrapper);
-    }
-    const selection = {
-      version: MLRT_CLIPBOARD_VERSION,
-      wrapper,
-      tableFrom,
-      anchor,
-      head
-    };
-    state.selection = selection;
-    applySelectionClasses(selection);
-    clearNativeSelection(doc2);
-    if (focusWrapper) {
-      wrapper.focus({ preventScroll: true });
-    }
-    dispatchSelectionChange(wrapper);
-    return selection;
-  }
-  function selectTableRow(wrapper, tableFrom, row, columnCount) {
-    setTableRangeSelection(
-      wrapper,
-      tableFrom,
-      { row, column: 0 },
-      { row, column: Math.max(0, columnCount - 1) },
-      true
-    );
-  }
-  function selectTableColumn(wrapper, tableFrom, column, rowCount) {
-    setTableRangeSelection(
-      wrapper,
-      tableFrom,
-      { row: 0, column },
-      { row: Math.max(0, rowCount - 1), column },
-      true
-    );
-  }
-  function selectionRectangle(selection) {
-    return {
-      top: Math.min(selection.anchor.row, selection.head.row),
-      bottom: Math.max(selection.anchor.row, selection.head.row),
-      left: Math.min(selection.anchor.column, selection.head.column),
-      right: Math.max(selection.anchor.column, selection.head.column)
-    };
-  }
-  function isCellInSelection(selection, address) {
-    const rectangle = selectionRectangle(selection);
-    return address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right;
-  }
-  function clearTableRangeSelection(doc2) {
-    const state = states.get(doc2);
-    if (!state?.selection) {
-      return;
-    }
-    const wrapper = state.selection.wrapper;
-    clearSelectionClasses(wrapper);
-    state.selection = null;
-    dispatchSelectionChange(wrapper);
-  }
-  function setPendingCutToken(doc2, token) {
-    const selection = getTableRangeSelection(doc2);
-    if (!selection) {
-      return;
-    }
-    selection.pendingCutToken = token;
-    applySelectionClasses(selection);
-    dispatchSelectionChange(selection.wrapper);
-  }
-  function ensureContextCellSelection(wrapper, tableFrom, cell2) {
-    const address = addressFromCell(cell2);
-    if (!address) {
-      return null;
-    }
-    const current = getTableRangeSelection(wrapper.ownerDocument);
-    if (current?.wrapper === wrapper && isCellInSelection(current, address)) {
-      return current;
-    }
-    return setTableRangeSelection(wrapper, tableFrom, address, address, false);
-  }
-  function addressFromCell(cell2) {
-    const rowKind = cell2.dataset.rowKind;
-    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
-    const column = Number(cell2.dataset.column ?? "0");
-    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
-      return null;
-    }
-    return { row: rowKind === "header" ? 0 : rowIndex + 1, column };
-  }
-  function cellFromAddress(wrapper, address) {
-    const rowKind = address.row === 0 ? "header" : "body";
-    const rowIndex = address.row === 0 ? 0 : address.row - 1;
-    return wrapper.querySelector(
-      `${TABLE_CELL_SELECTOR}[data-row-kind="${rowKind}"][data-row-index="${rowIndex}"][data-column="${address.column}"]`
-    );
-  }
-  function handleCellSelectAll(event, wrapper, table2, activeCell) {
-    const selection = wrapper.ownerDocument.defaultView?.getSelection();
-    const valueLength = readCellDisplayValue(activeCell).length;
-    const selectedLength = selection?.toString().replace(/\u00a0/g, " ").length ?? 0;
-    if (selectedLength < valueLength) {
-      event.preventDefault();
-      event.stopPropagation();
-      const range = wrapper.ownerDocument.createRange();
-      range.selectNodeContents(activeCell);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    activeCell.blur();
-    setTableRangeSelection(
-      wrapper,
-      Number(wrapper.dataset.srcFrom ?? table2.from),
-      { row: 0, column: 0 },
-      { row: table2.body.length, column: table2.columnCount - 1 },
-      true
-    );
-  }
-  function applySelectionClasses(selection) {
-    const rectangle = selectionRectangle(selection);
-    selection.wrapper.classList.add("mlrt-table-selection-mode");
-    selection.wrapper.classList.toggle(
-      "mlrt-table-cut-pending",
-      Boolean(selection.pendingCutToken)
-    );
-    selection.wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
-      const address = addressFromCell(cell2);
-      const selected = Boolean(
-        address && address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right
-      );
-      cell2.classList.toggle("mlrt-table-cell-selected", selected);
-      cell2.classList.toggle(
-        "mlrt-table-selection-top",
-        selected && Boolean(address && address.row === rectangle.top)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-selection-bottom",
-        selected && Boolean(address && address.row === rectangle.bottom)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-selection-left",
-        selected && Boolean(address && address.column === rectangle.left)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-selection-right",
-        selected && Boolean(address && address.column === rectangle.right)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-cell-selection-head",
-        selected && Boolean(address && sameAddress(address, selection.head))
-      );
-      cell2.setAttribute("aria-selected", selected ? "true" : "false");
-    });
-    syncTableSelectionOutline(selection.wrapper);
-  }
-  function restoreSelectionClasses(wrapper) {
-    const selection = states.get(wrapper.ownerDocument)?.selection;
-    if (selection && selection.tableFrom === Number(wrapper.dataset.srcFrom ?? "-1")) {
-      selection.wrapper = wrapper;
-      applySelectionClasses(selection);
-    }
-  }
-  function clearSelectionClasses(wrapper) {
-    if (!wrapper) {
-      return;
-    }
-    wrapper.classList.remove(
-      "mlrt-table-selection-mode",
-      "mlrt-table-cut-pending"
-    );
-    wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
-      cell2.classList.remove(
-        "mlrt-table-cell-selected",
-        "mlrt-table-cell-selection-head",
-        "mlrt-table-selection-top",
-        "mlrt-table-selection-bottom",
-        "mlrt-table-selection-left",
-        "mlrt-table-selection-right"
-      );
-      cell2.removeAttribute("aria-selected");
-    });
-    syncTableSelectionOutline(wrapper);
-  }
-  function syncTableSelectionOutline(wrapper) {
-    const scroll = wrapper.querySelector(".mlrt-table-scroll");
-    const existing = scroll?.querySelector(
-      ":scope > .mlrt-table-selection-outline"
-    );
-    if (!scroll || wrapper.classList.contains("mlrt-table-cut-pending")) {
-      existing?.remove();
-      return;
-    }
-    const selected = Array.from(
-      wrapper.querySelectorAll(
-        `${TABLE_CELL_SELECTOR}.mlrt-table-cell-selected, ${TABLE_CELL_SELECTOR}.mlrt-document-range-selected`
-      )
-    );
-    if (selected.length === 0) {
-      existing?.remove();
-      return;
-    }
-    const scrollRect = scroll.getBoundingClientRect();
-    const rectangles = selected.map((cell2) => cell2.getBoundingClientRect());
-    const left = Math.min(...rectangles.map((rect) => rect.left));
-    const top2 = Math.min(...rectangles.map((rect) => rect.top));
-    const right = Math.max(...rectangles.map((rect) => rect.right));
-    const bottom = Math.max(...rectangles.map((rect) => rect.bottom));
-    const outline = existing ?? wrapper.ownerDocument.createElement("div");
-    outline.className = "mlrt-table-selection-outline";
-    outline.setAttribute("aria-hidden", "true");
-    outline.style.left = `${left - scrollRect.left + scroll.scrollLeft}px`;
-    outline.style.top = `${top2 - scrollRect.top + scroll.scrollTop}px`;
-    outline.style.width = `${right - left}px`;
-    outline.style.height = `${bottom - top2}px`;
-    if (!existing) {
-      scroll.append(outline);
-    }
-  }
-  function dispatchSelectionChange(wrapper) {
-    wrapper.dispatchEvent(
-      new CustomEvent(TABLE_SELECTION_CHANGE_EVENT, { bubbles: true })
-    );
-  }
-  function stateFor(doc2) {
-    const current = states.get(doc2);
-    if (current) {
-      return current;
-    }
-    const state = {
-      selection: null,
-      pointerAnchor: null,
-      pointerId: null,
-      pointerCrossedCells: false
-    };
-    states.set(doc2, state);
-    return state;
-  }
-  function clearNativeSelection(doc2) {
-    doc2.defaultView?.getSelection()?.removeAllRanges();
-  }
-  function clampAddress(address, table2) {
-    return {
-      row: Math.max(0, Math.min(table2.body.length, address.row)),
-      column: Math.max(0, Math.min(table2.columnCount - 1, address.column))
-    };
-  }
-  function keyDelta(event) {
-    if (event.key === "ArrowUp") {
-      return { row: -1, column: 0 };
-    }
-    if (event.key === "ArrowDown") {
-      return { row: 1, column: 0 };
-    }
-    if (event.key === "ArrowLeft" || event.key === "Tab" && event.shiftKey) {
-      return { row: 0, column: -1 };
-    }
-    return { row: 0, column: 1 };
-  }
-  function isSelectAll(event) {
-    return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a";
-  }
-  function isPrintableKey(event) {
-    return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
-  }
-  function sameAddress(left, right) {
-    return left.row === right.row && left.column === right.column;
   }
 
   // src/editor/table/tableStructureControls.ts

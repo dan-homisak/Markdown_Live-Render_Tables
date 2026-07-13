@@ -2436,11 +2436,34 @@ function tableSelectionGeometryExpression() {
     } : null;
     const hasInsetShadow = (cell) => root.defaultView.getComputedStyle(cell).boxShadow.includes('inset');
     const interiorDividerCells = [selected[1], selected[2], selected[3], selected[4], selected[5]];
+    const outlineMatchesSelectedBounds = () => {
+      const currentOutline = wrapper.querySelector('.mlrt-table-selection-outline');
+      const currentSelected = Array.from(wrapper.querySelectorAll('.mlrt-table-cell-selected')).map(rect);
+      if (!currentOutline || currentSelected.length === 0) return false;
+      const currentBounds = {
+        left: Math.min(...currentSelected.map((box) => box.left)),
+        top: Math.min(...currentSelected.map((box) => box.top)),
+        right: Math.max(...currentSelected.map((box) => box.right)),
+        bottom: Math.max(...currentSelected.map((box) => box.bottom)),
+      };
+      const currentOutlineRect = rect(currentOutline);
+      return ['left', 'top', 'right', 'bottom'].every((side) => Math.abs(currentOutlineRect[side] - currentBounds[side]) <= 0.5);
+    };
+    const editor = root.querySelector('.cm-editor');
+    const originalWidth = editor?.style.width ?? '';
+    if (editor) editor.style.width = '460px';
+    view.requestMeasure();
+    await wait();
+    await wait();
+    const resizeOutlineAligned = outlineMatchesSelectedBounds();
+    if (editor) editor.style.width = originalWidth;
+    view.requestMeasure();
     return JSON.stringify({
       ok: Boolean(outline) && selected.length === 6,
       selectedCount: selected.length,
       outlineBoundsAligned: Boolean(outlineRect) && ['left', 'top', 'right', 'bottom'].every((side) => Math.abs(outlineRect[side] - bounds[side]) <= 0.5),
       interiorDividersPresent: interiorDividerCells.every(hasInsetShadow),
+      resizeOutlineAligned,
       rightNeighborAligned: Boolean(rightNeighbor) && Math.abs(rect(rightNeighbor).left - bounds.right) <= 0.5,
       bottomNeighborAligned: Boolean(bottomNeighbor) && Math.abs(rect(bottomNeighbor).top - bounds.bottom) <= 0.5,
       outlineStyles,
@@ -4311,6 +4334,7 @@ function assertTableSelectionGeometry(result) {
     !result?.ok ||
     !result.outlineBoundsAligned ||
     !result.interiorDividersPresent ||
+    !result.resizeOutlineAligned ||
     !result.rightNeighborAligned ||
     !result.bottomNeighborAligned ||
     result.outlineStyles?.borderTopColor === "rgba(0, 0, 0, 0)" ||
