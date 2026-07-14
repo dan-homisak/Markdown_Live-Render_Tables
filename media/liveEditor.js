@@ -36037,9 +36037,8 @@ ${replacement}
   }
 
   // src/editor/documentSelectionDecorations.ts
-  var proseSelectionMark = Decoration.mark({
-    class: "mlrt-prose-selection"
-  });
+  var proseSelectionMarkCache = /* @__PURE__ */ new Map();
+  var emptyProseSelectionMarkCache = /* @__PURE__ */ new Map();
   function createDocumentSelectionDecorations() {
     return ViewPlugin.fromClass(
       class {
@@ -36073,14 +36072,30 @@ ${replacement}
     if (cursor < range.to) {
       proseSegments.push({ from: cursor, to: range.to });
     }
-    const builder = new RangeSetBuilder();
+    const selectedLines = [];
     for (const segment of proseSegments) {
       let line = view2.state.doc.lineAt(segment.from);
       while (line.from <= segment.to) {
         const from = Math.max(segment.from, line.from);
         const to = Math.min(segment.to, line.to);
         if (from < to) {
-          builder.add(from, to, proseSelectionMark);
+          selectedLines.push({
+            from,
+            to,
+            lineFrom: line.from,
+            lineTo: line.to,
+            lineNumber: line.number,
+            isEmpty: false
+          });
+        } else if (line.from === line.to && segment.from <= line.from && segment.to >= line.to) {
+          selectedLines.push({
+            from: line.from,
+            to: line.to,
+            lineFrom: line.from,
+            lineTo: line.to,
+            lineNumber: line.number,
+            isEmpty: true
+          });
         }
         if (line.to >= segment.to || line.number >= view2.state.doc.lines) {
           break;
@@ -36088,7 +36103,54 @@ ${replacement}
         line = view2.state.doc.line(line.number + 1);
       }
     }
+    const builder = new RangeSetBuilder();
+    for (let index = 0; index < selectedLines.length; index += 1) {
+      const selectedLine = selectedLines[index];
+      const previous = selectedLines[index - 1];
+      const next2 = selectedLines[index + 1];
+      const continuesFromPrevious = Boolean(
+        previous && previous.lineNumber + 1 === selectedLine.lineNumber && previous.to === previous.lineTo && selectedLine.from === selectedLine.lineFrom
+      );
+      const continuesToNext = Boolean(
+        next2 && selectedLine.lineNumber + 1 === next2.lineNumber && selectedLine.to === selectedLine.lineTo && next2.from === next2.lineFrom
+      );
+      const classes = [
+        selectedLine.isEmpty ? "mlrt-prose-selection-empty-line" : "mlrt-prose-selection"
+      ];
+      if (continuesFromPrevious && previous) {
+        classes.push("mlrt-prose-selection-continues-from-previous");
+        if (selectionLeft(previous) <= selectionLeft(selectedLine)) {
+          classes.push("mlrt-prose-selection-connects-top-left");
+        }
+        if (selectionRight(previous) >= selectionRight(selectedLine)) {
+          classes.push("mlrt-prose-selection-connects-top-right");
+        }
+      }
+      if (continuesToNext && next2) {
+        classes.push("mlrt-prose-selection-continues-to-next");
+        if (selectionLeft(next2) <= selectionLeft(selectedLine)) {
+          classes.push("mlrt-prose-selection-connects-bottom-left");
+        }
+        if (selectionRight(next2) >= selectionRight(selectedLine)) {
+          classes.push("mlrt-prose-selection-connects-bottom-right");
+        }
+      }
+      const className = classes.join(" ");
+      const cache2 = selectedLine.isEmpty ? emptyProseSelectionMarkCache : proseSelectionMarkCache;
+      let decoration = cache2.get(className);
+      if (!decoration) {
+        decoration = selectedLine.isEmpty ? Decoration.line({ class: className }) : Decoration.mark({ class: className });
+        cache2.set(className, decoration);
+      }
+      builder.add(selectedLine.from, selectedLine.to, decoration);
+    }
     return builder.finish();
+  }
+  function selectionLeft(selectedLine) {
+    return selectedLine.from - selectedLine.lineFrom;
+  }
+  function selectionRight(selectedLine) {
+    return selectedLine.isEmpty ? 1 : selectedLine.to - selectedLine.lineFrom;
   }
 
   // src/editor/tableBoundaryNavigation.ts

@@ -357,6 +357,58 @@ try {
     wb,
     path.join(qaDir, "edh-prose-character-selection.png"),
   );
+  await wb.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: stockMetrics.editor.right + 60,
+    y: stockMetrics.editor.top + 120,
+    button: "left",
+    clickCount: 1,
+  });
+  await wb.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: stockMetrics.editor.right + 60,
+    y: stockMetrics.editor.top + 120,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(100);
+  const proseUnfocused = await evaluateJson(
+    liveClient,
+    proseCharacterSelectionResultExpression(),
+  );
+  assertProseSelectionColorConsistency(proseReleased, proseUnfocused);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-prose-character-selection-unfocused.png"),
+  );
+  const multilineProseSelection = await evaluateJson(
+    liveClient,
+    proseMultilineSelectionExpression(),
+  );
+  await sleep(80);
+  const multilineProseResult = await evaluateJson(
+    liveClient,
+    proseMultilineSelectionResultExpression(),
+  );
+  assertMultilineProseSelection(multilineProseSelection, multilineProseResult);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-prose-multiline-selection.png"),
+  );
+  const blankLineProseSelection = await evaluateJson(
+    liveClient,
+    proseBlankLineSelectionExpression(),
+  );
+  await sleep(80);
+  const blankLineProseResult = await evaluateJson(
+    liveClient,
+    proseBlankLineSelectionResultExpression(),
+  );
+  assertBlankLineProseSelection(blankLineProseSelection, blankLineProseResult);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-prose-blank-line-selection.png"),
+  );
   console.log("PROSE CHARACTER SELECTION CHECK: passed");
 
   const focusIsolationSetup = await evaluateJson(
@@ -417,6 +469,7 @@ try {
     sameCellNativeSelectionResultExpression(),
   );
   assertSameCellNativeSelection(sameCellSelection, sameCellSetup.expectedText);
+  assertTextSelectionColorTreatment(proseReleased, sameCellSelection);
   console.log("SAME-CELL NATIVE CHARACTER SELECTION CHECK:", sameCellSelection);
   await evaluateJson(liveClient, clearSelectionStateExpression());
   const responsiveScroll = await evaluateJson(
@@ -3546,7 +3599,7 @@ function proseCharacterSelectionResultExpression() {
     const actualLeft = boxes.length ? Math.min(...boxes.map((box) => box.left)) : null;
     const actualRight = boxes.length ? Math.max(...boxes.map((box) => box.right)) : null;
     const markBackgrounds = marks.map((mark) =>
-      root.defaultView.getComputedStyle(mark).backgroundColor
+      root.defaultView.getComputedStyle(mark, '::before').backgroundColor
     );
     const markedLines = Array.from(new Set(marks.map((mark) => mark.closest('.cm-line')).filter(Boolean)));
     const markedLineBackgrounds = markedLines.map((line) =>
@@ -3566,6 +3619,7 @@ function proseCharacterSelectionResultExpression() {
       leftDelta: actualLeft === null || expectedLeft === null ? null : Math.abs(actualLeft - expectedLeft),
       rightDelta: actualRight === null || expectedRight === null ? null : Math.abs(actualRight - expectedRight),
       markFillVisible: markBackgrounds.length > 0 && markBackgrounds.every((value) => !transparent(value)),
+      markBackgrounds,
       selectionFillBlanketLineCount: markedLineBackgrounds.filter((value) =>
         markBackgrounds.includes(value)
       ).length,
@@ -3576,6 +3630,114 @@ function proseCharacterSelectionResultExpression() {
         return style.display !== 'none' && rect.width > 0 && rect.height > 0;
       }).length,
       selectedCellCount: root.querySelectorAll('.mlrt-document-range-selected, .mlrt-table-cell-selected').length,
+    });
+  })()`;
+}
+
+function proseMultilineSelectionExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false });
+    const source = view.state.doc.toString();
+    const firstLine = '- list';
+    const lastLine = '- continued';
+    const from = source.indexOf(firstLine);
+    const to = source.indexOf(lastLine, from) + lastLine.length;
+    if (from < 0 || to <= from) return JSON.stringify({ ok: false, reason: 'fixture prose missing' });
+    view.focus();
+    view.dispatch({ selection: { anchor: from, head: to } });
+    return JSON.stringify({
+      ok: true,
+      expectedText: source.slice(from, to),
+    });
+  })()`;
+}
+
+function proseMultilineSelectionResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false });
+    const marks = Array.from(root.querySelectorAll('.mlrt-prose-selection'));
+    const details = marks.map((mark) => {
+      const style = root.defaultView.getComputedStyle(mark, '::before');
+      const rect = mark.getBoundingClientRect();
+      const height = Number.parseFloat(style.height);
+      return {
+        text: mark.textContent,
+        continuesFromPrevious: mark.classList.contains('mlrt-prose-selection-continues-from-previous'),
+        continuesToNext: mark.classList.contains('mlrt-prose-selection-continues-to-next'),
+        connectsTopLeft: mark.classList.contains('mlrt-prose-selection-connects-top-left'),
+        connectsTopRight: mark.classList.contains('mlrt-prose-selection-connects-top-right'),
+        connectsBottomLeft: mark.classList.contains('mlrt-prose-selection-connects-bottom-left'),
+        connectsBottomRight: mark.classList.contains('mlrt-prose-selection-connects-bottom-right'),
+        borderTopLeftRadius: style.borderTopLeftRadius,
+        borderTopRightRadius: style.borderTopRightRadius,
+        borderBottomLeftRadius: style.borderBottomLeftRadius,
+        borderBottomRightRadius: style.borderBottomRightRadius,
+        background: style.backgroundColor,
+        paintedTop: rect.top + rect.height / 2 - height / 2,
+        paintedBottom: rect.top + rect.height / 2 + height / 2,
+      };
+    });
+    return JSON.stringify({
+      ok: true,
+      selectedText: view.state.doc.sliceString(view.state.selection.main.from, view.state.selection.main.to),
+      details,
+    });
+  })()`;
+}
+
+function proseBlankLineSelectionExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false });
+    const source = view.state.doc.toString();
+    const from = view.state.doc.line(9).from;
+    const to = view.state.doc.line(12).from;
+    view.focus();
+    view.dispatch({ selection: { anchor: to, head: from } });
+    return JSON.stringify({ ok: true, expectedText: source.slice(from, to) });
+  })()`;
+}
+
+function proseBlankLineSelectionResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false });
+    const markers = Array.from(root.querySelectorAll('.mlrt-prose-selection-empty-line'));
+    const details = markers.map((marker) => {
+      const style = root.defaultView.getComputedStyle(marker, '::before');
+      return {
+        continuesFromPrevious: marker.classList.contains('mlrt-prose-selection-continues-from-previous'),
+        continuesToNext: marker.classList.contains('mlrt-prose-selection-continues-to-next'),
+        width: style.width,
+        height: style.height,
+        background: style.backgroundColor,
+        borderTopLeftRadius: style.borderTopLeftRadius,
+        borderBottomLeftRadius: style.borderBottomLeftRadius,
+      };
+    });
+    return JSON.stringify({
+      ok: true,
+      selectedText: view.state.doc.sliceString(view.state.selection.main.from, view.state.selection.main.to),
+      markerCount: markers.length,
+      details,
     });
   })()`;
 }
@@ -3925,6 +4087,7 @@ function sameCellNativeSelectionResultExpression() {
       proseSelectionMarks: root?.querySelectorAll('.mlrt-prose-selection').length ?? -1,
       overlayCount: root?.querySelectorAll('.mlrt-table-selection-overlay').length ?? -1,
       nativeSelectionBackground: nativeSelectionStyle?.backgroundColor ?? null,
+      nativeSelectionForeground: nativeSelectionStyle?.color ?? null,
     });
   })()`;
 }
@@ -7885,6 +8048,111 @@ function assertProseCharacterSelection(result, expectedAnchor, point) {
   ) {
     throw new Error(
       `Prose character selection check failed: ${JSON.stringify({ result, expectedAnchor, point })}`,
+    );
+  }
+}
+
+function assertProseSelectionColorConsistency(focused, unfocused) {
+  const focusedBackgrounds = focused?.markBackgrounds ?? [];
+  const unfocusedBackgrounds = unfocused?.markBackgrounds ?? [];
+  if (
+    focusedBackgrounds.length < 1 ||
+    focusedBackgrounds.some(selectionColorIsTransparent) ||
+    JSON.stringify(focusedBackgrounds) !== JSON.stringify(unfocusedBackgrounds)
+  ) {
+    throw new Error(
+      `Focused/unfocused prose selection color mismatch: ${JSON.stringify({ focused, unfocused })}`,
+    );
+  }
+}
+
+function assertTextSelectionColorTreatment(prose, cell) {
+  const proseBackgrounds = prose?.markBackgrounds ?? [];
+  const proseAlpha = selectionColorAlpha(proseBackgrounds[0]);
+  const cellAlpha = selectionColorAlpha(cell?.nativeSelectionBackground);
+  if (
+    proseBackgrounds.length < 1 ||
+    proseBackgrounds.some(selectionColorIsTransparent) ||
+    selectionColorIsTransparent(cell?.nativeSelectionBackground) ||
+    !Number.isFinite(proseAlpha) ||
+    !Number.isFinite(cellAlpha) ||
+    proseAlpha >= cellAlpha
+  ) {
+    throw new Error(
+      `Prose selection should remain visible but slightly softer than native cell selection: ${JSON.stringify({ prose, cell })}`,
+    );
+  }
+}
+
+function selectionColorAlpha(value) {
+  if (typeof value !== "string") return Number.NaN;
+  const slashMatch = value.match(/\/\s*([0-9.]+)\s*\)$/);
+  if (slashMatch) return Number.parseFloat(slashMatch[1]);
+  const rgbaMatch = value.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)$/);
+  return rgbaMatch ? Number.parseFloat(rgbaMatch[1]) : 1;
+}
+
+function assertMultilineProseSelection(setup, result) {
+  const details = result?.details ?? [];
+  if (
+    !setup?.ok ||
+    !result?.ok ||
+    result.selectedText !== setup.expectedText ||
+    details.length !== 4 ||
+    !details[0].continuesToNext ||
+    details[0].continuesFromPrevious ||
+    !details[0].connectsBottomLeft ||
+    !details.at(-1).continuesFromPrevious ||
+    details.at(-1).continuesToNext ||
+    !details.at(-1).connectsTopLeft ||
+    !details.slice(1, -1).every((detail) =>
+      detail.continuesFromPrevious && detail.continuesToNext &&
+      detail.connectsTopLeft && detail.connectsBottomLeft
+    ) ||
+    details.some((detail) => selectionColorIsTransparent(detail.background)) ||
+    details.slice(0, -1).some((detail, index) =>
+      Math.abs(detail.paintedBottom - details[index + 1].paintedTop) > pixelTolerance
+    ) ||
+    details.some((detail) =>
+      detail.connectsTopLeft !== (detail.borderTopLeftRadius === "0px") ||
+      detail.connectsTopRight !== (detail.borderTopRightRadius === "0px") ||
+      detail.connectsBottomLeft !== (detail.borderBottomLeftRadius === "0px") ||
+      detail.connectsBottomRight !== (detail.borderBottomRightRadius === "0px")
+    )
+  ) {
+    throw new Error(
+      `Multiline prose selection did not form a continuous shape: ${JSON.stringify({ setup, result })}`,
+    );
+  }
+}
+
+function assertBlankLineProseSelection(setup, result) {
+  if (
+    !setup?.ok ||
+    !result?.ok ||
+    result.selectedText !== setup.expectedText ||
+    result.markerCount !== 3 ||
+    result.details?.length !== 3 ||
+    result.details[0].continuesFromPrevious ||
+    !result.details[0].continuesToNext ||
+    !result.details[1].continuesFromPrevious ||
+    !result.details[1].continuesToNext ||
+    !result.details[2].continuesFromPrevious ||
+    result.details[2].continuesToNext ||
+    result.details.some((detail) =>
+      !Number.isFinite(Number.parseFloat(detail.width)) ||
+      Number.parseFloat(detail.width) <= 0 ||
+      !Number.isFinite(Number.parseFloat(detail.height)) ||
+      Number.parseFloat(detail.height) <= 0 ||
+      selectionColorIsTransparent(detail.background)
+    ) ||
+    result.details[0].borderTopLeftRadius !== "1px" ||
+    result.details[0].borderBottomLeftRadius !== "0px" ||
+    result.details[2].borderTopLeftRadius !== "0px" ||
+    result.details[2].borderBottomLeftRadius !== "1px"
+  ) {
+    throw new Error(
+      `Selected blank prose line was not visibly marked: ${JSON.stringify({ setup, result })}`,
     );
   }
 }

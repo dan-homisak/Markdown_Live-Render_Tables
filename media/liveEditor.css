@@ -41,6 +41,9 @@ body,
   /* A cool, high-clarity blue keeps table selection recognizably native to
      this editor while remaining distinct from its subdued inner grid. */
   --mlrt-selection-accent: #3b9cff;
+  /* Character selection follows VS Code's editor selection color. Keep this
+     separate from the deliberately quieter rectangular table-region fill. */
+  --mlrt-text-selection-fill: color-mix(in srgb, Highlight 86%, transparent);
   --mlrt-selection-fill: color-mix(
     in srgb,
     var(--mlrt-selection-accent) 13%,
@@ -74,8 +77,58 @@ body,
 }
 
 .mlrt-prose-selection {
-  background-color: var(--mlrt-selection-fill) !important;
-  color: var(--vscode-editor-selectionForeground, inherit);
+  position: relative;
+  z-index: 0;
+  background-color: transparent !important;
+  /* Keep the token's normal syntax color, like Monaco/VS Code does. */
+}
+
+.mlrt-prose-selection::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1lh;
+  transform: translateY(-50%);
+  pointer-events: none;
+  background-color: var(--mlrt-text-selection-fill);
+  border-radius: 1px;
+}
+
+.mlrt-prose-selection-empty-line::before {
+  content: "";
+  display: inline-block;
+  width: 0.8ch;
+  height: 1lh;
+  vertical-align: top;
+  pointer-events: none;
+  background-color: var(--mlrt-text-selection-fill);
+  border-radius: 1px;
+}
+
+/* Adjacent full-height rectangles meet exactly. Square only corners covered
+   by the neighboring selected row; every exposed step keeps Monaco's subtle
+   1px rounding without leaving a missing pixel at a straight seam. */
+.mlrt-prose-selection-connects-top-left::before,
+.mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-top-left::before {
+  border-top-left-radius: 0;
+}
+
+.mlrt-prose-selection-connects-top-right::before,
+.mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-top-right::before {
+  border-top-right-radius: 0;
+}
+
+.mlrt-prose-selection-connects-bottom-left::before,
+.mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-bottom-left::before {
+  border-bottom-left-radius: 0;
+}
+
+.mlrt-prose-selection-connects-bottom-right::before,
+.mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-bottom-right::before {
+  border-bottom-right-radius: 0;
 }
 
 .cm-scroller {
@@ -285,8 +338,7 @@ body,
    browser-owned range the same character-level treatment as prose so it can
    never be mistaken for rectangular cell selection. */
 .mlrt-table-cell::selection {
-  background: var(--mlrt-selection-fill);
-  color: var(--vscode-editor-selectionForeground, inherit);
+  background: var(--mlrt-text-selection-fill) !important;
 }
 
 /* CodeMirror keeps a real DOM selection behind its custom paint so typing,
