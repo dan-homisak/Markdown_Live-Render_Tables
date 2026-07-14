@@ -25023,7 +25023,7 @@
       ".cm-content": {
         minHeight: "100%",
         boxSizing: "border-box",
-        padding: "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
+        padding: "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) calc(var(--mlrt-editor-bottom-padding, 0px) + var(--mlrt-editor-scroll-beyond-last-line, 0px)) 0",
         caretColor: "var(--vscode-editorCursor-foreground, #aeafad)"
       },
       ".cm-line": {
@@ -39900,7 +39900,7 @@ ${replacement}
     });
     window.__MLRT_EDITOR_VIEW__ = view;
     installEditorCompositionBatching(view);
-    applyClipboardOptions(editorOptions);
+    applyDocumentEditorOptions(editorOptions);
     updateStatus(initialDocument, "embedded");
     installEditorCommandBridge(app);
     installDocumentClipboard(app, view);
@@ -40211,6 +40211,7 @@ ${replacement}
     const options = window.__MLRT_EDITOR_OPTIONS__;
     const defaults = {
       lineWrapping: true,
+      scrollBeyondLastLine: true,
       clipboardDocumentToken: createClipboardDocumentToken(),
       defaultCopyMode: "smart",
       defaultPasteMode: "auto"
@@ -40222,6 +40223,7 @@ ${replacement}
     return normalizeEditorOptions(
       {
         lineWrapping: typeof optionRecord.lineWrapping === "boolean" ? optionRecord.lineWrapping : true,
+        scrollBeyondLastLine: typeof optionRecord.scrollBeyondLastLine === "boolean" ? optionRecord.scrollBeyondLastLine : true,
         clipboardDocumentToken: optionRecord.clipboardDocumentToken,
         defaultCopyMode: optionRecord.defaultCopyMode,
         defaultPasteMode: optionRecord.defaultPasteMode
@@ -40235,6 +40237,7 @@ ${replacement}
     const defaultPasteMode = record.defaultPasteMode;
     return {
       lineWrapping: typeof record.lineWrapping === "boolean" ? record.lineWrapping : fallback.lineWrapping,
+      scrollBeyondLastLine: typeof record.scrollBeyondLastLine === "boolean" ? record.scrollBeyondLastLine : fallback.scrollBeyondLastLine,
       clipboardDocumentToken: typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 ? record.clipboardDocumentToken : fallback.clipboardDocumentToken,
       defaultCopyMode: defaultCopyMode === "smart" || defaultCopyMode === "rich" || defaultCopyMode === "plain" || defaultCopyMode === "markdown" ? defaultCopyMode : fallback.defaultCopyMode,
       defaultPasteMode: defaultPasteMode === "auto" || defaultPasteMode === "rich" || defaultPasteMode === "plain" || defaultPasteMode === "markdown" ? defaultPasteMode : fallback.defaultPasteMode
@@ -40246,11 +40249,18 @@ ${replacement}
     root2.dataset.mlrtDefaultCopyMode = options.defaultCopyMode;
     root2.dataset.mlrtDefaultPasteMode = options.defaultPasteMode;
   }
+  function applyDocumentEditorOptions(options) {
+    applyClipboardOptions(options);
+    document.documentElement.style.setProperty(
+      "--mlrt-editor-scroll-beyond-last-line",
+      options.scrollBeyondLastLine ? "max(0px, calc(100vh - var(--mlrt-editor-line-height, 20px)))" : "0px"
+    );
+  }
   function updateEditorOptions(value) {
     const nextOptions = normalizeEditorOptions(value, editorOptions);
     const lineWrappingChanged = nextOptions.lineWrapping !== editorOptions.lineWrapping;
     editorOptions = nextOptions;
-    applyClipboardOptions(editorOptions);
+    applyDocumentEditorOptions(editorOptions);
     if (lineWrappingChanged) {
       view.dispatch({
         effects: lineWrappingCompartment.reconfigure(
@@ -40696,7 +40706,7 @@ ${String(error2)}`;
       return false;
     }
     const record = value;
-    return typeof record.lineWrapping === "boolean" && typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 && (record.defaultCopyMode === "smart" || record.defaultCopyMode === "rich" || record.defaultCopyMode === "plain" || record.defaultCopyMode === "markdown") && (record.defaultPasteMode === "auto" || record.defaultPasteMode === "rich" || record.defaultPasteMode === "plain" || record.defaultPasteMode === "markdown");
+    return typeof record.lineWrapping === "boolean" && typeof record.scrollBeyondLastLine === "boolean" && typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 && (record.defaultCopyMode === "smart" || record.defaultCopyMode === "rich" || record.defaultCopyMode === "plain" || record.defaultCopyMode === "markdown") && (record.defaultPasteMode === "auto" || record.defaultPasteMode === "rich" || record.defaultPasteMode === "plain" || record.defaultPasteMode === "markdown");
   }
   function isTableCellCommitDetail(detail) {
     if (!detail || typeof detail !== "object") {

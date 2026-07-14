@@ -116,6 +116,7 @@ type HostUndoRestoreTarget =
 
 interface EditorOptions {
   lineWrapping: boolean;
+  scrollBeyondLastLine: boolean;
   clipboardDocumentToken: string;
   defaultCopyMode: ClipboardCopyMode;
   defaultPasteMode: ClipboardPasteMode;
@@ -214,7 +215,7 @@ try {
   });
   window.__MLRT_EDITOR_VIEW__ = view;
   installEditorCompositionBatching(view);
-  applyClipboardOptions(editorOptions);
+  applyDocumentEditorOptions(editorOptions);
   updateStatus(initialDocument, "embedded");
   installEditorCommandBridge(app);
   installDocumentClipboard(app, view);
@@ -633,6 +634,7 @@ function readEditorOptions(): EditorOptions {
   const options = window.__MLRT_EDITOR_OPTIONS__;
   const defaults: EditorOptions = {
     lineWrapping: true,
+    scrollBeyondLastLine: true,
     clipboardDocumentToken: createClipboardDocumentToken(),
     defaultCopyMode: "smart",
     defaultPasteMode: "auto",
@@ -647,6 +649,10 @@ function readEditorOptions(): EditorOptions {
       lineWrapping:
         typeof optionRecord.lineWrapping === "boolean"
           ? optionRecord.lineWrapping
+          : true,
+      scrollBeyondLastLine:
+        typeof optionRecord.scrollBeyondLastLine === "boolean"
+          ? optionRecord.scrollBeyondLastLine
           : true,
       clipboardDocumentToken: optionRecord.clipboardDocumentToken,
       defaultCopyMode: optionRecord.defaultCopyMode,
@@ -671,6 +677,10 @@ function normalizeEditorOptions(
       typeof record.lineWrapping === "boolean"
         ? record.lineWrapping
         : fallback.lineWrapping,
+    scrollBeyondLastLine:
+      typeof record.scrollBeyondLastLine === "boolean"
+        ? record.scrollBeyondLastLine
+        : fallback.scrollBeyondLastLine,
     clipboardDocumentToken:
       typeof record.clipboardDocumentToken === "string" &&
       record.clipboardDocumentToken.length > 0
@@ -700,12 +710,22 @@ function applyClipboardOptions(options: EditorOptions): void {
   root.dataset.mlrtDefaultPasteMode = options.defaultPasteMode;
 }
 
+function applyDocumentEditorOptions(options: EditorOptions): void {
+  applyClipboardOptions(options);
+  document.documentElement.style.setProperty(
+    "--mlrt-editor-scroll-beyond-last-line",
+    options.scrollBeyondLastLine
+      ? "max(0px, calc(100vh - var(--mlrt-editor-line-height, 20px)))"
+      : "0px",
+  );
+}
+
 function updateEditorOptions(value: unknown): void {
   const nextOptions = normalizeEditorOptions(value, editorOptions);
   const lineWrappingChanged =
     nextOptions.lineWrapping !== editorOptions.lineWrapping;
   editorOptions = nextOptions;
-  applyClipboardOptions(editorOptions);
+  applyDocumentEditorOptions(editorOptions);
   if (lineWrappingChanged) {
     view.dispatch({
       effects: lineWrappingCompartment.reconfigure(
@@ -1295,6 +1315,7 @@ function isEditorOptions(value: unknown): value is EditorOptions {
   const record = value as Record<string, unknown>;
   return (
     typeof record.lineWrapping === "boolean" &&
+    typeof record.scrollBeyondLastLine === "boolean" &&
     typeof record.clipboardDocumentToken === "string" &&
     record.clipboardDocumentToken.length > 0 &&
     (record.defaultCopyMode === "smart" ||

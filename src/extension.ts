@@ -181,10 +181,19 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         }
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
+        const markdownEditorScope = {
+          uri: document.uri,
+          languageId: "markdown",
+        };
         if (
           event.affectsConfiguration(
             "markdownLiveRenderTables.clipboard",
             document.uri,
+          ) ||
+          event.affectsConfiguration("editor.wordWrap", markdownEditorScope) ||
+          event.affectsConfiguration(
+            "editor.scrollBeyondLastLine",
+            markdownEditorScope,
           )
         ) {
           postEditorOptions();
@@ -689,6 +698,7 @@ function getEditorOptions(
   clipboardDocumentToken: string,
 ): {
   lineWrapping: boolean;
+  scrollBeyondLastLine: boolean;
   clipboardDocumentToken: string;
   defaultCopyMode: "smart" | "rich" | "plain" | "markdown";
   defaultPasteMode: "auto" | "rich" | "plain" | "markdown";
@@ -704,6 +714,10 @@ function getEditorOptions(
   );
   return {
     lineWrapping: wordWrap !== "off",
+    scrollBeyondLastLine: editorConfig.get<boolean>(
+      "scrollBeyondLastLine",
+      true,
+    ),
     clipboardDocumentToken,
     defaultCopyMode: readEnumSetting(
       extensionConfig.get<string>(DEFAULT_COPY_MODE_SETTING, "smart"),

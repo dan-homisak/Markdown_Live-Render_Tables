@@ -279,6 +279,17 @@ try {
   if (!liveClient) {
     throw new Error("Enter exit check failed: live webview client was not found.");
   }
+  const documentEndScroll = await evaluateJson(
+    liveClient,
+    documentEndScrollExpression(),
+  );
+  assertDocumentEndScroll(documentEndScroll);
+  console.log("DOCUMENT END SCROLL CHECK:", documentEndScroll);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-scroll-beyond-last-line.png"),
+  );
+  await evaluateJson(liveClient, resetDocumentScrollExpression());
   const initialSelectionFixture = await evaluateJson(
     liveClient,
     captureSelectionFixtureExpression(),
@@ -1653,6 +1664,68 @@ function liveMetricsExpression() {
       });
     }
     return null;
+  })()`;
+}
+
+function documentEndScrollExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.cm-scroller'));
+    const view = root?.defaultView?.__MLRT_EDITOR_VIEW__;
+    const scroller = root?.querySelector('.cm-scroller');
+    const content = root?.querySelector('.cm-content');
+    if (!root || !view || !scroller || !content) {
+      return JSON.stringify({ ok: false, reason: 'missing live scroll targets' });
+    }
+    scroller.scrollTop = scroller.scrollHeight;
+    await new Promise((resolve) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(resolve)
+    ));
+    const scrollerRect = scroller.getBoundingClientRect();
+    const finalCaret = view.coordsAtPos(view.state.doc.length);
+    const finalPositionDom = view.domAtPos(view.state.doc.length).node;
+    const finalPositionElement = finalPositionDom.nodeType === Node.ELEMENT_NODE
+      ? finalPositionDom
+      : finalPositionDom.parentElement;
+    const finalLine = finalPositionElement?.closest('.cm-line');
+    return JSON.stringify({
+      ok: true,
+      clientHeight: scroller.clientHeight,
+      scrollHeight: scroller.scrollHeight,
+      scrollTop: scroller.scrollTop,
+      maxScrollTop: scroller.scrollHeight - scroller.clientHeight,
+      finalLineViewportTop: finalLine
+        ? finalLine.getBoundingClientRect().top - scrollerRect.top
+        : null,
+      finalCaretViewportTop: finalCaret ? finalCaret.top - scrollerRect.top : null,
+      lineHeight: parseFloat(root.defaultView.getComputedStyle(content).lineHeight),
+      paddingBottom: parseFloat(root.defaultView.getComputedStyle(content).paddingBottom),
+    });
+  })()`;
+}
+
+function resetDocumentScrollExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try {
+        return frame.contentDocument;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean)];
+    const scroller = roots
+      .map((root) => root.querySelector('.cm-scroller'))
+      .find(Boolean);
+    if (!scroller) return JSON.stringify({ ok: false });
+    scroller.scrollTop = 0;
+    await new Promise((resolve) => scroller.ownerDocument.defaultView.requestAnimationFrame(resolve));
+    return JSON.stringify({ ok: scroller.scrollTop === 0 });
   })()`;
 }
 
@@ -6292,6 +6365,9 @@ function clipboardMoveRegressionExpression() {
     const originalPasteMode = root.documentElement.dataset.mlrtDefaultPasteMode ?? 'auto';
     const originalDocumentToken = root.documentElement.dataset.mlrtDocumentToken ?? '';
     const originalLineWrapping = view.contentDOM.classList.contains('cm-lineWrapping');
+    const scrollBeyondLastLineEnabled = () =>
+      root.documentElement.style.getPropertyValue('--mlrt-editor-scroll-beyond-last-line') !== '0px';
+    const originalScrollBeyondLastLine = scrollBeyondLastLineEnabled();
     const results = { ok: true };
     let revision = 999180;
     const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
@@ -6387,6 +6463,7 @@ function clipboardMoveRegressionExpression() {
           type: 'setEditorOptions',
           editorOptions: {
             lineWrapping: !originalLineWrapping,
+            scrollBeyondLastLine: !originalScrollBeyondLastLine,
             clipboardDocumentToken: originalDocumentToken,
             defaultCopyMode: 'plain',
             defaultPasteMode: 'markdown',
@@ -6396,11 +6473,13 @@ function clipboardMoveRegressionExpression() {
       await wait();
       results.editorOptionsMessageApplied =
         view.contentDOM.classList.contains('cm-lineWrapping') !== originalLineWrapping &&
+        scrollBeyondLastLineEnabled() !== originalScrollBeyondLastLine &&
         root.documentElement.dataset.mlrtDefaultCopyMode === 'plain' &&
         root.documentElement.dataset.mlrtDefaultPasteMode === 'markdown';
       await reset(originalDocument);
       results.documentSyncPreservesEditorOptions =
         view.contentDOM.classList.contains('cm-lineWrapping') !== originalLineWrapping &&
+        scrollBeyondLastLineEnabled() !== originalScrollBeyondLastLine &&
         root.documentElement.dataset.mlrtDocumentToken === originalDocumentToken &&
         root.documentElement.dataset.mlrtDefaultCopyMode === 'plain' &&
         root.documentElement.dataset.mlrtDefaultPasteMode === 'markdown';
@@ -6409,6 +6488,7 @@ function clipboardMoveRegressionExpression() {
           type: 'setEditorOptions',
           editorOptions: {
             lineWrapping: originalLineWrapping,
+            scrollBeyondLastLine: originalScrollBeyondLastLine,
             clipboardDocumentToken: originalDocumentToken,
             defaultCopyMode: originalCopyMode,
             defaultPasteMode: originalPasteMode,
@@ -6660,6 +6740,7 @@ function clipboardMoveRegressionExpression() {
           type: 'setEditorOptions',
           editorOptions: {
             lineWrapping: originalLineWrapping,
+            scrollBeyondLastLine: originalScrollBeyondLastLine,
             clipboardDocumentToken: originalDocumentToken,
             defaultCopyMode: originalCopyMode,
             defaultPasteMode: originalPasteMode,
@@ -6675,6 +6756,8 @@ function clipboardMoveRegressionExpression() {
         root.documentElement.dataset.mlrtDefaultPasteMode === originalPasteMode;
       results.restoredLineWrapping =
         view.contentDOM.classList.contains('cm-lineWrapping') === originalLineWrapping;
+      results.restoredScrollBeyondLastLine =
+        scrollBeyondLastLineEnabled() === originalScrollBeyondLastLine;
     }
     return JSON.stringify(results);
   })()`;
@@ -7858,6 +7941,34 @@ function assertTableCellFocus(result) {
       `Table cell focus check failed: expected hidden active line, got ${JSON.stringify(
         result,
       )}`,
+    );
+  }
+}
+
+function assertDocumentEndScroll(result) {
+  if (!result?.ok) {
+    throw new Error(
+      `Document end scroll check failed: ${JSON.stringify(result)}`,
+    );
+  }
+  const scrollDelta = Math.abs(result.scrollTop - result.maxScrollTop);
+  const finalLineDelta = Math.abs(result.finalLineViewportTop ?? Infinity);
+  const expectedPadding = result.clientHeight - result.lineHeight;
+  const paddingDelta = Math.abs(result.paddingBottom - expectedPadding);
+  if (
+    result.maxScrollTop <= 0 ||
+    scrollDelta > 1 ||
+    finalLineDelta > 1 ||
+    paddingDelta > 1
+  ) {
+    throw new Error(
+      `Document end scroll check failed: ${JSON.stringify({
+        ...result,
+        scrollDelta,
+        finalLineDelta,
+        expectedPadding,
+        paddingDelta,
+      })}`,
     );
   }
 }
@@ -9510,7 +9621,8 @@ function assertClipboardMoveRegressions(result) {
     !result.restoredDocument ||
     !result.restoredCopyMode ||
     !result.restoredPasteMode ||
-    !result.restoredLineWrapping
+    !result.restoredLineWrapping ||
+    !result.restoredScrollBeyondLastLine
   ) {
     throw new Error(
       `Clipboard move regression check failed: ${JSON.stringify(result)}`,

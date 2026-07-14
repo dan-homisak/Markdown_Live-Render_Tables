@@ -185,7 +185,7 @@ ${sharedCss}
     };
     window.__MLRT_DEBUG__ = ${debug ? "true" : "false"};
     window.__MLRT_INITIAL_DOCUMENT__ = ${serializedText};
-    window.__MLRT_EDITOR_OPTIONS__ = ${JSON.stringify({ lineWrapping })};
+    window.__MLRT_EDITOR_OPTIONS__ = ${JSON.stringify({ lineWrapping, scrollBeyondLastLine: true })};
   </script>
   <script src="${scriptUrl}"></script>
 </body>

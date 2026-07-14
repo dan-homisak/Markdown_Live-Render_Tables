@@ -72,7 +72,7 @@ export function createEditorTheme(): Extension {
       minHeight: "100%",
       boxSizing: "border-box",
       padding:
-        "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
+        "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) calc(var(--mlrt-editor-bottom-padding, 0px) + var(--mlrt-editor-scroll-beyond-last-line, 0px)) 0",
       caretColor: "var(--vscode-editorCursor-foreground, #aeafad)",
     },
     ".cm-line": {
