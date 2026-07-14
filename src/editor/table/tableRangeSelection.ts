@@ -3,10 +3,12 @@ import { EditorView } from "@codemirror/view";
 import { editorDragPosition } from "../dragPosition";
 import {
   clearDocumentSelectionProjection,
+  documentSelectionProjectionsEqual,
   documentSelectionProjectionTransaction,
   DocumentSelectionProjection,
   DocumentTableSelectionRegion,
   fullTableRectangle,
+  getDocumentSelectionProjection,
   proseToTableRectangle,
   setDocumentSelectionProjection,
   tableToProseRectangle,
@@ -216,17 +218,28 @@ export function bindTableRangeSelection(
       claimPointerCapture(event);
       event.preventDefault();
       event.stopPropagation();
+      const currentSelection = getTableRangeSelection(
+        wrapper.ownerDocument,
+      );
+      const selectionUnchanged = Boolean(
+        currentSelection?.wrapper === wrapper &&
+          sameAddress(currentSelection.anchor, state.pointerAnchor) &&
+          sameAddress(currentSelection.head, address) &&
+          lastDocumentDragRange === null,
+      );
       lastDocumentDragRange = null;
       lastDocumentDragProjection = null;
       lastDocumentDragDocument = null;
       clearDocumentSelectionProjection(wrapper.ownerDocument);
-      setTableRangeSelection(
-        wrapper,
-        currentTable().from,
-        state.pointerAnchor,
-        address,
-        true,
-      );
+      if (!selectionUnchanged) {
+        setTableRangeSelection(
+          wrapper,
+          currentTable().from,
+          state.pointerAnchor,
+          address,
+          true,
+        );
+      }
       return;
     }
 
@@ -250,17 +263,28 @@ export function bindTableRangeSelection(
         claimPointerCapture(event);
         event.preventDefault();
         event.stopPropagation();
+        const currentSelection = getTableRangeSelection(
+          wrapper.ownerDocument,
+        );
+        const selectionUnchanged = Boolean(
+          currentSelection?.wrapper === wrapper &&
+            sameAddress(currentSelection.anchor, state.pointerAnchor) &&
+            sameAddress(currentSelection.head, address) &&
+            lastDocumentDragRange === null,
+        );
         lastDocumentDragRange = null;
         lastDocumentDragProjection = null;
         lastDocumentDragDocument = null;
         clearDocumentSelectionProjection(wrapper.ownerDocument);
-        setTableRangeSelection(
-          wrapper,
-          latestTable.from,
-          state.pointerAnchor,
-          address,
-          true,
-        );
+        if (!selectionUnchanged) {
+          setTableRangeSelection(
+            wrapper,
+            latestTable.from,
+            state.pointerAnchor,
+            address,
+            true,
+          );
+        }
       }
       return;
     }
@@ -322,12 +346,12 @@ export function bindTableRangeSelection(
       view.focus();
     }
     const anchorPosition = movingBeforeTable ? tableTo : tableFrom;
-    lastDocumentDragRange = {
+    const nextRange = {
       anchor: anchorPosition,
       head: documentPosition,
     };
-    lastDocumentDragProjection = {
-      ...lastDocumentDragRange,
+    const nextProjection = {
+      ...nextRange,
       tableRegions: regionsForTableToDocument(
         parsedTables,
         parsedTable ?? latestTable,
@@ -338,16 +362,33 @@ export function bindTableRangeSelection(
         targetAddress,
       ),
     };
-    lastDocumentDragDocument = view.state.doc;
-    setDocumentSelectionProjection(
+    publishDocumentDragSelection(nextRange, nextProjection);
+  };
+
+  const publishDocumentDragSelection = (
+    range: { anchor: number; head: number },
+    projection: DocumentSelectionProjection,
+  ): void => {
+    const currentRange = view.state.selection.main;
+    const currentProjection = getDocumentSelectionProjection(
       wrapper.ownerDocument,
-      lastDocumentDragProjection,
+      currentRange,
     );
+    const rangeChanged =
+      currentRange.anchor !== range.anchor || currentRange.head !== range.head;
+    const projectionChanged = !documentSelectionProjectionsEqual(
+      currentProjection,
+      projection,
+    );
+    lastDocumentDragRange = range;
+    lastDocumentDragProjection = projection;
+    lastDocumentDragDocument = view.state.doc;
+    setDocumentSelectionProjection(wrapper.ownerDocument, projection);
+    if (!rangeChanged && !projectionChanged) {
+      return;
+    }
     view.dispatch({
-      selection: EditorSelection.range(
-        lastDocumentDragRange.anchor,
-        lastDocumentDragRange.head,
-      ),
+      selection: EditorSelection.range(range.anchor, range.head),
       scrollIntoView: true,
       annotations: documentSelectionProjectionTransaction.of(true),
     });
@@ -395,6 +436,9 @@ export function bindTableRangeSelection(
 
   const onMouseMove = (event: MouseEvent): void => {
     const state = stateFor(wrapper.ownerDocument);
+    // A preceding PointerEvent may scroll the editor. The compatibility
+    // MouseEvent intentionally re-resolves the same viewport coordinate;
+    // the publish paths below no-op when the settled selection is identical.
     if (state.pointerAnchor && (event.buttons & 1) !== 0) {
       updateDragSelection(event);
     }

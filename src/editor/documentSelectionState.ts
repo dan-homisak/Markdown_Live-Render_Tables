@@ -78,6 +78,40 @@ export function clearDocumentSelectionProjection(doc: Document): void {
   projections.delete(doc);
 }
 
+/**
+ * Pointer events can be followed by compatibility mouse events with the same
+ * coordinates. Selection controllers use this comparison to avoid publishing
+ * an identical projection twice for one physical move.
+ */
+export function documentSelectionProjectionsEqual(
+  left: DocumentSelectionProjection | null,
+  right: DocumentSelectionProjection | null,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (
+    !left ||
+    !right ||
+    left.anchor !== right.anchor ||
+    left.head !== right.head ||
+    left.tableRegions.length !== right.tableRegions.length
+  ) {
+    return false;
+  }
+  return left.tableRegions.every((region, index) => {
+    const candidate = right.tableRegions[index];
+    return (
+      candidate !== undefined &&
+      region.tableFrom === candidate.tableFrom &&
+      region.top === candidate.top &&
+      region.bottom === candidate.bottom &&
+      region.left === candidate.left &&
+      region.right === candidate.right
+    );
+  });
+}
+
 /** Prose above grows from the table's top-left corner to the hovered cell. */
 export function proseToTableRectangle(
   direction: "forward" | "backward",

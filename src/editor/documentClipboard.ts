@@ -28,6 +28,7 @@ import { allowTableSourceChange } from "../shared/tableSourceProtection";
 import { editorDragPosition } from "./dragPosition";
 import {
   clearDocumentSelectionProjection,
+  documentSelectionProjectionsEqual,
   documentSelectionProjectionTransaction,
   DocumentSelectionProjection,
   DocumentTableSelectionRegion,
@@ -418,26 +419,18 @@ export function installDocumentClipboard(
       if (head === null) {
         return;
       }
-      mixedDragRange = { anchor: mixedDragAnchor, head };
+      const nextRange = { anchor: mixedDragAnchor, head };
       const tableRegions = fullRegionsForEnvelope(
         getParsedTables(view.state.doc),
-        mixedDragRange.anchor,
-        mixedDragRange.head,
+        nextRange.anchor,
+        nextRange.head,
       );
-      mixedDragProjection = tableRegions.length > 0
+      const nextProjection = tableRegions.length > 0
         ? {
-            ...mixedDragRange,
+            ...nextRange,
             tableRegions,
           }
         : null;
-      if (mixedDragProjection) {
-        setDocumentSelectionProjection(doc, mixedDragProjection);
-      } else {
-        // Once a drag returns to prose on its original side it is an ordinary
-        // linear selection again. Keeping an empty projection would make
-        // delete/cut trim newlines differently from what copy displays.
-        clearDocumentSelectionProjection(doc);
-      }
       event.preventDefault();
       event.stopPropagation();
       doc.defaultView?.getSelection()?.removeAllRanges();
@@ -447,16 +440,7 @@ export function installDocumentClipboard(
         // discard the spatial projection before the next text/IME input.
         view.focus();
       }
-      view.dispatch({
-        selection: EditorSelection.range(mixedDragRange.anchor, mixedDragRange.head),
-        scrollIntoView: true,
-        ...(mixedDragProjection
-          ? {
-              annotations:
-                documentSelectionProjectionTransaction.of(true),
-            }
-          : {}),
-      });
+      publishMixedDragSelection(nextRange, nextProjection);
       return;
     }
     const tableFrom = Number(cell.dataset.tableFrom ?? "NaN");
@@ -475,12 +459,12 @@ export function installDocumentClipboard(
       return;
     }
     const movingForward = mixedDragAnchor <= table.from;
-    mixedDragRange = {
+    const nextRange = {
       anchor: mixedDragAnchor,
       head: movingForward ? span.to : span.from,
     };
-    mixedDragProjection = {
-      ...mixedDragRange,
+    const nextProjection = {
+      ...nextRange,
       tableRegions: regionsForProseToCell(
         getParsedTables(view.state.doc),
         mixedDragAnchor,
@@ -489,7 +473,6 @@ export function installDocumentClipboard(
         movingForward ? "forward" : "backward",
       ),
     };
-    setDocumentSelectionProjection(doc, mixedDragProjection);
     mixedDragActive = true;
     if (
       mixedDragPointerId !== null &&
@@ -516,13 +499,45 @@ export function installDocumentClipboard(
       // subsequent normalized input replaces the selection atomically.
       view.focus();
     }
+    publishMixedDragSelection(nextRange, nextProjection);
+  };
+
+  const publishMixedDragSelection = (
+    range: { anchor: number; head: number },
+    projection: DocumentSelectionProjection | null,
+  ): void => {
+    const currentRange = view.state.selection.main;
+    const currentProjection = getDocumentSelectionProjection(
+      doc,
+      currentRange,
+    );
+    const rangeChanged =
+      currentRange.anchor !== range.anchor || currentRange.head !== range.head;
+    const projectionChanged = !documentSelectionProjectionsEqual(
+      currentProjection,
+      projection,
+    );
+    mixedDragRange = range;
+    mixedDragProjection = projection;
+    if (projection) {
+      setDocumentSelectionProjection(doc, projection);
+    } else {
+      // Once a drag returns to prose on its original side it is an ordinary
+      // linear selection again. Keeping an empty projection would make
+      // delete/cut trim newlines differently from what copy displays.
+      clearDocumentSelectionProjection(doc);
+    }
+    if (!rangeChanged && !projectionChanged) {
+      return;
+    }
     view.dispatch({
-      selection: EditorSelection.range(
-        mixedDragRange.anchor,
-        mixedDragRange.head,
-      ),
+      selection: EditorSelection.range(range.anchor, range.head),
       scrollIntoView: true,
-      annotations: documentSelectionProjectionTransaction.of(true),
+      ...(projection
+        ? {
+            annotations: documentSelectionProjectionTransaction.of(true),
+          }
+        : {}),
     });
   };
 
@@ -543,6 +558,10 @@ export function installDocumentClipboard(
   };
 
   const onMixedMouseMove = (event: MouseEvent): void => {
+    // The PointerEvent can scroll the editor to keep its head visible before
+    // Chromium emits this compatibility event. Re-evaluate the same client
+    // point against the settled layout; publishMixedDragSelection suppresses
+    // the second paint when its range and projection are unchanged.
     updateMixedDrag(event);
     if (mixedDragActive) {
       event.preventDefault();

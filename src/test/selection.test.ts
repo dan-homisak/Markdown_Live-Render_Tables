@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  documentSelectionProjectionsEqual,
   cellRectangle,
   clearDocumentSelectionProjection,
   DocumentTableSelectionRegion,
@@ -112,6 +113,47 @@ assert.equal(
   getDocumentSelectionProjection(documentOne, { anchor: 12, head: 104 })
     ?.tableRegions[0].left,
   2,
+);
+
+// Compatibility mouse events should be able to recognize that the pointer
+// event already published the exact same mixed-selection geometry.
+assert.equal(
+  documentSelectionProjectionsEqual(
+    {
+      anchor: 10,
+      head: 80,
+      tableRegions: [
+        { tableFrom: 20, top: 0, bottom: 2, left: 0, right: 1 },
+      ],
+    },
+    {
+      anchor: 10,
+      head: 80,
+      tableRegions: [
+        { tableFrom: 20, top: 0, bottom: 2, left: 0, right: 1 },
+      ],
+    },
+  ),
+  true,
+);
+assert.equal(
+  documentSelectionProjectionsEqual(
+    {
+      anchor: 10,
+      head: 80,
+      tableRegions: [
+        { tableFrom: 20, top: 0, bottom: 2, left: 0, right: 1 },
+      ],
+    },
+    {
+      anchor: 10,
+      head: 80,
+      tableRegions: [
+        { tableFrom: 20, top: 0, bottom: 2, left: 0, right: 2 },
+      ],
+    },
+  ),
+  false,
 );
 
 // Any unrelated selection invalidates the projection instead of leaving stale

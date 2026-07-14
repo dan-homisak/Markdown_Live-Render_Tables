@@ -33160,6 +33160,18 @@
   function clearDocumentSelectionProjection(doc2) {
     projections.delete(doc2);
   }
+  function documentSelectionProjectionsEqual(left, right) {
+    if (left === right) {
+      return true;
+    }
+    if (!left || !right || left.anchor !== right.anchor || left.head !== right.head || left.tableRegions.length !== right.tableRegions.length) {
+      return false;
+    }
+    return left.tableRegions.every((region, index) => {
+      const candidate = right.tableRegions[index];
+      return candidate !== void 0 && region.tableFrom === candidate.tableFrom && region.top === candidate.top && region.bottom === candidate.bottom && region.left === candidate.left && region.right === candidate.right;
+    });
+  }
   function proseToTableRectangle(direction, cell2, dimensions) {
     const address = clampCell(cell2, dimensions);
     if (direction === "forward") {
@@ -33354,17 +33366,25 @@
         claimPointerCapture(event);
         event.preventDefault();
         event.stopPropagation();
+        const currentSelection = getTableRangeSelection(
+          wrapper.ownerDocument
+        );
+        const selectionUnchanged = Boolean(
+          currentSelection?.wrapper === wrapper && sameAddress(currentSelection.anchor, state.pointerAnchor) && sameAddress(currentSelection.head, address) && lastDocumentDragRange === null
+        );
         lastDocumentDragRange = null;
         lastDocumentDragProjection = null;
         lastDocumentDragDocument = null;
         clearDocumentSelectionProjection(wrapper.ownerDocument);
-        setTableRangeSelection(
-          wrapper,
-          currentTable().from,
-          state.pointerAnchor,
-          address,
-          true
-        );
+        if (!selectionUnchanged) {
+          setTableRangeSelection(
+            wrapper,
+            currentTable().from,
+            state.pointerAnchor,
+            address,
+            true
+          );
+        }
         return;
       }
       const latestTable = currentTable();
@@ -33382,17 +33402,25 @@
           claimPointerCapture(event);
           event.preventDefault();
           event.stopPropagation();
+          const currentSelection = getTableRangeSelection(
+            wrapper.ownerDocument
+          );
+          const selectionUnchanged = Boolean(
+            currentSelection?.wrapper === wrapper && sameAddress(currentSelection.anchor, state.pointerAnchor) && sameAddress(currentSelection.head, address) && lastDocumentDragRange === null
+          );
           lastDocumentDragRange = null;
           lastDocumentDragProjection = null;
           lastDocumentDragDocument = null;
           clearDocumentSelectionProjection(wrapper.ownerDocument);
-          setTableRangeSelection(
-            wrapper,
-            latestTable.from,
-            state.pointerAnchor,
-            address,
-            true
-          );
+          if (!selectionUnchanged) {
+            setTableRangeSelection(
+              wrapper,
+              latestTable.from,
+              state.pointerAnchor,
+              address,
+              true
+            );
+          }
         }
         return;
       }
@@ -33448,12 +33476,12 @@
         view2.focus();
       }
       const anchorPosition = movingBeforeTable ? tableTo : tableFrom;
-      lastDocumentDragRange = {
+      const nextRange = {
         anchor: anchorPosition,
         head: documentPosition
       };
-      lastDocumentDragProjection = {
-        ...lastDocumentDragRange,
+      const nextProjection = {
+        ...nextRange,
         tableRegions: regionsForTableToDocument(
           parsedTables,
           parsedTable ?? latestTable,
@@ -33464,16 +33492,28 @@
           targetAddress
         )
       };
-      lastDocumentDragDocument = view2.state.doc;
-      setDocumentSelectionProjection(
+      publishDocumentDragSelection(nextRange, nextProjection);
+    };
+    const publishDocumentDragSelection = (range, projection) => {
+      const currentRange = view2.state.selection.main;
+      const currentProjection = getDocumentSelectionProjection(
         wrapper.ownerDocument,
-        lastDocumentDragProjection
+        currentRange
       );
+      const rangeChanged = currentRange.anchor !== range.anchor || currentRange.head !== range.head;
+      const projectionChanged = !documentSelectionProjectionsEqual(
+        currentProjection,
+        projection
+      );
+      lastDocumentDragRange = range;
+      lastDocumentDragProjection = projection;
+      lastDocumentDragDocument = view2.state.doc;
+      setDocumentSelectionProjection(wrapper.ownerDocument, projection);
+      if (!rangeChanged && !projectionChanged) {
+        return;
+      }
       view2.dispatch({
-        selection: EditorSelection.range(
-          lastDocumentDragRange.anchor,
-          lastDocumentDragRange.head
-        ),
+        selection: EditorSelection.range(range.anchor, range.head),
         scrollIntoView: true,
         annotations: documentSelectionProjectionTransaction.of(true)
       });
@@ -34595,34 +34635,23 @@
         if (head === null) {
           return;
         }
-        mixedDragRange = { anchor: mixedDragAnchor, head };
+        const nextRange2 = { anchor: mixedDragAnchor, head };
         const tableRegions = fullRegionsForEnvelope(
           getParsedTables(view2.state.doc),
-          mixedDragRange.anchor,
-          mixedDragRange.head
+          nextRange2.anchor,
+          nextRange2.head
         );
-        mixedDragProjection = tableRegions.length > 0 ? {
-          ...mixedDragRange,
+        const nextProjection2 = tableRegions.length > 0 ? {
+          ...nextRange2,
           tableRegions
         } : null;
-        if (mixedDragProjection) {
-          setDocumentSelectionProjection(doc2, mixedDragProjection);
-        } else {
-          clearDocumentSelectionProjection(doc2);
-        }
         event.preventDefault();
         event.stopPropagation();
         doc2.defaultView?.getSelection()?.removeAllRanges();
         if (!view2.hasFocus) {
           view2.focus();
         }
-        view2.dispatch({
-          selection: EditorSelection.range(mixedDragRange.anchor, mixedDragRange.head),
-          scrollIntoView: true,
-          ...mixedDragProjection ? {
-            annotations: documentSelectionProjectionTransaction.of(true)
-          } : {}
-        });
+        publishMixedDragSelection(nextRange2, nextProjection2);
         return;
       }
       const tableFrom = Number(cell2.dataset.tableFrom ?? "NaN");
@@ -34641,12 +34670,12 @@
         return;
       }
       const movingForward = mixedDragAnchor <= table2.from;
-      mixedDragRange = {
+      const nextRange = {
         anchor: mixedDragAnchor,
         head: movingForward ? span.to : span.from
       };
-      mixedDragProjection = {
-        ...mixedDragRange,
+      const nextProjection = {
+        ...nextRange,
         tableRegions: regionsForProseToCell(
           getParsedTables(view2.state.doc),
           mixedDragAnchor,
@@ -34655,7 +34684,6 @@
           movingForward ? "forward" : "backward"
         )
       };
-      setDocumentSelectionProjection(doc2, mixedDragProjection);
       mixedDragActive = true;
       if (mixedDragPointerId !== null && !root2.hasPointerCapture(mixedDragPointerId)) {
         try {
@@ -34672,13 +34700,35 @@
       if (!view2.hasFocus) {
         view2.focus();
       }
+      publishMixedDragSelection(nextRange, nextProjection);
+    };
+    const publishMixedDragSelection = (range, projection) => {
+      const currentRange = view2.state.selection.main;
+      const currentProjection = getDocumentSelectionProjection(
+        doc2,
+        currentRange
+      );
+      const rangeChanged = currentRange.anchor !== range.anchor || currentRange.head !== range.head;
+      const projectionChanged = !documentSelectionProjectionsEqual(
+        currentProjection,
+        projection
+      );
+      mixedDragRange = range;
+      mixedDragProjection = projection;
+      if (projection) {
+        setDocumentSelectionProjection(doc2, projection);
+      } else {
+        clearDocumentSelectionProjection(doc2);
+      }
+      if (!rangeChanged && !projectionChanged) {
+        return;
+      }
       view2.dispatch({
-        selection: EditorSelection.range(
-          mixedDragRange.anchor,
-          mixedDragRange.head
-        ),
+        selection: EditorSelection.range(range.anchor, range.head),
         scrollIntoView: true,
-        annotations: documentSelectionProjectionTransaction.of(true)
+        ...projection ? {
+          annotations: documentSelectionProjectionTransaction.of(true)
+        } : {}
       });
     };
     const onMixedPointerMove = (event) => {
