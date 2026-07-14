@@ -3091,7 +3091,56 @@ function tableClipboardSelectionExpression() {
     key(wrapper, 'ArrowRight', { shiftKey: true });
     await wait();
     const rangeSelected = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+    const liveRoot = root.querySelector('.cm-editor');
+    const activeLine = root.querySelector('.cm-activeLine');
+    const activeLineGutter = root.querySelector('.cm-activeLineGutter');
+    const inactiveLineGutter = Array.from(root.querySelectorAll('.cm-lineNumbers .cm-gutterElement'))
+      .find((candidate) => candidate !== activeLineGutter && candidate.textContent.trim());
+    const selectionSuppressesActiveLine = Boolean(
+      liveRoot?.classList.contains('mlrt-selection-active') &&
+      activeLine &&
+      ['transparent', 'rgba(0, 0, 0, 0)'].includes(root.defaultView.getComputedStyle(activeLine).backgroundColor) &&
+      activeLineGutter &&
+      inactiveLineGutter &&
+      root.defaultView.getComputedStyle(activeLineGutter).color ===
+        root.defaultView.getComputedStyle(inactiveLineGutter).color
+    );
 
+    const headerCell = wrapper.querySelector('.mlrt-table-cell[data-row-kind="header"][data-column="0"]');
+    headerCell?.focus();
+    if (headerCell) key(headerCell, 'Escape');
+    await wait();
+    if (headerCell) key(wrapper, 'ArrowUp');
+    await wait();
+    const expectedBeforeTable = Math.max(0, Number(wrapper.dataset.srcFrom) - 1);
+    const selectedArrowUpEscaped =
+      wrapper.querySelectorAll('.mlrt-table-cell-selected').length === 0 &&
+      root.activeElement === view.contentDOM &&
+      view.state.selection.main.empty &&
+      view.state.selection.main.head === expectedBeforeTable;
+
+    const cells = Array.from(wrapper.querySelectorAll('.mlrt-table-cell'));
+    const lastCell = cells[cells.length - 1];
+    lastCell?.focus();
+    if (lastCell) key(lastCell, 'Escape');
+    await wait();
+    if (lastCell) key(wrapper, 'ArrowDown');
+    await wait();
+    const tableTo = Number(wrapper.dataset.srcTo);
+    const afterTable = tableTo < view.state.doc.length && view.state.doc.sliceString(tableTo, tableTo + 1) === '\\n'
+      ? tableTo + 1
+      : tableTo;
+    const expectedAfterTable = view.state.doc.lineAt(afterTable).to;
+    const selectedArrowDownEscaped =
+      wrapper.querySelectorAll('.mlrt-table-cell-selected').length === 0 &&
+      root.activeElement === view.contentDOM &&
+      view.state.selection.main.empty &&
+      view.state.selection.main.head === expectedAfterTable;
+
+    cell.focus();
+    key(cell, 'Escape');
+    key(wrapper, 'ArrowRight', { shiftKey: true });
+    await wait();
     const outsideLine = Array.from(root.querySelectorAll('.cm-line')).find((line) =>
       !line.classList.contains('mlrt-hidden-table-source-line')
     );
@@ -3211,6 +3260,9 @@ function tableClipboardSelectionExpression() {
       escapedDefault,
       singleSelected,
       rangeSelected,
+      selectionSuppressesActiveLine,
+      selectedArrowUpEscaped,
+      selectedArrowDownEscaped,
       outsideClickCleared,
       wrapperFocused,
       smartHasTabs: smartPlain.includes('\\t'),
@@ -7911,6 +7963,9 @@ function assertTableClipboardSelection(result) {
     result.escapedDefault ||
     result.singleSelected !== 1 ||
     result.rangeSelected !== 2 ||
+    !result.selectionSuppressesActiveLine ||
+    !result.selectedArrowUpEscaped ||
+    !result.selectedArrowDownEscaped ||
     !result.outsideClickCleared ||
     !result.wrapperFocused ||
     !result.smartHasTabs ||

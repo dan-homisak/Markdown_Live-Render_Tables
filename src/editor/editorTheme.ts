@@ -90,12 +90,21 @@ export function createEditorTheme(): Extension {
     "&.mlrt-table-cell-focused .cm-activeLine": {
       backgroundColor: "transparent",
     },
+    "&.mlrt-selection-active .cm-activeLine": {
+      backgroundColor: "transparent",
+    },
     "&.mlrt-table-cell-focused .cm-cursor": {
       display: "none",
     },
     // While a rendered table cell has focus, the editor selection is parked
     // on some unrelated line; do not let the native gutter highlight it.
     "&.mlrt-table-cell-focused .cm-activeLineGutter": {
+      color: "var(--vscode-editorLineNumber-foreground, #858585)",
+    },
+    // A selection already communicates the active range. Keeping a second
+    // active-line marker on its moving head (or its parked table-source
+    // cursor) leaves a misleading grey line number behind.
+    "&.mlrt-selection-active .cm-activeLineGutter": {
       color: "var(--vscode-editorLineNumber-foreground, #858585)",
     },
   });

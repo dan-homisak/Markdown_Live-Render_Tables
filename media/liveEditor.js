@@ -25040,12 +25040,21 @@
       "&.mlrt-table-cell-focused .cm-activeLine": {
         backgroundColor: "transparent"
       },
+      "&.mlrt-selection-active .cm-activeLine": {
+        backgroundColor: "transparent"
+      },
       "&.mlrt-table-cell-focused .cm-cursor": {
         display: "none"
       },
       // While a rendered table cell has focus, the editor selection is parked
       // on some unrelated line; do not let the native gutter highlight it.
       "&.mlrt-table-cell-focused .cm-activeLineGutter": {
+        color: "var(--vscode-editorLineNumber-foreground, #858585)"
+      },
+      // A selection already communicates the active range. Keeping a second
+      // active-line marker on its moving head (or its parked table-source
+      // cursor) leaves a misleading grey line number behind.
+      "&.mlrt-selection-active .cm-activeLineGutter": {
         color: "var(--vscode-editorLineNumber-foreground, #858585)"
       }
     });
@@ -33812,6 +33821,18 @@
           }
           return;
         }
+        if (isPlainKey(event) && (event.key === "ArrowUp" && selection.head.row === 0 || event.key === "ArrowDown" && selection.head.row === latestTable.body.length)) {
+          const selectionAnchor = event.key === "ArrowUp" ? positionBeforeTable(latestTable) : view2.state.doc.lineAt(
+            positionAfterTable(view2.state.doc, latestTable)
+          ).to;
+          clearTableRangeSelection(wrapper.ownerDocument);
+          view2.focus();
+          view2.dispatch({
+            selection: EditorSelection.cursor(selectionAnchor, 1),
+            scrollIntoView: true
+          });
+          return;
+        }
         const delta = keyDelta(event);
         const nextHead = clampAddress(
           {
@@ -34276,6 +34297,9 @@
   }
   function isSelectAll(event) {
     return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a";
+  }
+  function isPlainKey(event) {
+    return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
   }
   function isPrintableKey(event) {
     return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
@@ -36212,6 +36236,7 @@ ${replacement}
 
   // src/editor/tableCellFocus.ts
   var TABLE_CELL_FOCUSED_CLASS = "mlrt-table-cell-focused";
+  var SELECTION_ACTIVE_CLASS = "mlrt-selection-active";
   function createTableCellFocusClassSync() {
     return ViewPlugin.fromClass(
       class {
@@ -36221,6 +36246,11 @@ ${replacement}
           const doc2 = view2.dom.ownerDocument;
           doc2.addEventListener("focusin", this.syncFocusClass, true);
           doc2.addEventListener("focusout", this.syncFocusClass, true);
+          doc2.addEventListener(
+            TABLE_SELECTION_CHANGE_EVENT,
+            this.syncFocusClass,
+            true
+          );
           this.sync();
         }
         view;
@@ -36235,6 +36265,11 @@ ${replacement}
           const doc2 = this.view.dom.ownerDocument;
           doc2.removeEventListener("focusin", this.syncFocusClass, true);
           doc2.removeEventListener("focusout", this.syncFocusClass, true);
+          doc2.removeEventListener(
+            TABLE_SELECTION_CHANGE_EVENT,
+            this.syncFocusClass,
+            true
+          );
         }
         sync() {
           queueMicrotask(() => {
@@ -36249,6 +36284,10 @@ ${replacement}
             this.view.dom.classList.toggle(
               TABLE_CELL_FOCUSED_CLASS,
               hasTableCellFocus
+            );
+            this.view.dom.classList.toggle(
+              SELECTION_ACTIVE_CLASS,
+              !this.view.state.selection.main.empty || Boolean(getTableRangeSelection(ownerDocument))
             );
           });
         }
@@ -36612,7 +36651,7 @@ ${replacement}
         scheduleTableLayout();
         return;
       }
-      if (event.key === "Enter" && isPlainKey(event)) {
+      if (event.key === "Enter" && isPlainKey2(event)) {
         event.preventDefault();
         event.stopPropagation();
         commitCellEdit(view2, currentTable, cell2, {
@@ -37216,11 +37255,11 @@ ${replacement}
     }
     return null;
   }
-  function isPlainKey(event) {
+  function isPlainKey2(event) {
     return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
   }
   function isUnmodifiedVerticalArrow(event) {
-    return (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey(event);
+    return (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey2(event);
   }
 
   // src/editor/table/tableLayout.ts

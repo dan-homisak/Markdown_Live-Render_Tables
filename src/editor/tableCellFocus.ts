@@ -1,8 +1,13 @@
 import { Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { findCell } from "./table/cellSelection";
+import {
+  getTableRangeSelection,
+  TABLE_SELECTION_CHANGE_EVENT,
+} from "./table/tableRangeSelection";
 
 export const TABLE_CELL_FOCUSED_CLASS = "mlrt-table-cell-focused";
+export const SELECTION_ACTIVE_CLASS = "mlrt-selection-active";
 
 /**
  * Single owner of the `mlrt-table-cell-focused` class on the editor root.
@@ -23,6 +28,11 @@ export function createTableCellFocusClassSync(): Extension {
         const doc = view.dom.ownerDocument;
         doc.addEventListener("focusin", this.syncFocusClass, true);
         doc.addEventListener("focusout", this.syncFocusClass, true);
+        doc.addEventListener(
+          TABLE_SELECTION_CHANGE_EVENT,
+          this.syncFocusClass,
+          true,
+        );
         this.sync();
       }
 
@@ -36,6 +46,11 @@ export function createTableCellFocusClassSync(): Extension {
         const doc = this.view.dom.ownerDocument;
         doc.removeEventListener("focusin", this.syncFocusClass, true);
         doc.removeEventListener("focusout", this.syncFocusClass, true);
+        doc.removeEventListener(
+          TABLE_SELECTION_CHANGE_EVENT,
+          this.syncFocusClass,
+          true,
+        );
       }
 
       private sync(): void {
@@ -59,6 +74,11 @@ export function createTableCellFocusClassSync(): Extension {
           this.view.dom.classList.toggle(
             TABLE_CELL_FOCUSED_CLASS,
             hasTableCellFocus,
+          );
+          this.view.dom.classList.toggle(
+            SELECTION_ACTIVE_CLASS,
+            !this.view.state.selection.main.empty ||
+              Boolean(getTableRangeSelection(ownerDocument)),
           );
         });
       }

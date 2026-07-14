@@ -797,6 +797,26 @@ export function bindTableRangeSelection(
         }
         return;
       }
+      if (
+        isPlainKey(event) &&
+        ((event.key === "ArrowUp" && selection.head.row === 0) ||
+          (event.key === "ArrowDown" &&
+            selection.head.row === latestTable.body.length))
+      ) {
+        const selectionAnchor =
+          event.key === "ArrowUp"
+            ? positionBeforeTable(latestTable)
+            : view.state.doc.lineAt(
+                positionAfterTable(view.state.doc, latestTable),
+              ).to;
+        clearTableRangeSelection(wrapper.ownerDocument);
+        view.focus();
+        view.dispatch({
+          selection: EditorSelection.cursor(selectionAnchor, 1),
+          scrollIntoView: true,
+        });
+        return;
+      }
       const delta = keyDelta(event);
       const nextHead = clampAddress(
         {
@@ -1408,6 +1428,10 @@ function isSelectAll(event: KeyboardEvent): boolean {
     !event.altKey &&
     event.key.toLowerCase() === "a"
   );
+}
+
+function isPlainKey(event: KeyboardEvent): boolean {
+  return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
 }
 
 function isPrintableKey(event: KeyboardEvent): boolean {
