@@ -67,7 +67,15 @@ body,
 }
 
 .cm-selectionBackground {
+  /* Cursor geometry still comes from CodeMirror's drawSelection extension,
+     but its block/line-tail rectangles are intentionally hidden. Exact prose
+     characters are painted by .mlrt-prose-selection below. */
+  display: none !important;
+}
+
+.mlrt-prose-selection {
   background-color: var(--mlrt-selection-fill) !important;
+  color: var(--vscode-editor-selectionForeground, inherit);
 }
 
 .cm-scroller {
@@ -273,6 +281,28 @@ body,
   box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
 }
 
+/* Text editing inside one cell remains a native DOM selection. Give that
+   browser-owned range the same character-level treatment as prose so it can
+   never be mistaken for rectangular cell selection. */
+.mlrt-table-cell::selection {
+  background: var(--mlrt-selection-fill);
+  color: var(--vscode-editor-selectionForeground, inherit);
+}
+
+/* CodeMirror keeps a real DOM selection behind its custom paint so typing,
+   IME composition, and accessibility APIs continue to use the browser's
+   native editing pipeline. When that range crosses a block table widget,
+   suppress only the browser paint there; the spatial cell overlay below is
+   the single visible selection surface. */
+.mlrt-table-widget.mlrt-document-selection-mode ::selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+.mlrt-table-widget:focus {
+  outline: none;
+}
+
 /* A selected range reads as one surface. A single overlay owns the blue frame
    and every hairline divider, so grid intersections are clean and continuous.
    Keeping the perimeter out of the cells is especially important at the
@@ -282,43 +312,61 @@ body,
   outline: none;
 }
 
+/* Structure handles normally sit above table content. During either kind of
+   range selection they are not actionable and can look like bright artifacts
+   at the edge of an upward drag, so remove the entire controls layer from the
+   paint and accessibility trees until the selection is cleared. */
+.mlrt-table-widget:is(
+  .mlrt-table-selection-mode,
+  .mlrt-document-selection-mode
+) > .mlrt-table-controls-layer {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 .mlrt-table .mlrt-table-cell:is(
   .mlrt-table-cell-selected,
   .mlrt-document-range-selected
 ) {
-  --mlrt-selection-inner-top: inset 0 0 transparent;
-  --mlrt-selection-inner-left: inset 0 0 transparent;
   position: relative;
   background: var(--mlrt-selection-fill);
   border-color: transparent;
   color: var(--vscode-editor-selectionForeground, inherit);
-  box-shadow:
-    var(--mlrt-selection-inner-top),
-    var(--mlrt-selection-inner-left);
+  box-shadow: none;
 }
 
-/* Cell-owned inset strokes follow each row's real box, including wrapped
-   content. The frame below owns only the outside edge. */
-.mlrt-table .mlrt-table-cell:is(
-  .mlrt-table-cell-selected,
-  .mlrt-document-range-selected
-):not(.mlrt-table-selection-top) {
-  --mlrt-selection-inner-top: inset 0 1px var(--mlrt-selection-grid);
-}
-
-.mlrt-table .mlrt-table-cell:is(
-  .mlrt-table-cell-selected,
-  .mlrt-document-range-selected
-):not(.mlrt-table-selection-left) {
-  --mlrt-selection-inner-left: inset 1px 0 var(--mlrt-selection-grid);
-}
-
-.mlrt-table-selection-outline {
+/* One SVG owns the complete selection grid. The frame is painted after the
+   interior rails, avoiding the clipped shadows and doubled intersections
+   produced when each selected cell draws its own line segments. */
+.mlrt-table-selection-overlay {
   position: absolute;
-  z-index: 5;
-  box-sizing: border-box;
-  border: 1px solid var(--mlrt-selection-edge);
+  /* Above ordinary cells, below the sticky line-number gutter and controls. */
+  z-index: 2;
+  display: block;
+  overflow: visible;
   pointer-events: none;
+}
+
+.mlrt-table-selection-grid,
+.mlrt-table-selection-frame {
+  fill: none;
+  stroke-width: 1;
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+}
+
+.mlrt-table-selection-grid {
+  stroke: var(--mlrt-selection-grid);
+}
+
+.mlrt-table-selection-frame {
+  stroke: var(--mlrt-selection-edge);
+}
+
+.mlrt-table-selection-overlay-cut-pending .mlrt-table-selection-frame {
+  stroke-dasharray: 4 3;
 }
 
 .mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-cell-selected {
@@ -328,7 +376,19 @@ body,
   );
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-cell-selected::before {
+.mlrt-table-cut-source-pending .mlrt-table-cell.mlrt-table-cut-source {
+  position: relative;
+  background: var(
+    --vscode-list-inactiveSelectionBackground,
+    rgba(55, 80, 120, 0.35)
+  );
+}
+
+/* While the active selection is still the cut source, its SVG already owns
+   the dashed frame. Moving to a destination drops table-cut-pending, at which
+   point these source-cell edges keep the original range visible. */
+.mlrt-table-cut-source-pending:not(.mlrt-table-cut-pending)
+  .mlrt-table-cell.mlrt-table-cut-source::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -337,25 +397,37 @@ body,
   pointer-events: none;
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-top::before {
+.mlrt-table-cut-source-pending:not(.mlrt-table-cut-pending)
+  .mlrt-table-cell.mlrt-table-cut-source-top:not(
+    .mlrt-table-selection-top
+  )::before {
   border-top: 1px dashed var(--mlrt-selection-edge);
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-right::before {
+.mlrt-table-cut-source-pending:not(.mlrt-table-cut-pending)
+  .mlrt-table-cell.mlrt-table-cut-source-right:not(
+    .mlrt-table-selection-right
+  )::before {
   border-right: 1px dashed var(--mlrt-selection-edge);
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-bottom::before {
+.mlrt-table-cut-source-pending:not(.mlrt-table-cut-pending)
+  .mlrt-table-cell.mlrt-table-cut-source-bottom:not(
+    .mlrt-table-selection-bottom
+  )::before {
   border-bottom: 1px dashed var(--mlrt-selection-edge);
 }
 
-.mlrt-table-cut-pending .mlrt-table-cell.mlrt-table-selection-left::before {
+.mlrt-table-cut-source-pending:not(.mlrt-table-cut-pending)
+  .mlrt-table-cell.mlrt-table-cut-source-left:not(
+    .mlrt-table-selection-left
+  )::before {
   border-left: 1px dashed var(--mlrt-selection-edge);
 }
 
 .mlrt-clipboard-menu {
   position: absolute;
-  z-index: 60;
+  z-index: 10000;
   min-width: 218px;
   max-height: min(430px, 80vh);
   overflow: auto;

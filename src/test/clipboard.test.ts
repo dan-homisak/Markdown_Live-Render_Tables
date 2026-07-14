@@ -49,6 +49,37 @@ assert.equal(
   "ragged private grids are rejected",
 );
 
+const unsafeRawPayload = validateClipboardPayload({
+  version: MLRT_CLIPBOARD_VERSION,
+  kind: "grid",
+  sourceDocument: "file:///fixture.md",
+  rows: [
+    [
+      {
+        text: "safe display\n# not a table row",
+        markdown: " safe display\n# not a table row ",
+      },
+    ],
+  ],
+  alignments: ["left"],
+  includesHeader: false,
+});
+assert.ok(unsafeRawPayload?.kind === "grid");
+assert.deepEqual(
+  unsafeRawPayload.rows[0][0],
+  { text: "safe display\n# not a table row" },
+  "private cells discard raw Markdown containing a line break",
+);
+const unsafeRawPasteEdit = buildGridPasteEdit(table, {
+  rows: unsafeRawPayload.rows,
+  destination: { top: 1, bottom: 1, left: 0, right: 0 },
+});
+assert.doesNotMatch(unsafeRawPasteEdit.insert, /\n# not a table row/);
+const tableAfterUnsafeRawPaste = parseMarkdownTables(unsafeRawPasteEdit.insert);
+assert.equal(tableAfterUnsafeRawPaste.length, 1);
+assert.equal(tableAfterUnsafeRawPaste[0].columnCount, table.columnCount);
+assert.equal(tableAfterUnsafeRawPaste[0].body.length, table.body.length);
+
 const delimitedRows = [
   ["plain", "tab\tinside", "quote \"inside\""],
   ["line\none", "😀", ""],

@@ -2965,8 +2965,8 @@
         return _RangeSet.empty;
       let result = sets[sets.length - 1];
       for (let i2 = sets.length - 2; i2 >= 0; i2--) {
-        for (let layer = sets[i2]; layer != _RangeSet.empty; layer = layer.nextLayer)
-          result = new _RangeSet(layer.chunkPos, layer.chunk, result, Math.max(layer.maxPoint, result.maxPoint));
+        for (let layer2 = sets[i2]; layer2 != _RangeSet.empty; layer2 = layer2.nextLayer)
+          result = new _RangeSet(layer2.chunkPos, layer2.chunk, result, Math.max(layer2.maxPoint, result.maxPoint));
       }
       return result;
     }
@@ -3097,8 +3097,8 @@
     return shared;
   }
   var LayerCursor = class {
-    constructor(layer, skip, minPoint, rank = 0) {
-      this.layer = layer;
+    constructor(layer2, skip, minPoint, rank = 0) {
+      this.layer = layer2;
       this.skip = skip;
       this.minPoint = minPoint;
       this.rank = rank;
@@ -12004,6 +12004,333 @@
     currentKeyEvent = null;
     return handled;
   }
+  var RectangleMarker = class _RectangleMarker {
+    /**
+    Create a marker with the given class and dimensions. If `width`
+    is null, the DOM element will get no width style.
+    */
+    constructor(className, left, top2, width, height) {
+      this.className = className;
+      this.left = left;
+      this.top = top2;
+      this.width = width;
+      this.height = height;
+    }
+    draw() {
+      let elt2 = document.createElement("div");
+      elt2.className = this.className;
+      this.adjust(elt2);
+      return elt2;
+    }
+    update(elt2, prev) {
+      if (prev.className != this.className)
+        return false;
+      this.adjust(elt2);
+      return true;
+    }
+    adjust(elt2) {
+      elt2.style.left = this.left + "px";
+      elt2.style.top = this.top + "px";
+      if (this.width != null)
+        elt2.style.width = this.width + "px";
+      elt2.style.height = this.height + "px";
+    }
+    eq(p) {
+      return this.left == p.left && this.top == p.top && this.width == p.width && this.height == p.height && this.className == p.className;
+    }
+    /**
+    Create a set of rectangles for the given selection range,
+    assigning them theclass`className`. Will create a single
+    rectangle for empty ranges, and a set of selection-style
+    rectangles covering the range's content (in a bidi-aware
+    way) for non-empty ones.
+    */
+    static forRange(view2, className, range) {
+      if (range.empty) {
+        let pos = view2.coordsAtPos(range.head, range.assoc || 1);
+        if (!pos)
+          return [];
+        let base3 = getBase(view2);
+        return [new _RectangleMarker(className, pos.left - base3.left, pos.top - base3.top, null, pos.bottom - pos.top)];
+      } else {
+        return rectanglesForRange(view2, className, range);
+      }
+    }
+  };
+  function getBase(view2) {
+    let rect = view2.scrollDOM.getBoundingClientRect();
+    let left = view2.textDirection == Direction.LTR ? rect.left : rect.right - view2.scrollDOM.clientWidth * view2.scaleX;
+    return { left: left - view2.scrollDOM.scrollLeft * view2.scaleX, top: rect.top - view2.scrollDOM.scrollTop * view2.scaleY };
+  }
+  function wrappedLine(view2, pos, side, inside) {
+    let coords = view2.coordsAtPos(pos, side * 2);
+    if (!coords)
+      return inside;
+    let editorRect = view2.dom.getBoundingClientRect();
+    let y = (coords.top + coords.bottom) / 2;
+    let left = view2.posAtCoords({ x: editorRect.left + 1, y });
+    let right = view2.posAtCoords({ x: editorRect.right - 1, y });
+    if (left == null || right == null)
+      return inside;
+    return { from: Math.max(inside.from, Math.min(left, right)), to: Math.min(inside.to, Math.max(left, right)) };
+  }
+  function rectanglesForRange(view2, className, range) {
+    if (range.to <= view2.viewport.from || range.from >= view2.viewport.to)
+      return [];
+    let from = Math.max(range.from, view2.viewport.from), to = Math.min(range.to, view2.viewport.to);
+    let ltr = view2.textDirection == Direction.LTR;
+    let content2 = view2.contentDOM, contentRect = content2.getBoundingClientRect(), base3 = getBase(view2);
+    let lineElt = content2.querySelector(".cm-line"), lineStyle = lineElt && window.getComputedStyle(lineElt);
+    let leftSide = contentRect.left + (lineStyle ? parseInt(lineStyle.paddingLeft) + Math.min(0, parseInt(lineStyle.textIndent)) : 0);
+    let rightSide = contentRect.right - (lineStyle ? parseInt(lineStyle.paddingRight) : 0);
+    let startBlock = blockAt(view2, from, 1), endBlock = blockAt(view2, to, -1);
+    let visualStart = startBlock.type == BlockType.Text ? startBlock : null;
+    let visualEnd = endBlock.type == BlockType.Text ? endBlock : null;
+    if (visualStart && (view2.lineWrapping || startBlock.widgetLineBreaks))
+      visualStart = wrappedLine(view2, from, 1, visualStart);
+    if (visualEnd && (view2.lineWrapping || endBlock.widgetLineBreaks))
+      visualEnd = wrappedLine(view2, to, -1, visualEnd);
+    if (visualStart && visualEnd && visualStart.from == visualEnd.from && visualStart.to == visualEnd.to) {
+      return pieces(drawForLine(range.from, range.to, visualStart));
+    } else {
+      let top2 = visualStart ? drawForLine(range.from, null, visualStart) : drawForWidget(startBlock, false);
+      let bottom = visualEnd ? drawForLine(null, range.to, visualEnd) : drawForWidget(endBlock, true);
+      let between = [];
+      if ((visualStart || startBlock).to < (visualEnd || endBlock).from - (visualStart && visualEnd ? 1 : 0) || startBlock.widgetLineBreaks > 1 && top2.bottom + view2.defaultLineHeight / 2 < bottom.top)
+        between.push(piece(leftSide, top2.bottom, rightSide, bottom.top));
+      else if (top2.bottom < bottom.top && view2.elementAtHeight((top2.bottom + bottom.top) / 2).type == BlockType.Text)
+        top2.bottom = bottom.top = (top2.bottom + bottom.top) / 2;
+      return pieces(top2).concat(between).concat(pieces(bottom));
+    }
+    function piece(left, top2, right, bottom) {
+      return new RectangleMarker(className, left - base3.left, top2 - base3.top, Math.max(0, right - left), bottom - top2);
+    }
+    function pieces({ top: top2, bottom, horizontal }) {
+      let pieces2 = [];
+      for (let i2 = 0; i2 < horizontal.length; i2 += 2)
+        pieces2.push(piece(horizontal[i2], top2, horizontal[i2 + 1], bottom));
+      return pieces2;
+    }
+    function drawForLine(from2, to2, line) {
+      let top2 = 1e9, bottom = -1e9, horizontal = [];
+      function addSpan(from3, fromOpen, to3, toOpen, dir) {
+        let fromCoords = view2.coordsAtPos(from3, from3 == line.to ? -2 : 2);
+        let toCoords = view2.coordsAtPos(to3, to3 == line.from ? 2 : -2);
+        if (!fromCoords || !toCoords)
+          return;
+        top2 = Math.min(fromCoords.top, toCoords.top, top2);
+        bottom = Math.max(fromCoords.bottom, toCoords.bottom, bottom);
+        if (dir == Direction.LTR)
+          horizontal.push(ltr && fromOpen ? leftSide : fromCoords.left, ltr && toOpen ? rightSide : toCoords.right);
+        else
+          horizontal.push(!ltr && toOpen ? leftSide : toCoords.left, !ltr && fromOpen ? rightSide : fromCoords.right);
+      }
+      let start = from2 !== null && from2 !== void 0 ? from2 : line.from, end = to2 !== null && to2 !== void 0 ? to2 : line.to;
+      for (let r of view2.visibleRanges)
+        if (r.to > start && r.from < end) {
+          for (let pos = Math.max(r.from, start), endPos = Math.min(r.to, end); ; ) {
+            let docLine = view2.state.doc.lineAt(pos);
+            for (let span of view2.bidiSpans(docLine)) {
+              let spanFrom = span.from + docLine.from, spanTo = span.to + docLine.from;
+              if (spanFrom >= endPos)
+                break;
+              if (spanTo > pos)
+                addSpan(Math.max(spanFrom, pos), from2 == null && spanFrom <= start, Math.min(spanTo, endPos), to2 == null && spanTo >= end, span.dir);
+            }
+            pos = docLine.to + 1;
+            if (pos >= endPos)
+              break;
+          }
+        }
+      if (horizontal.length == 0)
+        addSpan(start, from2 == null, end, to2 == null, view2.textDirection);
+      return { top: top2, bottom, horizontal };
+    }
+    function drawForWidget(block2, top2) {
+      let y = contentRect.top + (top2 ? block2.top : block2.bottom);
+      return { top: y, bottom: y, horizontal: [] };
+    }
+  }
+  function sameMarker(a, b) {
+    return a.constructor == b.constructor && a.eq(b);
+  }
+  var LayerView = class {
+    constructor(view2, layer2) {
+      this.view = view2;
+      this.layer = layer2;
+      this.drawn = [];
+      this.scaleX = 1;
+      this.scaleY = 1;
+      this.measureReq = { read: this.measure.bind(this), write: this.draw.bind(this) };
+      this.dom = view2.scrollDOM.appendChild(document.createElement("div"));
+      this.dom.classList.add("cm-layer");
+      if (layer2.above)
+        this.dom.classList.add("cm-layer-above");
+      if (layer2.class)
+        this.dom.classList.add(layer2.class);
+      this.scale();
+      this.dom.setAttribute("aria-hidden", "true");
+      this.setOrder(view2.state);
+      view2.requestMeasure(this.measureReq);
+      if (layer2.mount)
+        layer2.mount(this.dom, view2);
+    }
+    update(update) {
+      if (update.startState.facet(layerOrder) != update.state.facet(layerOrder))
+        this.setOrder(update.state);
+      if (this.layer.update(update, this.dom) || update.geometryChanged) {
+        this.scale();
+        update.view.requestMeasure(this.measureReq);
+      }
+    }
+    docViewUpdate(view2) {
+      if (this.layer.updateOnDocViewUpdate !== false)
+        view2.requestMeasure(this.measureReq);
+    }
+    setOrder(state) {
+      let pos = 0, order = state.facet(layerOrder);
+      while (pos < order.length && order[pos] != this.layer)
+        pos++;
+      this.dom.style.zIndex = String((this.layer.above ? 150 : -1) - pos);
+    }
+    measure() {
+      return this.layer.markers(this.view);
+    }
+    scale() {
+      let { scaleX, scaleY } = this.view;
+      if (scaleX != this.scaleX || scaleY != this.scaleY) {
+        this.scaleX = scaleX;
+        this.scaleY = scaleY;
+        this.dom.style.transform = `scale(${1 / scaleX}, ${1 / scaleY})`;
+      }
+    }
+    draw(markers) {
+      if (markers.length != this.drawn.length || markers.some((p, i2) => !sameMarker(p, this.drawn[i2]))) {
+        let old = this.dom.firstChild, oldI = 0;
+        for (let marker of markers) {
+          if (marker.update && old && marker.constructor && this.drawn[oldI].constructor && marker.update(old, this.drawn[oldI])) {
+            old = old.nextSibling;
+            oldI++;
+          } else {
+            this.dom.insertBefore(marker.draw(), old);
+          }
+        }
+        while (old) {
+          let next2 = old.nextSibling;
+          old.remove();
+          old = next2;
+        }
+        this.drawn = markers;
+        if (browser.webkit)
+          this.dom.style.display = this.dom.firstChild ? "" : "none";
+      }
+    }
+    destroy() {
+      if (this.layer.destroy)
+        this.layer.destroy(this.dom, this.view);
+      this.dom.remove();
+    }
+  };
+  var layerOrder = /* @__PURE__ */ Facet.define();
+  function layer(config2) {
+    return [
+      ViewPlugin.define((v) => new LayerView(v, config2)),
+      layerOrder.of(config2)
+    ];
+  }
+  var selectionConfig = /* @__PURE__ */ Facet.define({
+    combine(configs) {
+      return combineConfig(configs, {
+        cursorBlinkRate: 1200,
+        drawRangeCursor: true,
+        iosSelectionHandles: true
+      }, {
+        cursorBlinkRate: (a, b) => Math.min(a, b),
+        drawRangeCursor: (a, b) => a || b
+      });
+    }
+  });
+  function drawSelection(config2 = {}) {
+    return [
+      selectionConfig.of(config2),
+      cursorLayer,
+      selectionLayer,
+      hideNativeSelection,
+      nativeSelectionHidden.of(true)
+    ];
+  }
+  function configChanged(update) {
+    return update.startState.facet(selectionConfig) != update.state.facet(selectionConfig);
+  }
+  var cursorLayer = /* @__PURE__ */ layer({
+    above: true,
+    markers(view2) {
+      let { state } = view2, conf = state.facet(selectionConfig);
+      let cursors = [];
+      for (let r of state.selection.ranges) {
+        let prim = r == state.selection.main;
+        if (r.empty || conf.drawRangeCursor && !(prim && browser.ios && conf.iosSelectionHandles)) {
+          let className = prim ? "cm-cursor cm-cursor-primary" : "cm-cursor cm-cursor-secondary";
+          let cursor = r.empty ? r : EditorSelection.cursor(r.head, r.assoc);
+          for (let piece of RectangleMarker.forRange(view2, className, cursor))
+            cursors.push(piece);
+        }
+      }
+      return cursors;
+    },
+    update(update, dom) {
+      if (update.transactions.some((tr) => tr.selection))
+        dom.style.animationName = dom.style.animationName == "cm-blink" ? "cm-blink2" : "cm-blink";
+      let confChange = configChanged(update);
+      if (confChange)
+        setBlinkRate(update.state, dom);
+      return update.docChanged || update.selectionSet || confChange;
+    },
+    mount(dom, view2) {
+      setBlinkRate(view2.state, dom);
+    },
+    class: "cm-cursorLayer"
+  });
+  function setBlinkRate(state, dom) {
+    dom.style.animationDuration = state.facet(selectionConfig).cursorBlinkRate + "ms";
+  }
+  var selectionLayer = /* @__PURE__ */ layer({
+    above: false,
+    markers(view2) {
+      let markers = [], { main, ranges } = view2.state.selection;
+      for (let r of ranges)
+        if (!r.empty) {
+          for (let marker of RectangleMarker.forRange(view2, "cm-selectionBackground", r))
+            markers.push(marker);
+        }
+      if (browser.ios && !main.empty && view2.state.facet(selectionConfig).iosSelectionHandles) {
+        for (let piece of RectangleMarker.forRange(view2, "cm-selectionHandle cm-selectionHandle-start", EditorSelection.cursor(main.from, 1)))
+          markers.push(piece);
+        for (let piece of RectangleMarker.forRange(view2, "cm-selectionHandle cm-selectionHandle-end", EditorSelection.cursor(main.to, 1)))
+          markers.push(piece);
+      }
+      return markers;
+    },
+    update(update, dom) {
+      return update.docChanged || update.selectionSet || update.viewportChanged || configChanged(update);
+    },
+    class: "cm-selectionLayer"
+  });
+  var hideNativeSelection = /* @__PURE__ */ Prec.highest(/* @__PURE__ */ EditorView.theme({
+    ".cm-line": {
+      "& ::selection, &::selection": { backgroundColor: "transparent !important" },
+      caretColor: "transparent !important"
+    },
+    ".cm-content": {
+      caretColor: "transparent !important",
+      "& :focus": {
+        caretColor: "initial !important",
+        "&::selection, & ::selection": {
+          backgroundColor: "Highlight !important"
+        }
+      }
+    }
+  }));
   var UnicodeRegexpSupport = /x/.unicode != null ? "gu" : "g";
   function highlightActiveLine() {
     return activeLineHighlighter;
@@ -24067,340 +24394,6 @@
   var tableCellCommitSequenceAnnotation = Annotation.define();
   var tableCellLiveEditAnnotation = Annotation.define();
 
-  // src/shared/clipboardModel.ts
-  var MLRT_CLIPBOARD_MIME = "application/x-markdown-live-editor+json";
-  var MLRT_CLIPBOARD_VERSION = 1;
-  var VALID_ALIGNMENTS = /* @__PURE__ */ new Set([
-    "left",
-    "center",
-    "right"
-  ]);
-  function normalizeCellText(value) {
-    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
-  }
-  function validateClipboardPayload(value) {
-    if (!isRecord(value) || value.version !== MLRT_CLIPBOARD_VERSION) {
-      return null;
-    }
-    if (typeof value.sourceDocument !== "string") {
-      return null;
-    }
-    const cutToken = value.cutToken === void 0 || typeof value.cutToken === "string" ? value.cutToken : null;
-    if (cutToken === null) {
-      return null;
-    }
-    if (value.kind === "document") {
-      if (typeof value.markdown !== "string") {
-        return null;
-      }
-      return {
-        version: MLRT_CLIPBOARD_VERSION,
-        kind: "document",
-        sourceDocument: value.sourceDocument,
-        markdown: normalizeCellText(value.markdown),
-        ...cutToken ? { cutToken } : {}
-      };
-    }
-    if (value.kind !== "grid" || !Array.isArray(value.rows) || value.rows.length === 0 || !Array.isArray(value.alignments) || typeof value.includesHeader !== "boolean" || value.exactMarkdown !== void 0 && typeof value.exactMarkdown !== "string") {
-      return null;
-    }
-    const width = Array.isArray(value.rows[0]) ? value.rows[0].length : 0;
-    if (width === 0) {
-      return null;
-    }
-    const rows = [];
-    for (const candidateRow of value.rows) {
-      if (!Array.isArray(candidateRow) || candidateRow.length !== width) {
-        return null;
-      }
-      const row = [];
-      for (const candidateCell of candidateRow) {
-        if (!isRecord(candidateCell) || typeof candidateCell.text !== "string" || candidateCell.markdown !== void 0 && typeof candidateCell.markdown !== "string") {
-          return null;
-        }
-        const text3 = normalizeCellText(candidateCell.text);
-        const markdown2 = candidateCell.markdown;
-        row.push({
-          text: text3,
-          ...typeof markdown2 === "string" && isSafeRawCellSource(markdown2, text3) ? { markdown: markdown2 } : {}
-        });
-      }
-      rows.push(row);
-    }
-    const alignments = [];
-    for (let column = 0; column < width; column++) {
-      const alignment = value.alignments[column];
-      alignments.push(
-        typeof alignment === "string" && VALID_ALIGNMENTS.has(alignment) ? alignment : "left"
-      );
-    }
-    return {
-      version: MLRT_CLIPBOARD_VERSION,
-      kind: "grid",
-      sourceDocument: value.sourceDocument,
-      rows,
-      alignments,
-      includesHeader: value.includesHeader,
-      ...typeof value.exactMarkdown === "string" ? { exactMarkdown: normalizeCellText(value.exactMarkdown) } : {},
-      ...cutToken ? { cutToken } : {}
-    };
-  }
-  function parseClipboardPayload(text3) {
-    try {
-      return validateClipboardPayload(JSON.parse(text3));
-    } catch {
-      return null;
-    }
-  }
-  function serializeDelimitedGrid(rows, delimiter2) {
-    return rows.map((row) => row.map((value) => quoteDelimited(value, delimiter2)).join(delimiter2)).join("\r\n");
-  }
-  function parseDelimitedGrid(input, delimiter2) {
-    const text3 = normalizeCellText(input);
-    const rows = [];
-    let row = [];
-    let field = "";
-    let quoted = false;
-    for (let index = 0; index < text3.length; index++) {
-      const character = text3[index];
-      if (quoted) {
-        if (character === '"') {
-          if (text3[index + 1] === '"') {
-            field += '"';
-            index++;
-          } else {
-            quoted = false;
-          }
-        } else {
-          field += character;
-        }
-        continue;
-      }
-      if (character === '"' && field.length === 0) {
-        quoted = true;
-        continue;
-      }
-      if (character === delimiter2) {
-        row.push(field);
-        field = "";
-        continue;
-      }
-      if (character === "\n") {
-        row.push(field);
-        rows.push(row);
-        row = [];
-        field = "";
-        continue;
-      }
-      field += character;
-    }
-    if (quoted) {
-      return null;
-    }
-    row.push(field);
-    rows.push(row);
-    if (rows.length > 1 && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "" && text3.endsWith("\n")) {
-      rows.pop();
-    }
-    const width = Math.max(...rows.map((candidate) => candidate.length));
-    return rows.map((candidate) => [
-      ...candidate,
-      ...Array.from({ length: width - candidate.length }, () => "")
-    ]);
-  }
-  function gridToMarkdown(rows, alignments = []) {
-    if (rows.length === 0 || rows[0].length === 0) {
-      return "";
-    }
-    const width = rows[0].length;
-    const sourceRows = rows.map(
-      (row) => `|${Array.from(
-        { length: width },
-        (_, column) => sourceCellForMarkdown(row[column])
-      ).join("|")}|`
-    );
-    const delimiter2 = `|${Array.from(
-      { length: width },
-      (_, column) => alignmentDelimiter(alignments[column] ?? "left")
-    ).join("|")}|`;
-    return [sourceRows[0], delimiter2, ...sourceRows.slice(1)].join("\n");
-  }
-  function gridToHtml(rows, options = {}) {
-    const alignments = options.alignments ?? [];
-    const metadata = options.embeddedPayload ? `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute(options.embeddedPayload)}">` : "";
-    const body = rows.map((row, rowIndex) => {
-      const tagName = rowIndex === 0 && options.headerRow !== false ? "th" : "td";
-      return `<tr>${row.map((cell2, column) => {
-        const alignment = alignments[column] ?? "left";
-        const style = `text-align:${alignment};border:1px solid #000000;padding:2px 6px;vertical-align:top;white-space:pre-wrap`;
-        const content2 = options.rich && options.richCells?.[rowIndex]?.[column] !== void 0 ? options.richCells[rowIndex][column] : cellTextToHtml(cell2.text);
-        return `<${tagName} style="${style}">${content2}</${tagName}>`;
-      }).join("")}</tr>`;
-    }).join("");
-    return `${metadata}<table style="border-collapse:collapse">${body}</table>`;
-  }
-  function tableRectanglePayload(table2, rectangle, sourceDocument, cutToken) {
-    const rows = tableDataRows(table2);
-    const selected = rows.slice(rectangle.top, rectangle.bottom + 1).map((row) => row.slice(rectangle.left, rectangle.right + 1));
-    const fullTable = rectangle.top === 0 && rectangle.bottom === rows.length - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1;
-    return {
-      version: MLRT_CLIPBOARD_VERSION,
-      kind: "grid",
-      sourceDocument,
-      rows: selected,
-      alignments: table2.alignments.slice(rectangle.left, rectangle.right + 1),
-      includesHeader: rectangle.top === 0,
-      ...fullTable ? { exactMarkdown: tableSourceText(table2) } : {},
-      ...cutToken ? { cutToken } : {}
-    };
-  }
-  function resolveGridPasteRows(source, destination) {
-    if (source.length === 0 || source[0]?.length === 0) {
-      return null;
-    }
-    const sourceHeight = source.length;
-    const sourceWidth = source[0].length;
-    if (source.some((row) => row.length !== sourceWidth)) {
-      return null;
-    }
-    const destinationHeight = destination.bottom - destination.top + 1;
-    const destinationWidth = destination.right - destination.left + 1;
-    const isSingleAnchor = destinationHeight === 1 && destinationWidth === 1;
-    if (isSingleAnchor) {
-      return source.map((row) => row.map(cloneCell));
-    }
-    if (destinationHeight % sourceHeight !== 0 || destinationWidth % sourceWidth !== 0) {
-      return null;
-    }
-    return Array.from(
-      { length: destinationHeight },
-      (_, row) => Array.from(
-        { length: destinationWidth },
-        (_2, column) => cloneCell(source[row % sourceHeight][column % sourceWidth])
-      )
-    );
-  }
-  function buildGridPasteEdit(table2, plan) {
-    const sourceHeight = plan.rows.length;
-    const sourceWidth = plan.rows[0]?.length ?? 0;
-    const requiredRows = Math.max(
-      table2.body.length + 1,
-      plan.destination.top + sourceHeight
-    );
-    const requiredColumns = Math.max(
-      table2.columnCount,
-      plan.destination.left + sourceWidth
-    );
-    const dataRows = [table2.header, ...table2.body];
-    const rawRows = Array.from(
-      { length: requiredRows },
-      (_, rowIndex) => Array.from(
-        { length: requiredColumns },
-        (_2, column) => existingRawCell(dataRows[rowIndex], column)
-      )
-    );
-    for (let row = 0; row < sourceHeight; row++) {
-      for (let column = 0; column < sourceWidth; column++) {
-        const targetRow = plan.destination.top + row;
-        const targetColumn = plan.destination.left + column;
-        const sourceCell = plan.rows[row][column];
-        const existingRaw = rawRows[targetRow][targetColumn];
-        rawRows[targetRow][targetColumn] = sourceCell.markdown ?? formatDisplayCellForDestination(sourceCell.text, existingRaw);
-      }
-    }
-    const delimiterRaw = Array.from({ length: requiredColumns }, (_, column) => {
-      if (column < table2.columnCount) {
-        return table2.delimiter.cells[column]?.raw ?? " --- ";
-      }
-      const sourceColumn = column - plan.destination.left;
-      const alignment = plan.sourceAlignments?.[sourceColumn] ?? "left";
-      return alignmentDelimiter(alignment);
-    });
-    const lines = [rawRows[0], delimiterRaw, ...rawRows.slice(1)].map(
-      (rawCells) => `|${rawCells.join("|")}|`
-    );
-    return {
-      from: table2.from,
-      to: table2.to,
-      insert: lines.join(tableLineSeparator(table2))
-    };
-  }
-  function buildGridClearEdit(table2, rectangle) {
-    const rows = Array.from(
-      { length: rectangle.bottom - rectangle.top + 1 },
-      () => Array.from(
-        { length: rectangle.right - rectangle.left + 1 },
-        () => ({ text: "" })
-      )
-    );
-    return buildGridPasteEdit(table2, { rows, destination: rectangle });
-  }
-  function tableDataRows(table2) {
-    return [table2.header, ...table2.body].map(
-      (row) => Array.from({ length: table2.columnCount }, (_, column) => ({
-        text: markdownCellToDisplayText(row.cells[column]?.raw ?? ""),
-        markdown: row.cells[column]?.raw ?? "  "
-      }))
-    );
-  }
-  function tableSourceText(table2) {
-    return [table2.header, table2.delimiter, ...table2.body].map((row) => row.text).join(tableLineSeparator(table2));
-  }
-  function existingRawCell(row, column) {
-    return row?.cells[column]?.raw ?? "  ";
-  }
-  function formatDisplayCellForDestination(text3, raw) {
-    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(raw);
-    const leading = leadingWhitespace || " ";
-    const trailing = trailingWhitespace || " ";
-    return `${leading}${formatMarkdownCell(normalizeCellText(text3), {
-      trim: false
-    })}${trailing}`;
-  }
-  function sourceCellForMarkdown(cell2) {
-    if (cell2?.markdown && isSafeRawCellSource(cell2.markdown, cell2.text)) {
-      return cell2.markdown;
-    }
-    return ` ${formatMarkdownCell(cell2?.text ?? "", { trim: false })} `;
-  }
-  function isSafeRawCellSource(raw, text3) {
-    return !raw.includes("|") && markdownCellToDisplayText(raw) === text3;
-  }
-  function alignmentDelimiter(alignment) {
-    if (alignment === "center") {
-      return " :---: ";
-    }
-    if (alignment === "right") {
-      return " ---: ";
-    }
-    return " --- ";
-  }
-  function tableLineSeparator(table2) {
-    return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
-  }
-  function quoteDelimited(value, delimiter2) {
-    const normalized = normalizeCellText(value);
-    if (normalized.includes(delimiter2) || normalized.includes('"') || normalized.includes("\n")) {
-      return `"${normalized.replace(/"/g, '""')}"`;
-    }
-    return normalized;
-  }
-  function cellTextToHtml(value) {
-    return escapeHtml(normalizeCellText(value)).replace(/\n/g, "<br>");
-  }
-  function escapeHtml(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-  function escapeHtmlAttribute(value) {
-    return escapeHtml(value).replace(/\r?\n/g, "&#10;");
-  }
-  function cloneCell(cell2) {
-    return { text: cell2.text, ...cell2.markdown ? { markdown: cell2.markdown } : {} };
-  }
-  function isRecord(value) {
-    return Boolean(value) && typeof value === "object";
-  }
-
   // src/editor/table/cellSelection.ts
   var TABLE_CELL_SELECTOR = ".mlrt-table-cell";
   function findCell(target) {
@@ -24633,594 +24626,16 @@
     return null;
   }
 
-  // src/editor/table/tableRangeSelection.ts
-  var TABLE_SELECTION_CHANGE_EVENT = "mlrt:table-selection-change";
-  var TABLE_SELECTION_CLEAR_EVENT = "mlrt:table-selection-clear";
-  var states = /* @__PURE__ */ new WeakMap();
-  function bindTableRangeSelection(wrapper, view2, table2) {
-    wrapper.tabIndex = -1;
-    let suppressNativeMouseDrag = false;
-    let lastDocumentDragRange = null;
-    const onPointerDown = (event) => {
-      const cell2 = findCell(event.target);
-      if (!cell2 || !wrapper.contains(cell2)) {
-        return;
-      }
-      if (event.button !== 0) {
-        if (event.button === 2) {
-          event.preventDefault();
-        }
-        return;
-      }
-      const address = addressFromCell(cell2);
-      if (!address) {
-        return;
-      }
-      const state = stateFor(wrapper.ownerDocument);
-      if (event.shiftKey) {
-        const current = getTableRangeSelection(wrapper.ownerDocument);
-        const focusedCell = findCell(wrapper.ownerDocument.activeElement);
-        const focusedAddress = focusedCell && wrapper.contains(focusedCell) ? addressFromCell(focusedCell) : null;
-        const anchor = current?.wrapper === wrapper ? current.anchor : focusedAddress ?? address;
-        event.preventDefault();
-        setTableRangeSelection(wrapper, table2.from, anchor, address, true);
-        return;
-      }
-      state.pointerAnchor = address;
-      state.pointerId = event.pointerId;
-      state.pointerCrossedCells = false;
-      suppressNativeMouseDrag = false;
-      lastDocumentDragRange = null;
-      wrapper.ownerDocument.addEventListener("pointermove", onPointerMove, true);
-      wrapper.ownerDocument.addEventListener("pointerup", onPointerUp, true);
-      wrapper.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
-      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
-      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
-      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
-      if (state.selection?.wrapper === wrapper) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const updateDragSelection = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if ("pointerId" in event && state.pointerId !== -1 && state.pointerId !== event.pointerId || !state.pointerAnchor || (event.buttons & 1) === 0) {
-        return;
-      }
-      const target = wrapper.ownerDocument.elementFromPoint(
-        event.clientX,
-        event.clientY
-      );
-      const cell2 = findCell(target);
-      if (cell2 && wrapper.contains(cell2)) {
-        const address = addressFromCell(cell2);
-        if (!address || sameAddress(address, state.pointerAnchor)) {
-          return;
-        }
-        state.pointerCrossedCells = true;
-        suppressNativeMouseDrag = true;
-        event.preventDefault();
-        setTableRangeSelection(
-          wrapper,
-          table2.from,
-          state.pointerAnchor,
-          address,
-          true
-        );
-        return;
-      }
-      if (target && wrapper.contains(target)) {
-        return;
-      }
-      let documentPosition = view2.posAtCoords({
-        x: event.clientX,
-        y: event.clientY
-      });
-      const wrapperRect = wrapper.getBoundingClientRect();
-      if (documentPosition === null) {
-        documentPosition = event.clientY < wrapperRect.top ? 0 : view2.state.doc.length;
-      }
-      const tableFrom = Number(wrapper.dataset.srcFrom ?? table2.from);
-      const parsedTables = getParsedTables(view2.state.doc);
-      const currentTable = parsedTables.find(
-        (candidate) => candidate.from === tableFrom
-      );
-      const tableTo = currentTable?.to ?? tableFrom + (table2.to - table2.from);
-      const targetWrapper = target instanceof Element ? target.closest(".mlrt-table-widget") : null;
-      if (targetWrapper && targetWrapper !== wrapper) {
-        const targetFrom = Number(targetWrapper.dataset.srcFrom ?? "-1");
-        const targetTable = parsedTables.find(
-          (candidate) => candidate.from === targetFrom
-        );
-        if (targetTable) {
-          documentPosition = targetFrom >= tableFrom ? targetTable.to : targetTable.from;
-        }
-      }
-      const movingBeforeTable = documentPosition <= tableFrom || event.clientY < wrapperRect.top;
-      const movingAfterTable = documentPosition >= tableTo || event.clientY > wrapperRect.bottom;
-      if (!movingBeforeTable && !movingAfterTable) {
-        return;
-      }
-      state.pointerCrossedCells = true;
-      suppressNativeMouseDrag = true;
-      event.preventDefault();
-      event.stopPropagation();
-      clearTableRangeSelection(wrapper.ownerDocument);
-      clearNativeSelection(wrapper.ownerDocument);
-      if (!view2.hasFocus) {
-        view2.focus();
-      }
-      lastDocumentDragRange = {
-        anchor: movingBeforeTable ? tableTo : tableFrom,
-        head: documentPosition
-      };
-      view2.dispatch({
-        selection: EditorSelection.range(
-          lastDocumentDragRange.anchor,
-          lastDocumentDragRange.head
-        ),
-        scrollIntoView: true
-      });
-    };
-    const onPointerMove = (event) => {
-      updateDragSelection(event);
-    };
-    const onPointerUp = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (state.pointerId !== event.pointerId) {
-        return;
-      }
-      state.pointerAnchor = null;
-      state.pointerId = null;
-      state.pointerCrossedCells = false;
-      queueMicrotask(restoreLastDocumentDragRange);
-      setTimeout(removeDocumentPointerListeners, 0);
-    };
-    const onMouseMove = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (state.pointerAnchor && (event.buttons & 1) !== 0) {
-        updateDragSelection(event);
-      }
-      if (suppressNativeMouseDrag) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    const onMouseUp = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (suppressNativeMouseDrag) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      if (state.pointerId === -1) {
-        state.pointerAnchor = null;
-        state.pointerId = null;
-        state.pointerCrossedCells = false;
-        setTimeout(removeDocumentPointerListeners, 0);
-      }
-      queueMicrotask(restoreLastDocumentDragRange);
-    };
-    const onClickAfterDrag = (event) => {
-      if (!suppressNativeMouseDrag) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      suppressNativeMouseDrag = false;
-    };
-    const restoreLastDocumentDragRange = () => {
-      if (!lastDocumentDragRange) {
-        return;
-      }
-      view2.dispatch({
-        selection: EditorSelection.range(
-          lastDocumentDragRange.anchor,
-          lastDocumentDragRange.head
-        )
-      });
-    };
-    const onMouseDown = (event) => {
-      const state = stateFor(wrapper.ownerDocument);
-      if (event.button !== 0 || state.pointerAnchor) {
-        return;
-      }
-      const cell2 = findCell(event.target);
-      const address = cell2 && wrapper.contains(cell2) ? addressFromCell(cell2) : null;
-      if (!address) {
-        return;
-      }
-      state.pointerAnchor = address;
-      state.pointerId = -1;
-      state.pointerCrossedCells = false;
-      suppressNativeMouseDrag = false;
-      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
-      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
-      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
-      if (state.selection?.wrapper === wrapper) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const removeDocumentPointerListeners = () => {
-      const finalRange = lastDocumentDragRange;
-      wrapper.ownerDocument.removeEventListener("pointermove", onPointerMove, true);
-      wrapper.ownerDocument.removeEventListener("pointerup", onPointerUp, true);
-      wrapper.ownerDocument.removeEventListener("pointercancel", onPointerUp, true);
-      wrapper.ownerDocument.removeEventListener("mousemove", onMouseMove, true);
-      wrapper.ownerDocument.removeEventListener("mouseup", onMouseUp, true);
-      wrapper.ownerDocument.removeEventListener("click", onClickAfterDrag, true);
-      suppressNativeMouseDrag = false;
-      lastDocumentDragRange = null;
-      if (finalRange) {
-        clearNativeSelection(wrapper.ownerDocument);
-        view2.dispatch({
-          selection: EditorSelection.range(finalRange.anchor, finalRange.head)
-        });
-      }
-    };
-    const onFocusIn = (event) => {
-      const cell2 = findCell(event.target);
-      if (cell2 && wrapper.contains(cell2)) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const onDocumentSelectionPointerDown = (event) => {
-      if (event.button !== 0) {
-        return;
-      }
-      const selection = getTableRangeSelection(wrapper.ownerDocument);
-      if (selection?.wrapper === wrapper && event.target instanceof Node && !wrapper.contains(event.target)) {
-        clearTableRangeSelection(wrapper.ownerDocument);
-      }
-    };
-    const onKeyDown = (event) => {
-      const activeCell = findCell(event.target);
-      if (activeCell && wrapper.contains(activeCell)) {
-        if (event.key === "Escape") {
-          const address = addressFromCell(activeCell);
-          if (!address) {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          activeCell.blur();
-          setTableRangeSelection(
-            wrapper,
-            Number(wrapper.dataset.srcFrom ?? table2.from),
-            address,
-            address,
-            true
-          );
-          return;
-        }
-        if (isSelectAll(event)) {
-          handleCellSelectAll(event, wrapper, table2, activeCell);
-        }
-        return;
-      }
-      const selection = getTableRangeSelection(wrapper.ownerDocument);
-      if (!selection || selection.wrapper !== wrapper) {
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (selection.pendingCutToken) {
-          setPendingCutToken(wrapper.ownerDocument, void 0);
-        } else {
-          clearTableRangeSelection(wrapper.ownerDocument);
-        }
-        return;
-      }
-      if (isSelectAll(event)) {
-        event.preventDefault();
-        event.stopPropagation();
-        const rectangle = selectionRectangle(selection);
-        const rowCount = table2.body.length + 1;
-        if (rectangle.top === 0 && rectangle.bottom === rowCount - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1) {
-          clearTableRangeSelection(wrapper.ownerDocument);
-          view2.focus();
-          view2.dispatch({
-            selection: EditorSelection.range(0, view2.state.doc.length),
-            scrollIntoView: true
-          });
-        } else {
-          setTableRangeSelection(
-            wrapper,
-            selection.tableFrom,
-            { row: 0, column: 0 },
-            { row: rowCount - 1, column: table2.columnCount - 1 },
-            true
-          );
-        }
-        return;
-      }
-      if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Tab") {
-        event.preventDefault();
-        event.stopPropagation();
-        const delta = keyDelta(event);
-        const nextHead = clampAddress(
-          {
-            row: selection.head.row + delta.row,
-            column: selection.head.column + delta.column
-          },
-          table2
-        );
-        const nextAnchor = event.shiftKey ? selection.anchor : nextHead;
-        setTableRangeSelection(
-          wrapper,
-          selection.tableFrom,
-          nextAnchor,
-          nextHead,
-          true
-        );
-        return;
-      }
-      if (event.key === "Enter" || event.key === "F2") {
-        event.preventDefault();
-        event.stopPropagation();
-        const target = cellFromAddress(wrapper, selection.head);
-        clearTableRangeSelection(wrapper.ownerDocument);
-        if (target) {
-          focusCellAtEnd(target);
-        }
-        return;
-      }
-      if (event.key === "Backspace" || event.key === "Delete") {
-        event.preventDefault();
-        event.stopPropagation();
-        wrapper.dispatchEvent(
-          new CustomEvent(TABLE_SELECTION_CLEAR_EVENT, { bubbles: true })
-        );
-        return;
-      }
-      if (isPrintableKey(event)) {
-        const target = cellFromAddress(wrapper, selection.head);
-        event.preventDefault();
-        event.stopPropagation();
-        clearTableRangeSelection(wrapper.ownerDocument);
-        if (target) {
-          target.focus();
-          const nativeSelection = wrapper.ownerDocument.defaultView?.getSelection();
-          const range = wrapper.ownerDocument.createRange();
-          range.selectNodeContents(target);
-          nativeSelection?.removeAllRanges();
-          nativeSelection?.addRange(range);
-          wrapper.ownerDocument.execCommand("insertText", false, event.key);
-        }
-      }
-    };
-    wrapper.addEventListener("pointerdown", onPointerDown);
-    wrapper.addEventListener("mousedown", onMouseDown);
-    wrapper.addEventListener("focusin", onFocusIn);
-    wrapper.addEventListener("keydown", onKeyDown);
-    wrapper.ownerDocument.addEventListener(
-      "pointerdown",
-      onDocumentSelectionPointerDown,
-      true
-    );
-    restoreSelectionClasses(wrapper);
-    return () => {
-      wrapper.removeEventListener("pointerdown", onPointerDown);
-      wrapper.removeEventListener("mousedown", onMouseDown);
-      removeDocumentPointerListeners();
-      wrapper.removeEventListener("focusin", onFocusIn);
-      wrapper.removeEventListener("keydown", onKeyDown);
-      wrapper.ownerDocument.removeEventListener(
-        "pointerdown",
-        onDocumentSelectionPointerDown,
-        true
-      );
-    };
-  }
-  function getTableRangeSelection(doc2) {
-    const state = states.get(doc2)?.selection ?? null;
-    if (state && !state.wrapper.isConnected) {
-      const replacement = Array.from(
-        doc2.querySelectorAll(".mlrt-table-widget")
-      ).find(
-        (candidate) => Number(candidate.dataset.srcFrom ?? "-1") === state.tableFrom
-      );
-      if (replacement) {
-        state.wrapper = replacement;
-        applySelectionClasses(state);
-        return state;
-      }
-      return null;
-    }
-    return state;
-  }
-  function setTableRangeSelection(wrapper, tableFrom, anchor, head, focusWrapper) {
-    const doc2 = wrapper.ownerDocument;
-    const state = stateFor(doc2);
-    if (state.selection?.wrapper !== wrapper) {
-      clearSelectionClasses(state.selection?.wrapper);
-    }
-    const selection = {
-      version: MLRT_CLIPBOARD_VERSION,
-      wrapper,
-      tableFrom,
-      anchor,
-      head
-    };
-    state.selection = selection;
-    applySelectionClasses(selection);
-    clearNativeSelection(doc2);
-    if (focusWrapper) {
-      wrapper.focus({ preventScroll: true });
-    }
-    dispatchSelectionChange(wrapper);
-    return selection;
-  }
-  function selectTableRow(wrapper, tableFrom, row, columnCount) {
-    setTableRangeSelection(
-      wrapper,
-      tableFrom,
-      { row, column: 0 },
-      { row, column: Math.max(0, columnCount - 1) },
-      true
-    );
-  }
-  function selectTableColumn(wrapper, tableFrom, column, rowCount) {
-    setTableRangeSelection(
-      wrapper,
-      tableFrom,
-      { row: 0, column },
-      { row: Math.max(0, rowCount - 1), column },
-      true
-    );
-  }
-  function selectionRectangle(selection) {
-    return {
-      top: Math.min(selection.anchor.row, selection.head.row),
-      bottom: Math.max(selection.anchor.row, selection.head.row),
-      left: Math.min(selection.anchor.column, selection.head.column),
-      right: Math.max(selection.anchor.column, selection.head.column)
-    };
-  }
-  function isCellInSelection(selection, address) {
-    const rectangle = selectionRectangle(selection);
-    return address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right;
-  }
-  function clearTableRangeSelection(doc2) {
-    const state = states.get(doc2);
-    if (!state?.selection) {
-      return;
-    }
-    const wrapper = state.selection.wrapper;
-    clearSelectionClasses(wrapper);
-    state.selection = null;
-    dispatchSelectionChange(wrapper);
-  }
-  function setPendingCutToken(doc2, token) {
-    const selection = getTableRangeSelection(doc2);
-    if (!selection) {
-      return;
-    }
-    selection.pendingCutToken = token;
-    applySelectionClasses(selection);
-    dispatchSelectionChange(selection.wrapper);
-  }
-  function ensureContextCellSelection(wrapper, tableFrom, cell2) {
-    const address = addressFromCell(cell2);
-    if (!address) {
-      return null;
-    }
-    const current = getTableRangeSelection(wrapper.ownerDocument);
-    if (current?.wrapper === wrapper && isCellInSelection(current, address)) {
-      return current;
-    }
-    return setTableRangeSelection(wrapper, tableFrom, address, address, false);
-  }
-  function addressFromCell(cell2) {
-    const rowKind = cell2.dataset.rowKind;
-    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
-    const column = Number(cell2.dataset.column ?? "0");
-    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
-      return null;
-    }
-    return { row: rowKind === "header" ? 0 : rowIndex + 1, column };
-  }
-  function cellFromAddress(wrapper, address) {
-    const rowKind = address.row === 0 ? "header" : "body";
-    const rowIndex = address.row === 0 ? 0 : address.row - 1;
-    return wrapper.querySelector(
-      `${TABLE_CELL_SELECTOR}[data-row-kind="${rowKind}"][data-row-index="${rowIndex}"][data-column="${address.column}"]`
-    );
-  }
-  function handleCellSelectAll(event, wrapper, table2, activeCell) {
-    const selection = wrapper.ownerDocument.defaultView?.getSelection();
-    const valueLength = readCellDisplayValue(activeCell).length;
-    const selectedLength = selection?.toString().replace(/\u00a0/g, " ").length ?? 0;
-    if (selectedLength < valueLength) {
-      event.preventDefault();
-      event.stopPropagation();
-      const range = wrapper.ownerDocument.createRange();
-      range.selectNodeContents(activeCell);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    activeCell.blur();
-    setTableRangeSelection(
-      wrapper,
-      Number(wrapper.dataset.srcFrom ?? table2.from),
-      { row: 0, column: 0 },
-      { row: table2.body.length, column: table2.columnCount - 1 },
-      true
-    );
-  }
-  function applySelectionClasses(selection) {
-    const rectangle = selectionRectangle(selection);
-    selection.wrapper.classList.add("mlrt-table-selection-mode");
-    selection.wrapper.classList.toggle(
-      "mlrt-table-cut-pending",
-      Boolean(selection.pendingCutToken)
-    );
-    selection.wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
-      const address = addressFromCell(cell2);
-      const selected = Boolean(
-        address && address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right
-      );
-      cell2.classList.toggle("mlrt-table-cell-selected", selected);
-      cell2.classList.toggle(
-        "mlrt-table-selection-top",
-        selected && Boolean(address && address.row === rectangle.top)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-selection-bottom",
-        selected && Boolean(address && address.row === rectangle.bottom)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-selection-left",
-        selected && Boolean(address && address.column === rectangle.left)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-selection-right",
-        selected && Boolean(address && address.column === rectangle.right)
-      );
-      cell2.classList.toggle(
-        "mlrt-table-cell-selection-head",
-        selected && Boolean(address && sameAddress(address, selection.head))
-      );
-      cell2.setAttribute("aria-selected", selected ? "true" : "false");
-    });
-    syncTableSelectionOutline(selection.wrapper);
-  }
-  function restoreSelectionClasses(wrapper) {
-    const selection = states.get(wrapper.ownerDocument)?.selection;
-    if (selection && selection.tableFrom === Number(wrapper.dataset.srcFrom ?? "-1")) {
-      selection.wrapper = wrapper;
-      applySelectionClasses(selection);
-    }
-  }
-  function clearSelectionClasses(wrapper) {
-    if (!wrapper) {
-      return;
-    }
-    wrapper.classList.remove(
-      "mlrt-table-selection-mode",
-      "mlrt-table-cut-pending"
-    );
-    wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
-      cell2.classList.remove(
-        "mlrt-table-cell-selected",
-        "mlrt-table-cell-selection-head",
-        "mlrt-table-selection-top",
-        "mlrt-table-selection-bottom",
-        "mlrt-table-selection-left",
-        "mlrt-table-selection-right"
-      );
-      cell2.removeAttribute("aria-selected");
-    });
-    syncTableSelectionOutline(wrapper);
-  }
-  function syncTableSelectionOutline(wrapper) {
+  // src/editor/table/tableSelectionOverlay.ts
+  var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  var OVERLAY_SELECTOR = ":scope > .mlrt-table-selection-overlay";
+  var LEGACY_OUTLINE_SELECTOR = ":scope > .mlrt-table-selection-outline";
+  var COORDINATE_TOLERANCE = 0.25;
+  function syncTableSelectionOverlay(wrapper) {
     const scroll = wrapper.querySelector(".mlrt-table-scroll");
-    const existing = scroll?.querySelector(
-      ":scope > .mlrt-table-selection-outline"
-    );
-    if (!scroll || wrapper.classList.contains("mlrt-table-cut-pending")) {
+    const existing = scroll?.querySelector(OVERLAY_SELECTOR);
+    scroll?.querySelector(LEGACY_OUTLINE_SELECTOR)?.remove();
+    if (!scroll) {
       existing?.remove();
       return;
     }
@@ -25233,71 +24648,112 @@
       existing?.remove();
       return;
     }
-    const scrollRect = scroll.getBoundingClientRect();
     const rectangles = selected.map((cell2) => cell2.getBoundingClientRect());
-    const left = Math.min(...rectangles.map((rect) => rect.left));
-    const top2 = Math.min(...rectangles.map((rect) => rect.top));
-    const right = Math.max(...rectangles.map((rect) => rect.right));
-    const bottom = Math.max(...rectangles.map((rect) => rect.bottom));
-    const outline = existing ?? wrapper.ownerDocument.createElement("div");
-    outline.className = "mlrt-table-selection-outline";
-    outline.setAttribute("aria-hidden", "true");
-    outline.style.left = `${left - scrollRect.left + scroll.scrollLeft}px`;
-    outline.style.top = `${top2 - scrollRect.top + scroll.scrollTop}px`;
-    outline.style.width = `${right - left}px`;
-    outline.style.height = `${bottom - top2}px`;
-    if (!existing) {
-      scroll.append(outline);
+    const bounds = {
+      left: Math.min(...rectangles.map((rect) => rect.left)),
+      top: Math.min(...rectangles.map((rect) => rect.top)),
+      right: Math.max(...rectangles.map((rect) => rect.right)),
+      bottom: Math.max(...rectangles.map((rect) => rect.bottom))
+    };
+    const width = bounds.right - bounds.left;
+    const height = bounds.bottom - bounds.top;
+    if (width <= 0 || height <= 0) {
+      existing?.remove();
+      return;
     }
-  }
-  function dispatchSelectionChange(wrapper) {
-    wrapper.dispatchEvent(
-      new CustomEvent(TABLE_SELECTION_CHANGE_EVENT, { bubbles: true })
+    const verticalRails = uniqueInteriorCoordinates(
+      rectangles.map((rect) => rect.left),
+      bounds.left,
+      bounds.right
+    ).map((coordinate) => coordinate - bounds.left);
+    const horizontalRails = uniqueInteriorCoordinates(
+      rectangles.map((rect) => rect.top),
+      bounds.top,
+      bounds.bottom
+    ).map((coordinate) => coordinate - bounds.top);
+    const overlay = existing ?? wrapper.ownerDocument.createElementNS(SVG_NAMESPACE, "svg");
+    overlay.classList.add("mlrt-table-selection-overlay");
+    overlay.classList.toggle(
+      "mlrt-table-selection-overlay-cut-pending",
+      wrapper.classList.contains("mlrt-table-cut-pending")
     );
-  }
-  function stateFor(doc2) {
-    const current = states.get(doc2);
-    if (current) {
-      return current;
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.setAttribute("focusable", "false");
+    const formattedWidth = formatCoordinate(width);
+    const formattedHeight = formatCoordinate(height);
+    overlay.setAttribute("width", formattedWidth);
+    overlay.setAttribute("height", formattedHeight);
+    overlay.setAttribute(
+      "viewBox",
+      `0 0 ${formattedWidth} ${formattedHeight}`
+    );
+    overlay.dataset.verticalRailCount = String(verticalRails.length);
+    overlay.dataset.horizontalRailCount = String(horizontalRails.length);
+    overlay.dataset.verticalRails = verticalRails.map(formatCoordinate).join(",");
+    overlay.dataset.horizontalRails = horizontalRails.map(formatCoordinate).join(",");
+    const scrollRect = scroll.getBoundingClientRect();
+    overlay.style.left = `${bounds.left - scrollRect.left + scroll.scrollLeft}px`;
+    overlay.style.top = `${bounds.top - scrollRect.top + scroll.scrollTop}px`;
+    overlay.style.width = `${formattedWidth}px`;
+    overlay.style.height = `${formattedHeight}px`;
+    const inset = Math.min(1, width / 2, height / 2);
+    const gridCommands = [
+      ...verticalRails.map(
+        (x) => `M ${formatCoordinate(x)} ${formatCoordinate(inset)} V ${formatCoordinate(height - inset)}`
+      ),
+      ...horizontalRails.map(
+        (y) => `M ${formatCoordinate(inset)} ${formatCoordinate(y)} H ${formatCoordinate(width - inset)}`
+      )
+    ];
+    const gridPath = gridCommands.join(" ");
+    const frameWidth = formatCoordinate(Math.max(0, width - 1));
+    const frameHeight = formatCoordinate(Math.max(0, height - 1));
+    const geometrySignature = [
+      formattedWidth,
+      formattedHeight,
+      gridPath
+    ].join("|");
+    const currentGrid = overlay.querySelector(
+      ":scope > .mlrt-table-selection-grid"
+    );
+    const currentFrame = overlay.querySelector(
+      ":scope > .mlrt-table-selection-frame"
+    );
+    if (overlay.dataset.geometrySignature !== geometrySignature || !currentGrid || !currentFrame || overlay.lastElementChild !== currentFrame) {
+      const grid = wrapper.ownerDocument.createElementNS(SVG_NAMESPACE, "path");
+      grid.classList.add("mlrt-table-selection-grid");
+      grid.setAttribute("d", gridPath);
+      const frame = wrapper.ownerDocument.createElementNS(SVG_NAMESPACE, "rect");
+      frame.classList.add("mlrt-table-selection-frame");
+      frame.setAttribute("x", "0.5");
+      frame.setAttribute("y", "0.5");
+      frame.setAttribute("width", frameWidth);
+      frame.setAttribute("height", frameHeight);
+      overlay.replaceChildren(grid, frame);
+      overlay.dataset.geometrySignature = geometrySignature;
     }
-    const state = {
-      selection: null,
-      pointerAnchor: null,
-      pointerId: null,
-      pointerCrossedCells: false
-    };
-    states.set(doc2, state);
-    return state;
-  }
-  function clearNativeSelection(doc2) {
-    doc2.defaultView?.getSelection()?.removeAllRanges();
-  }
-  function clampAddress(address, table2) {
-    return {
-      row: Math.max(0, Math.min(table2.body.length, address.row)),
-      column: Math.max(0, Math.min(table2.columnCount - 1, address.column))
-    };
-  }
-  function keyDelta(event) {
-    if (event.key === "ArrowUp") {
-      return { row: -1, column: 0 };
+    if (!existing) {
+      scroll.append(overlay);
     }
-    if (event.key === "ArrowDown") {
-      return { row: 1, column: 0 };
+  }
+  function uniqueInteriorCoordinates(values2, minimum, maximum) {
+    const sorted = values2.filter(
+      (value) => value > minimum + COORDINATE_TOLERANCE && value < maximum - COORDINATE_TOLERANCE
+    ).sort((left, right) => left - right);
+    const groups = [];
+    for (const value of sorted) {
+      const group = groups.at(-1);
+      if (!group || Math.abs(value - group.sum / group.count) > COORDINATE_TOLERANCE) {
+        groups.push({ sum: value, count: 1 });
+      } else {
+        group.sum += value;
+        group.count += 1;
+      }
     }
-    if (event.key === "ArrowLeft" || event.key === "Tab" && event.shiftKey) {
-      return { row: 0, column: -1 };
-    }
-    return { row: 0, column: 1 };
+    return groups.map((group) => group.sum / group.count);
   }
-  function isSelectAll(event) {
-    return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a";
-  }
-  function isPrintableKey(event) {
-    return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
-  }
-  function sameAddress(left, right) {
-    return left.row === right.row && left.column === right.column;
+  function formatCoordinate(value) {
+    return String(Math.round(value * 1e3) / 1e3);
   }
 
   // src/editor/table/tableWidgetState.ts
@@ -25475,7 +24931,7 @@
             this.selectionOutlineFrame = void 0;
             for (const widget of this.observedTableWidgets) {
               if (widget instanceof HTMLElement && widget.isConnected) {
-                syncTableSelectionOutline(widget);
+                syncTableSelectionOverlay(widget);
               }
             }
           });
@@ -25593,1958 +25049,6 @@
         color: "var(--vscode-editorLineNumber-foreground, #858585)"
       }
     });
-  }
-
-  // src/editor/tableBoundaryNavigation.ts
-  function createTableBoundaryArrowNavigation() {
-    return keymap.of([
-      {
-        key: "ArrowDown",
-        run: (view2) => focusTableAcrossBoundary(view2, "down")
-      },
-      {
-        key: "ArrowUp",
-        run: (view2) => focusTableAcrossBoundary(view2, "up")
-      }
-    ]);
-  }
-  function focusTableAcrossBoundary(view2, direction) {
-    if (!view2.state.selection.main.empty || isRenderedTableCellFocused(view2)) {
-      return false;
-    }
-    const head = view2.state.selection.main.head;
-    const line = view2.state.doc.lineAt(head);
-    const tables2 = getParsedTables(view2.state.doc);
-    for (const table2 of tables2) {
-      const lineNumberAboveTable = table2.startLine;
-      const afterTable = positionAfterTable(view2.state.doc, table2);
-      if (direction === "down" && line.number === lineNumberAboveTable) {
-        return focusRenderedTableCell(view2, table2, "first");
-      }
-      if (direction === "up" && line.from === afterTable && head >= afterTable) {
-        return focusRenderedTableCell(view2, table2, "last");
-      }
-      if (head >= table2.from && head <= table2.to) {
-        return focusRenderedTableCell(
-          view2,
-          table2,
-          direction === "down" ? "first" : "last"
-        );
-      }
-    }
-    return false;
-  }
-  function focusRenderedTableCell(view2, table2, target) {
-    const wrapper = view2.dom.querySelector(
-      `${TABLE_WIDGET_SELECTOR}[data-src-from="${table2.from}"]`
-    );
-    const cells = Array.from(
-      wrapper?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
-    );
-    const cell2 = target === "first" ? cells[0] : cells[cells.length - 1];
-    if (!cell2) {
-      return false;
-    }
-    focusCellAtEnd(cell2);
-    return true;
-  }
-  function isRenderedTableCellFocused(view2) {
-    return Boolean(findCell(view2.dom.ownerDocument.activeElement));
-  }
-
-  // src/editor/tableCellFocus.ts
-  var TABLE_CELL_FOCUSED_CLASS = "mlrt-table-cell-focused";
-  function createTableCellFocusClassSync() {
-    return ViewPlugin.fromClass(
-      class {
-        constructor(view2) {
-          this.view = view2;
-          this.syncFocusClass = () => this.sync();
-          const doc2 = view2.dom.ownerDocument;
-          doc2.addEventListener("focusin", this.syncFocusClass, true);
-          doc2.addEventListener("focusout", this.syncFocusClass, true);
-          this.sync();
-        }
-        view;
-        syncFocusClass;
-        recheckScheduled = false;
-        update(update) {
-          if (update.focusChanged || update.selectionSet || update.docChanged) {
-            this.sync();
-          }
-        }
-        destroy() {
-          const doc2 = this.view.dom.ownerDocument;
-          doc2.removeEventListener("focusin", this.syncFocusClass, true);
-          doc2.removeEventListener("focusout", this.syncFocusClass, true);
-        }
-        sync() {
-          queueMicrotask(() => {
-            const ownerDocument = this.view.dom.ownerDocument;
-            const hasTableCellFocus = Boolean(
-              findCell(ownerDocument.activeElement)
-            );
-            if (!hasTableCellFocus && ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
-              this.scheduleRecheck();
-              return;
-            }
-            this.view.dom.classList.toggle(
-              TABLE_CELL_FOCUSED_CLASS,
-              hasTableCellFocus
-            );
-          });
-        }
-        scheduleRecheck() {
-          if (this.recheckScheduled) {
-            return;
-          }
-          this.recheckScheduled = true;
-          const ownerWindow = this.view.dom.ownerDocument.defaultView;
-          const raf = ownerWindow ? ownerWindow.requestAnimationFrame.bind(ownerWindow) : requestAnimationFrame;
-          raf(() => {
-            raf(() => {
-              this.recheckScheduled = false;
-              this.sync();
-            });
-          });
-        }
-      }
-    );
-  }
-
-  // src/shared/tableColumnSizing.ts
-  var CELL_HORIZONTAL_PADDING_CH = 2;
-  var CELL_COMFORT_CH = 1;
-  var TOKEN_COMFORT_CH = 0.5;
-  var MIN_COLUMN_WIDTH_CH = 3;
-  var READABLE_COLUMN_WIDTH_CH = 12;
-  var READABLE_LINE_LENGTH_THRESHOLD_CH = 32;
-  var MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
-  var MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
-  var HEADER_PREFERRED_WIDTH_CAP_CH = 24;
-  var HEADER_TOKEN_WIDTH_CAP_CH = 24;
-  var WIDTH_STEP_CH = 0.5;
-  function measureTableColumnSizing(table2, availableDataWidthCh, cellOverride) {
-    const rows = [
-      { row: table2.header, rowKind: "header", rowIndex: 0 },
-      ...table2.body.map((row, rowIndex) => ({
-        row,
-        rowKind: "body",
-        rowIndex
-      }))
-    ];
-    const columns = Array.from(
-      { length: table2.columnCount },
-      (_value, column) => measureColumn(rows, table2.columnCount, column, cellOverride)
-    );
-    const totalPreferredWidth = columns.reduce(
-      (total, column) => total + column.preferredWidthCh,
-      0
-    );
-    const totalMinWidth = columns.reduce(
-      (total, column) => total + column.minWidthCh,
-      0
-    );
-    const safeTotalWidth = totalPreferredWidth > 0 ? totalPreferredWidth : table2.columnCount;
-    const targetWidth = availableDataWidthCh === void 0 || availableDataWidthCh <= 0 ? safeTotalWidth : Math.min(safeTotalWidth, availableDataWidthCh);
-    const allocatedColumns = targetWidth >= totalMinWidth ? allocateColumnWidths(columns, targetWidth) : columns.map((column) => ({ ...column, widthCh: column.minWidthCh }));
-    if (availableDataWidthCh !== void 0 && availableDataWidthCh > 0) {
-      distributeWidthSteps(
-        allocatedColumns,
-        availableDataWidthCh,
-        (column) => column.fullPreferredWidthCh
-      );
-    }
-    const dataWidthCh = allocatedColumns.reduce(
-      (total, column) => total + column.widthCh,
-      0
-    );
-    const safeDataWidth = dataWidthCh > 0 ? dataWidthCh : table2.columnCount;
-    return {
-      columns: allocatedColumns,
-      dataWidthCh: safeDataWidth,
-      widthPercentages: allocatedColumns.map(
-        (column) => column.widthCh / safeDataWidth * 100
-      )
-    };
-  }
-  function measureColumn(rows, columnCount, column, cellOverride) {
-    let longestLine = 0;
-    let longestToken = 0;
-    let longestBodyLine = 0;
-    let longestBodyToken = 0;
-    let longestHeaderLine = 0;
-    let longestHeaderToken = 0;
-    let hasBodyRow = false;
-    const cellLineLengths = [];
-    for (const source of rows) {
-      const value = getCellDisplayValue(
-        source,
-        columnCount,
-        column,
-        cellOverride
-      );
-      for (const line of splitDisplayLines(value)) {
-        const lineLength = line.length;
-        const tokenLength = measureLongestToken(line);
-        cellLineLengths.push(lineLength);
-        longestLine = Math.max(longestLine, lineLength);
-        longestToken = Math.max(longestToken, tokenLength);
-        if (source.rowKind === "body") {
-          hasBodyRow = true;
-          longestBodyLine = Math.max(longestBodyLine, lineLength);
-          longestBodyToken = Math.max(longestBodyToken, tokenLength);
-        } else {
-          longestHeaderLine = Math.max(longestHeaderLine, lineLength);
-          longestHeaderToken = Math.max(longestHeaderToken, tokenLength);
-        }
-      }
-    }
-    const sizingLine = hasBodyRow ? Math.max(
-      longestBodyLine,
-      Math.min(longestHeaderLine, HEADER_PREFERRED_WIDTH_CAP_CH)
-    ) : longestLine;
-    const sizingToken = hasBodyRow ? Math.max(
-      longestBodyToken,
-      Math.min(longestHeaderToken, HEADER_TOKEN_WIDTH_CAP_CH)
-    ) : longestToken;
-    const hasProseLikeContent = cellLineLengths.some(
-      (lineLength) => lineLength >= READABLE_LINE_LENGTH_THRESHOLD_CH
-    );
-    const readableMinWidthCh = hasProseLikeContent ? READABLE_COLUMN_WIDTH_CH : 0;
-    const minWidthCh = clamp(
-      Math.max(
-        sizingToken + CELL_HORIZONTAL_PADDING_CH + TOKEN_COMFORT_CH,
-        readableMinWidthCh
-      ),
-      MIN_COLUMN_WIDTH_CH,
-      MAX_UNBROKEN_TOKEN_WIDTH_CH
-    );
-    const preferredWidthCh = clamp(
-      sizingLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
-      minWidthCh,
-      MAX_PREFERRED_COLUMN_WIDTH_CH
-    );
-    const fullPreferredWidthCh = clamp(
-      longestLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
-      preferredWidthCh,
-      MAX_PREFERRED_COLUMN_WIDTH_CH
-    );
-    return {
-      cellLineLengths,
-      minWidthCh,
-      preferredWidthCh,
-      fullPreferredWidthCh,
-      widthCh: preferredWidthCh
-    };
-  }
-  function getCellDisplayValue(source, columnCount, column, cellOverride) {
-    if (cellOverride && cellOverride.rowKind === source.rowKind && cellOverride.rowIndex === source.rowIndex && cellOverride.column === column) {
-      return cellOverride.value;
-    }
-    return rowToDisplayValues(source.row, columnCount)[column] ?? "";
-  }
-  function allocateColumnWidths(columns, targetWidthCh) {
-    const allocated = columns.map((column) => ({
-      ...column,
-      widthCh: column.minWidthCh
-    }));
-    distributeWidthSteps(
-      allocated,
-      targetWidthCh,
-      (column) => column.preferredWidthCh
-    );
-    return allocated;
-  }
-  function distributeWidthSteps(columns, targetWidthCh, limitOf) {
-    let remainingSteps = Math.round(
-      (targetWidthCh - columns.reduce((total, column) => total + column.widthCh, 0)) / WIDTH_STEP_CH
-    );
-    while (remainingSteps > 0) {
-      let bestColumnIndex = -1;
-      let bestScore = Number.NEGATIVE_INFINITY;
-      for (let index = 0; index < columns.length; index++) {
-        const column2 = columns[index];
-        const limit = limitOf(column2);
-        if (column2.widthCh >= limit) {
-          continue;
-        }
-        const nextWidth = Math.min(limit, column2.widthCh + WIDTH_STEP_CH);
-        const wrapReduction = measureWrapCost(column2, column2.widthCh) - measureWrapCost(column2, nextWidth);
-        const remainingNeed = limit - column2.widthCh;
-        const score = wrapReduction * 1e3 + remainingNeed;
-        if (score > bestScore) {
-          bestScore = score;
-          bestColumnIndex = index;
-        }
-      }
-      if (bestColumnIndex === -1) {
-        break;
-      }
-      const column = columns[bestColumnIndex];
-      column.widthCh = Math.min(limitOf(column), column.widthCh + WIDTH_STEP_CH);
-      remainingSteps--;
-    }
-  }
-  function measureWrapCost(column, widthCh) {
-    const contentWidthCh = Math.max(1, widthCh - CELL_HORIZONTAL_PADDING_CH);
-    return column.cellLineLengths.reduce(
-      (total, lineLength) => total + Math.max(1, Math.ceil(lineLength / contentWidthCh)),
-      0
-    );
-  }
-  function splitDisplayLines(value) {
-    const lines = value.split(/\r\n?|\n/);
-    return lines.length > 0 ? lines : [""];
-  }
-  function measureLongestToken(value) {
-    return value.trim().split(/\s+/).reduce((longest, token) => Math.max(longest, token.length), 0);
-  }
-  function clamp(value, min, max) {
-    return Math.max(min, Math.min(value, max));
-  }
-
-  // src/editor/table/tableCellMetadata.ts
-  function syncTableSourceMetadata(dom, table2) {
-    setTableWidgetTable(dom, table2);
-    dom.dataset.srcFrom = String(table2.from);
-    dom.dataset.srcTo = String(table2.to);
-    syncTableRowSourceMetadata(dom, table2, table2.header, "header", 0);
-    table2.body.forEach((row, rowIndex) => {
-      syncTableRowSourceMetadata(dom, table2, row, "body", rowIndex);
-    });
-  }
-  function syncTableRowSourceMetadata(dom, table2, sourceRow, rowKind, rowIndex) {
-    const values2 = rowToDisplayValues(sourceRow, table2.columnCount);
-    for (let column = 0; column < table2.columnCount; column++) {
-      const cell2 = queryCell(dom, rowKind, rowIndex, column);
-      if (!cell2) {
-        continue;
-      }
-      syncCellSourceMetadata(
-        cell2,
-        table2,
-        sourceRow,
-        column,
-        values2[column] ?? ""
-      );
-    }
-  }
-  function syncCellSourceMetadata(cell2, table2, sourceRow, column, value) {
-    cell2.dataset.tableFrom = String(table2.from);
-    cell2.dataset.sourceValue = value;
-    cell2.style.textAlign = table2.alignments[column] ?? "left";
-    const sourceCell = sourceRow.cells[column];
-    if (!sourceCell) {
-      delete cell2.dataset.sourceFrom;
-      delete cell2.dataset.sourceTo;
-      delete cell2.dataset.sourceLeadingWhitespace;
-      delete cell2.dataset.sourceTrailingWhitespace;
-      return;
-    }
-    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
-      sourceCell.raw
-    );
-    cell2.dataset.sourceFrom = String(sourceCell.start);
-    cell2.dataset.sourceTo = String(sourceCell.end);
-    cell2.dataset.sourceLeadingWhitespace = leadingWhitespace;
-    cell2.dataset.sourceTrailingWhitespace = trailingWhitespace;
-  }
-  function queryCell(dom, rowKind, rowIndex, column) {
-    return dom.querySelector(
-      [
-        `.mlrt-table-cell[data-row-kind="${rowKind}"]`,
-        `[data-row-index="${rowIndex}"]`,
-        `[data-column="${column}"]`
-      ].join("")
-    );
-  }
-
-  // src/editor/table/tableCellEditing.ts
-  var TABLE_CELL_COMMIT_EVENT = "mlrt:table-cell-commit";
-  var cellEditHistories = /* @__PURE__ */ new Map();
-  var MAX_TRACKED_CELL_HISTORIES = 512;
-  function bindTableEditing(wrapper, view2, table2, scheduleTableLayout) {
-    const getCurrentTable = () => getTableWidgetTable(wrapper) ?? table2;
-    wrapper.addEventListener("focusin", (event) => {
-      const cell2 = findCell(event.target);
-      if (cell2) {
-        ensureCellEditHistory(cell2);
-        scheduleTableLayout();
-      }
-    });
-    wrapper.addEventListener("beforeinput", (event) => {
-      const cell2 = findCell(event.target);
-      if (!cell2 || !(event instanceof InputEvent)) {
-        return;
-      }
-      const currentTable = getCurrentTable();
-      if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
-        const direction = event.inputType === "historyUndo" ? "undo" : "redo";
-        if (!restoreCellEditHistory(cell2, direction)) {
-          scheduleNativeHistoryFallback(
-            view2,
-            currentTable,
-            cell2,
-            scheduleTableLayout
-          );
-          return;
-        }
-        event.preventDefault();
-        applyLiveCellEdit(view2, currentTable, cell2);
-        scheduleTableLayout();
-        return;
-      }
-      const nextSnapshot = computeBeforeInputSnapshot(cell2, event);
-      if (!nextSnapshot) {
-        recordCellEditHistory(cell2);
-        return;
-      }
-      event.preventDefault();
-      applyCellEditSnapshotChange(
-        view2,
-        currentTable,
-        cell2,
-        nextSnapshot,
-        scheduleTableLayout
-      );
-    });
-    wrapper.addEventListener("input", (event) => {
-      const cell2 = findCell(event.target);
-      if (!cell2) {
-        return;
-      }
-      syncCellEditHistory(cell2);
-      applyLiveCellEdit(view2, getCurrentTable(), cell2);
-      scheduleTableLayout();
-    });
-    wrapper.addEventListener("focusout", (event) => {
-      const cell2 = findCell(event.target);
-      if (cell2) {
-        setTimeout(() => {
-          if (wrapper.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
-            return;
-          }
-          if (cell2.isConnected) {
-            commitCellEdit(view2, getCurrentTable(), cell2);
-          }
-        }, 0);
-      }
-    });
-    wrapper.addEventListener("keydown", (event) => {
-      const cell2 = findCell(event.target);
-      if (!cell2) {
-        return;
-      }
-      const currentTable = getCurrentTable();
-      const historyDirection = getCellEditHistoryDirection(event);
-      if (historyDirection) {
-        if (!restoreCellEditHistory(cell2, historyDirection)) {
-          scheduleNativeHistoryFallback(
-            view2,
-            currentTable,
-            cell2,
-            scheduleTableLayout
-          );
-          return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        applyLiveCellEdit(view2, currentTable, cell2);
-        scheduleTableLayout();
-        return;
-      }
-      if (event.key === "Enter" && isPlainKey(event)) {
-        event.preventDefault();
-        event.stopPropagation();
-        commitCellEdit(view2, currentTable, cell2, {
-          selectionAnchor: positionAfterTable(view2.state.doc, currentTable)
-        });
-        cell2.blur();
-        view2.focus();
-        return;
-      }
-      if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        if (!getCellSelectionOffsets(cell2)) {
-          focusCellAtEnd(cell2);
-        }
-        const nextSnapshot = computeCellTextInsertionSnapshot(cell2, "\n");
-        if (!nextSnapshot) {
-          return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        applyCellEditSnapshotChange(
-          view2,
-          currentTable,
-          cell2,
-          nextSnapshot,
-          scheduleTableLayout
-        );
-        return;
-      }
-      if (isUnmodifiedVerticalArrow(event)) {
-        const rowDelta = event.key === "ArrowUp" ? -1 : 1;
-        if (!isCaretAtVerticalBoundary(cell2, rowDelta)) {
-          return;
-        }
-        const target = resolveVerticalCell(cell2, rowDelta);
-        event.preventDefault();
-        event.stopPropagation();
-        if (target === "before-table") {
-          commitCellEdit(view2, currentTable, cell2, {
-            selectionAnchor: positionBeforeTable(currentTable)
-          });
-          cell2.blur();
-          view2.focus();
-          return;
-        }
-        if (target === "after-table") {
-          commitCellEdit(view2, currentTable, cell2, {
-            selectionAnchor: getEndOfLineAfterTable(view2, currentTable)
-          });
-          cell2.blur();
-          view2.focus();
-          return;
-        }
-        commitCellEdit(view2, currentTable, cell2);
-        focusCellAfterRender(currentTable.from, target);
-        return;
-      }
-      if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        const target = resolveRelativeCell(cell2, event.shiftKey ? -1 : 1);
-        commitCellEdit(view2, currentTable, cell2);
-        focusCellAfterRender(currentTable.from, target);
-      }
-    });
-  }
-  function scheduleNativeHistoryFallback(view2, table2, cell2, scheduleTableLayout) {
-    setTimeout(() => {
-      if (!cell2.isConnected) {
-        return;
-      }
-      syncCellEditHistory(cell2);
-      applyLiveCellEdit(view2, table2, cell2);
-      scheduleTableLayout();
-    }, 0);
-  }
-  function commitCellEdit(view2, table2, cell2, options = {}) {
-    const rowKind = cell2.dataset.rowKind;
-    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
-    const column = Number(cell2.dataset.column ?? "0");
-    if (rowKind !== "header" && rowKind !== "body") {
-      dispatchSelection(view2, options.selectionAnchor);
-      return;
-    }
-    const sourceRow = rowKind === "header" ? table2.header : table2.body[rowIndex] ?? null;
-    if (!sourceRow || !Number.isInteger(column) || column < 0) {
-      dispatchSelection(view2, options.selectionAnchor);
-      return;
-    }
-    const value = readCellDisplayValue(cell2);
-    if (value === getCellSourceValue(cell2)) {
-      dispatchSelection(view2, options.selectionAnchor);
-      return;
-    }
-    const originalValue = getCellSourceValue(cell2);
-    const caretOffset = getCellCaretOffset(cell2);
-    const restoreCaretOffset = Math.min(
-      originalValue.length,
-      caretOffset + Math.max(0, originalValue.length - value.length)
-    );
-    const valueSteps = buildCellCommitValueSteps(
-      getCellEditHistory(cell2),
-      originalValue,
-      value,
-      restoreCaretOffset
-    );
-    const sourceSteps = buildCellSourceCommitSteps(
-      sourceRow,
-      table2.columnCount,
-      column,
-      valueSteps
-    );
-    const finalSourceStep = sourceSteps[sourceSteps.length - 1];
-    if (!finalSourceStep) {
-      dispatchSelection(view2, options.selectionAnchor);
-      return;
-    }
-    const edit = formatTableCellSourceEdit(
-      sourceRow,
-      table2.columnCount,
-      column,
-      value
-    );
-    view2.dom.dispatchEvent(
-      new CustomEvent(TABLE_CELL_COMMIT_EVENT, {
-        bubbles: true,
-        detail: {
-          tableFrom: table2.from,
-          rowKind,
-          rowIndex,
-          column,
-          from: edit.from,
-          to: edit.to,
-          insertLength: edit.insert.length,
-          valueLength: value.length,
-          restoreCaretOffset: finalSourceStep.restoreCaretOffset
-        }
-      })
-    );
-    const selectionAnchor = options.selectionAnchor === void 0 ? void 0 : mapPositionThroughCellEdit(options.selectionAnchor, edit);
-    view2.dispatch({
-      changes: {
-        from: edit.from,
-        to: edit.to,
-        insert: edit.insert
-      },
-      selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
-      annotations: [
-        allowTableSourceChange.of(true),
-        tableCellCommitSequenceAnnotation.of({
-          steps: sourceSteps.map((step) => ({
-            change: step.change,
-            restore: {
-              tableFrom: table2.from,
-              rowKind,
-              rowIndex,
-              column,
-              from: step.change.from,
-              to: step.change.to,
-              restoreCaretOffset: step.restoreCaretOffset
-            }
-          }))
-        })
-      ],
-      scrollIntoView: true,
-      userEvent: "input"
-    });
-  }
-  function applyLiveCellEdit(view2, table2, cell2) {
-    const rowKind = cell2.dataset.rowKind;
-    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
-    const column = Number(cell2.dataset.column ?? "0");
-    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
-      return false;
-    }
-    const sourceRow = rowKind === "header" ? table2.header : table2.body[rowIndex] ?? null;
-    if (!sourceRow) {
-      return false;
-    }
-    const value = readCellDisplayValue(cell2);
-    const originalValue = getCellSourceValue(cell2);
-    if (value === originalValue) {
-      return false;
-    }
-    const caretOffset = getCellCaretOffset(cell2);
-    const restoreCaretOffset = Math.min(
-      originalValue.length,
-      caretOffset + Math.max(0, originalValue.length - value.length)
-    );
-    const currentRowText = readCurrentSourceRowText(view2, sourceRow);
-    const edit = formatLiveTableCellSourceEdit(
-      view2,
-      sourceRow,
-      table2.columnCount,
-      column,
-      value
-    ) ?? formatTableCellSourceEdit(sourceRow, table2.columnCount, column, value);
-    const restore = {
-      tableFrom: table2.from,
-      rowKind,
-      rowIndex,
-      column,
-      from: edit.from,
-      to: edit.to,
-      restoreCaretOffset
-    };
-    view2.dom.dispatchEvent(
-      new CustomEvent(TABLE_CELL_COMMIT_EVENT, {
-        bubbles: true,
-        detail: {
-          ...restore,
-          insertLength: edit.insert.length,
-          valueLength: value.length
-        }
-      })
-    );
-    updateTableSourceAfterCellEdit(
-      table2,
-      rowKind,
-      rowIndex,
-      edit,
-      currentRowText
-    );
-    const wrapper = cell2.closest(".mlrt-table-widget");
-    if (wrapper) {
-      syncTableSourceMetadata(wrapper, table2);
-    }
-    preserveTableForLiveEdit(table2.from);
-    view2.dispatch({
-      changes: {
-        from: edit.from,
-        to: edit.to,
-        insert: edit.insert
-      },
-      annotations: [
-        allowTableSourceChange.of(true),
-        tableCellLiveEditAnnotation.of({
-          change: {
-            from: edit.from,
-            to: edit.to,
-            text: edit.insert
-          },
-          restore
-        })
-      ],
-      userEvent: "input"
-    });
-    requestElementAnimationFrame(cell2, () => {
-      releaseTableLiveEditPreservation(table2.from);
-    });
-    if (!cell2.isConnected || cell2.ownerDocument.activeElement !== cell2) {
-      focusCellAfterRenderAtOffset(
-        table2.from,
-        { rowKind, rowIndex: String(rowIndex), column: String(column) },
-        caretOffset
-      );
-    }
-    return true;
-  }
-  function getCellSourceValue(cell2) {
-    return cell2.dataset.sourceValue ?? "";
-  }
-  function formatLiveTableCellSourceEdit(view2, sourceRow, columnCount, column, value) {
-    const currentRowText = readCurrentSourceRowText(view2, sourceRow);
-    if (currentRowText === void 0) {
-      return null;
-    }
-    const currentRow = parseMarkdownTableRow(
-      sourceRow.lineIndex,
-      sourceRow.from,
-      currentRowText
-    );
-    const sourceCell = currentRow.cells[column];
-    if (!sourceCell) {
-      return formatTableCellSourceEdit(currentRow, columnCount, column, value);
-    }
-    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
-      sourceCell.raw
-    );
-    return {
-      from: sourceCell.start,
-      to: sourceCell.end,
-      insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`
-    };
-  }
-  function readCurrentSourceRowText(view2, sourceRow) {
-    try {
-      const line = view2.state.doc.lineAt(sourceRow.from);
-      return line.text;
-    } catch {
-      return void 0;
-    }
-  }
-  function updateTableSourceAfterCellEdit(table2, rowKind, rowIndex, edit, currentRowText) {
-    const sourceRow = rowKind === "header" ? table2.header : table2.body[rowIndex];
-    if (!sourceRow) {
-      return;
-    }
-    const previousRowText = currentRowText ?? sourceRow.text;
-    const previousRowLength = previousRowText.length;
-    const nextRowText = `${previousRowText.slice(0, edit.from - sourceRow.from)}${edit.insert}${previousRowText.slice(edit.to - sourceRow.from)}`;
-    const delta = nextRowText.length - previousRowLength;
-    table2.to += delta;
-    const nextSourceRow = parseMarkdownTableRow(
-      sourceRow.lineIndex,
-      sourceRow.from,
-      nextRowText
-    );
-    sourceRow.to = nextSourceRow.to;
-    sourceRow.text = nextSourceRow.text;
-    sourceRow.cells = nextSourceRow.cells;
-    for (const row of [table2.delimiter, ...table2.body]) {
-      if (row === sourceRow || row.from <= sourceRow.from) {
-        continue;
-      }
-      row.from += delta;
-      row.to += delta;
-      for (const cell2 of row.cells) {
-        cell2.start += delta;
-        cell2.end += delta;
-      }
-    }
-  }
-  function buildCellCommitValueSteps(history2, originalValue, finalValue, fallbackRestoreCaretOffset) {
-    const snapshots = history2?.undoStack ?? [];
-    const steps = [];
-    let currentValue = originalValue;
-    for (let index = 1; index < snapshots.length; index++) {
-      const snapshot = snapshots[index];
-      if (snapshot.value === currentValue) {
-        continue;
-      }
-      steps.push({
-        value: snapshot.value,
-        restoreCaretOffset: snapshots[index - 1]?.caretOffset ?? 0
-      });
-      currentValue = snapshot.value;
-    }
-    if (finalValue !== currentValue) {
-      steps.push({
-        value: finalValue,
-        restoreCaretOffset: snapshots[snapshots.length - 1]?.caretOffset ?? fallbackRestoreCaretOffset
-      });
-    }
-    return steps;
-  }
-  function buildCellSourceCommitSteps(sourceRow, columnCount, column, valueSteps) {
-    let currentEdit = null;
-    return valueSteps.map((step) => {
-      const formattedEdit = formatTableCellSourceEdit(
-        sourceRow,
-        columnCount,
-        column,
-        step.value
-      );
-      const change = currentEdit ? {
-        from: currentEdit.from,
-        to: currentEdit.from + currentEdit.insert.length,
-        text: formattedEdit.insert
-      } : {
-        from: formattedEdit.from,
-        to: formattedEdit.to,
-        text: formattedEdit.insert
-      };
-      currentEdit = {
-        from: change.from,
-        to: change.from + change.text.length,
-        insert: change.text
-      };
-      return {
-        change,
-        restoreCaretOffset: step.restoreCaretOffset
-      };
-    });
-  }
-  function dispatchSelection(view2, selectionAnchor) {
-    if (selectionAnchor === void 0) {
-      return;
-    }
-    view2.dispatch({
-      selection: EditorSelection.cursor(selectionAnchor, 1),
-      scrollIntoView: true
-    });
-  }
-  function getEndOfLineAfterTable(view2, table2) {
-    return view2.state.doc.lineAt(positionAfterTable(view2.state.doc, table2)).to;
-  }
-  function mapPositionThroughCellEdit(position, edit) {
-    if (position <= edit.from) {
-      return position;
-    }
-    if (position <= edit.to) {
-      return edit.from + edit.insert.length;
-    }
-    return position + edit.insert.length - (edit.to - edit.from);
-  }
-  function resolveRelativeCell(cell2, delta) {
-    const cells = Array.from(
-      cell2.closest(".mlrt-table")?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
-    );
-    const index = cells.indexOf(cell2);
-    const next2 = cells[index + delta] ?? cell2;
-    return {
-      rowKind: next2.dataset.rowKind ?? "body",
-      rowIndex: next2.dataset.rowIndex ?? "0",
-      column: next2.dataset.column ?? "0"
-    };
-  }
-  function resolveVerticalCell(cell2, rowDelta) {
-    const column = cell2.dataset.column ?? "0";
-    const columnCells = Array.from(
-      cell2.closest(".mlrt-table")?.querySelectorAll(
-        `${TABLE_CELL_SELECTOR}[data-column="${column}"]`
-      ) ?? []
-    );
-    const index = columnCells.indexOf(cell2);
-    const next2 = columnCells[index + rowDelta];
-    if (!next2) {
-      return rowDelta < 0 ? "before-table" : "after-table";
-    }
-    return {
-      rowKind: next2.dataset.rowKind ?? "body",
-      rowIndex: next2.dataset.rowIndex ?? "0",
-      column: next2.dataset.column ?? "0"
-    };
-  }
-  function focusCellAfterRender(tableFrom, target) {
-    setTimeout(() => {
-      const cell2 = queryCell2(tableFrom, target);
-      if (cell2) {
-        focusCellAtEnd(cell2);
-      }
-    }, 0);
-  }
-  function focusCellAfterRenderAtOffset(tableFrom, target, caretOffset) {
-    setTimeout(() => {
-      const cell2 = queryCell2(tableFrom, target);
-      if (cell2) {
-        cell2.focus();
-        setCellCaretOffset(cell2, caretOffset);
-      }
-    }, 0);
-  }
-  function queryCell2(tableFrom, target) {
-    const selector = [
-      `${TABLE_CELL_SELECTOR}[data-table-from="${tableFrom}"]`,
-      `[data-row-kind="${target.rowKind}"]`,
-      `[data-row-index="${target.rowIndex}"]`,
-      `[data-column="${target.column}"]`
-    ].join("");
-    return document.querySelector(selector);
-  }
-  function ensureCellEditHistory(cell2) {
-    const key = getCellHistoryKey(cell2);
-    const existing = cellEditHistories.get(key);
-    if (existing) {
-      return existing;
-    }
-    if (cellEditHistories.size >= MAX_TRACKED_CELL_HISTORIES) {
-      const oldestKey = cellEditHistories.keys().next().value;
-      if (oldestKey !== void 0) {
-        cellEditHistories.delete(oldestKey);
-      }
-    }
-    const history2 = {
-      undoStack: [],
-      redoStack: [],
-      lastValue: readCellDisplayValue(cell2)
-    };
-    cellEditHistories.set(key, history2);
-    return history2;
-  }
-  function getCellEditHistory(cell2) {
-    return cellEditHistories.get(getCellHistoryKey(cell2));
-  }
-  function getCellHistoryKey(cell2) {
-    return [
-      cell2.dataset.tableFrom ?? "",
-      cell2.dataset.rowKind ?? "",
-      cell2.dataset.rowIndex ?? "",
-      cell2.dataset.column ?? ""
-    ].join(":");
-  }
-  function recordCellEditHistory(cell2) {
-    const history2 = ensureCellEditHistory(cell2);
-    const snapshot = captureCellEditSnapshot(cell2);
-    const previousSnapshot = history2.undoStack[history2.undoStack.length - 1];
-    if (previousSnapshot && previousSnapshot.value === snapshot.value && previousSnapshot.caretOffset === snapshot.caretOffset) {
-      return;
-    }
-    history2.undoStack.push(snapshot);
-    history2.redoStack = [];
-    history2.lastValue = snapshot.value;
-  }
-  function syncCellEditHistory(cell2) {
-    ensureCellEditHistory(cell2).lastValue = readCellDisplayValue(cell2);
-  }
-  function restoreCellEditHistory(cell2, direction) {
-    const history2 = ensureCellEditHistory(cell2);
-    const sourceStack = direction === "undo" ? history2.undoStack : history2.redoStack;
-    const targetStack = direction === "undo" ? history2.redoStack : history2.undoStack;
-    const snapshot = sourceStack.pop();
-    if (!snapshot) {
-      return false;
-    }
-    targetStack.push(captureCellEditSnapshot(cell2));
-    applyCellEditSnapshot(cell2, snapshot);
-    history2.lastValue = snapshot.value;
-    return true;
-  }
-  function computeBeforeInputSnapshot(cell2, event) {
-    const selection = getCellSelectionOffsets(cell2);
-    if (!selection) {
-      return null;
-    }
-    const value = readCellDisplayValue(cell2);
-    const from = Math.min(selection.anchor, selection.head);
-    const to = Math.max(selection.anchor, selection.head);
-    if (event.inputType === "insertText") {
-      const insert2 = event.data ?? "";
-      return replaceCellTextRange(value, from, to, insert2);
-    }
-    if (event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop" || event.inputType === "insertReplacementText") {
-      const insert2 = event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
-      return replaceCellTextRange(
-        value,
-        from,
-        to,
-        insert2.replace(/\r\n?/g, "\n")
-      );
-    }
-    if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
-      return replaceCellTextRange(value, from, to, "\n");
-    }
-    if (event.inputType === "deleteContentBackward" || event.inputType === "deleteByCut") {
-      if (from !== to) {
-        return replaceCellTextRange(value, from, to, "");
-      }
-      if (from === 0) {
-        return { value, caretOffset: 0 };
-      }
-      return replaceCellTextRange(value, from - 1, to, "");
-    }
-    if (event.inputType === "deleteContentForward") {
-      if (from !== to) {
-        return replaceCellTextRange(value, from, to, "");
-      }
-      if (to >= value.length) {
-        return { value, caretOffset: value.length };
-      }
-      return replaceCellTextRange(value, from, to + 1, "");
-    }
-    return null;
-  }
-  function computeCellTextInsertionSnapshot(cell2, insert2) {
-    const selection = getCellSelectionOffsets(cell2);
-    if (!selection) {
-      return null;
-    }
-    const value = readCellDisplayValue(cell2);
-    return replaceCellTextRange(
-      value,
-      Math.min(selection.anchor, selection.head),
-      Math.max(selection.anchor, selection.head),
-      insert2
-    );
-  }
-  function replaceCellTextRange(value, from, to, insert2) {
-    return {
-      value: `${value.slice(0, from)}${insert2}${value.slice(to)}`,
-      caretOffset: from + insert2.length
-    };
-  }
-  function applyCellEditSnapshotChange(view2, table2, cell2, snapshot, scheduleTableLayout) {
-    recordCellEditHistory(cell2);
-    applyCellEditSnapshot(cell2, snapshot);
-    syncCellEditHistory(cell2);
-    applyLiveCellEdit(view2, table2, cell2);
-    scheduleTableLayout();
-  }
-  function captureCellEditSnapshot(cell2) {
-    return {
-      value: readCellDisplayValue(cell2),
-      caretOffset: getCellCaretOffset(cell2)
-    };
-  }
-  function applyCellEditSnapshot(cell2, snapshot) {
-    setCellPlainText(cell2, snapshot.value);
-    setCellCaretOffset(cell2, snapshot.caretOffset);
-  }
-  function getCellEditHistoryDirection(event) {
-    const key = event.key.toLowerCase();
-    const primaryModifier = event.metaKey || event.ctrlKey;
-    if (!primaryModifier || event.altKey) {
-      return null;
-    }
-    if (key === "z") {
-      return event.shiftKey ? "redo" : "undo";
-    }
-    if (key === "y" && !event.shiftKey) {
-      return "redo";
-    }
-    return null;
-  }
-  function isPlainKey(event) {
-    return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-  }
-  function isUnmodifiedVerticalArrow(event) {
-    return (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey(event);
-  }
-
-  // src/editor/table/tableLayout.ts
-  var chWidthCache = /* @__PURE__ */ new WeakMap();
-  var cssLengthCache = /* @__PURE__ */ new WeakMap();
-  function appendColumnSizing(tableElement, table2, columnSizing) {
-    const colgroup = document.createElement("colgroup");
-    const lineNumberCol = document.createElement("col");
-    lineNumberCol.className = "mlrt-table-source-line-col";
-    colgroup.append(lineNumberCol);
-    for (let column = 0; column < table2.columnCount; column++) {
-      const col = document.createElement("col");
-      col.className = "mlrt-table-sized-col";
-      col.style.width = `${columnSizing.columns[column].widthCh.toFixed(4)}ch`;
-      colgroup.append(col);
-    }
-    tableElement.append(colgroup);
-  }
-  function applyColumnSizing(wrapper, columnSizing) {
-    wrapper.style.setProperty(
-      "--mlrt-table-data-width",
-      `${columnSizing.dataWidthCh.toFixed(4)}ch`
-    );
-    wrapper.querySelectorAll(".mlrt-table-sized-col").forEach((col, column) => {
-      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(
-        4
-      )}ch`;
-    });
-  }
-  function applyCurrentColumnSizing(wrapper, table2) {
-    applyColumnSizing(
-      wrapper,
-      measureTableColumnSizing(
-        table2,
-        measureAvailableDataWidthCh(wrapper),
-        readActiveCellSizingOverride(wrapper)
-      )
-    );
-  }
-  function bindTableLayout(wrapper, tableScroll, tableElement, scrollbar, scrollbarThumb, table2) {
-    const syncScrollbar = () => syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
-    let pendingAnimationFrame = 0;
-    const syncLayout = () => {
-      pendingAnimationFrame = 0;
-      applyCurrentColumnSizing(wrapper, getTableWidgetTable(wrapper) ?? table2);
-      const tableHeight = tableElement.getBoundingClientRect().height;
-      syncScrollbar();
-      const scrollbarHeight = scrollbar.hidden ? 0 : scrollbar.getBoundingClientRect().height;
-      wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
-    };
-    const scheduleLayout = () => {
-      if (pendingAnimationFrame !== 0) {
-        return;
-      }
-      pendingAnimationFrame = requestElementAnimationFrame(wrapper, syncLayout);
-    };
-    const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
-    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleLayout) : void 0;
-    resizeObserver?.observe(tableElement);
-    resizeObserver?.observe(tableScroll);
-    tableScroll.addEventListener("scroll", syncScrollbar);
-    scheduleLayout();
-    setTableWidgetCleanup(wrapper, () => {
-      if (pendingAnimationFrame !== 0) {
-        cancelElementAnimationFrame(wrapper, pendingAnimationFrame);
-        pendingAnimationFrame = 0;
-      }
-      resizeObserver?.disconnect();
-      tableScroll.removeEventListener("scroll", syncScrollbar);
-    });
-    return scheduleLayout;
-  }
-  function measureAvailableDataWidthCh(wrapper) {
-    const scroller = wrapper.closest(".cm-scroller");
-    if (!scroller) {
-      return void 0;
-    }
-    const styles = getComputedStyle(scroller);
-    const gutterWidth = resolveCssLengthPx(
-      scroller,
-      styles.getPropertyValue("--mlrt-live-gutter-width")
-    );
-    const rightPadding = resolveCssLengthPx(
-      scroller,
-      styles.getPropertyValue("--mlrt-editor-right-padding")
-    );
-    const chWidth = measureChWidth(wrapper);
-    const columnCount = getTableWidgetTable(wrapper)?.columnCount ?? 1;
-    const borderAllowancePx = columnCount + 2;
-    const availablePx = Math.max(
-      0,
-      scroller.clientWidth - gutterWidth - rightPadding - borderAllowancePx
-    );
-    return chWidth > 0 ? availablePx / chWidth : void 0;
-  }
-  function syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb) {
-    const maxScrollLeft = Math.max(
-      0,
-      tableScroll.scrollWidth - tableScroll.clientWidth
-    );
-    const hasOverflow = maxScrollLeft > 1;
-    scrollbar.hidden = !hasOverflow;
-    if (!hasOverflow) {
-      if (tableScroll.scrollLeft !== 0) {
-        tableScroll.scrollLeft = 0;
-      }
-      scrollbarThumb.style.width = "0px";
-      scrollbarThumb.style.transform = "translateX(0px)";
-      return;
-    }
-    const trackWidth = Math.max(0, scrollbar.clientWidth);
-    const thumbWidth = Math.max(
-      24,
-      tableScroll.clientWidth / tableScroll.scrollWidth * trackWidth
-    );
-    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
-    const thumbLeft = maxScrollLeft > 0 ? tableScroll.scrollLeft / maxScrollLeft * maxThumbLeft : 0;
-    scrollbarThumb.style.width = `${thumbWidth}px`;
-    scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
-  }
-  function measureChWidth(element) {
-    const styles = getComputedStyle(element);
-    const cacheKey = [
-      styles.fontFamily,
-      styles.fontSize,
-      styles.fontWeight,
-      styles.fontStretch,
-      styles.fontStyle,
-      styles.letterSpacing,
-      styles.fontFeatureSettings,
-      styles.fontVariationSettings
-    ].join("|");
-    const cached = chWidthCache.get(element);
-    if (cached?.key === cacheKey) {
-      return cached.width;
-    }
-    const probe = element.ownerDocument.createElement("span");
-    probe.textContent = "0";
-    probe.style.position = "absolute";
-    probe.style.left = "-10000px";
-    probe.style.top = "0";
-    probe.style.visibility = "hidden";
-    probe.style.pointerEvents = "none";
-    probe.style.whiteSpace = "pre";
-    probe.style.fontFamily = styles.fontFamily;
-    probe.style.fontSize = styles.fontSize;
-    probe.style.fontWeight = styles.fontWeight;
-    probe.style.fontStretch = styles.fontStretch;
-    probe.style.fontStyle = styles.fontStyle;
-    probe.style.letterSpacing = styles.letterSpacing;
-    probe.style.fontFeatureSettings = styles.fontFeatureSettings;
-    probe.style.fontVariationSettings = styles.fontVariationSettings;
-    const host = element.ownerDocument.body ?? element.ownerDocument.documentElement;
-    host.append(probe);
-    const width = probe.getBoundingClientRect().width;
-    probe.remove();
-    chWidthCache.set(element, { key: cacheKey, width });
-    return width;
-  }
-  function resolveCssLengthPx(element, value) {
-    const direct = Number.parseFloat(value);
-    if (Number.isFinite(direct) && value.trim().endsWith("px")) {
-      return direct;
-    }
-    const cachedLengths = cssLengthCache.get(element);
-    const cached = cachedLengths?.get(value);
-    if (cached !== void 0) {
-      return cached;
-    }
-    const probe = element.ownerDocument.createElement("span");
-    probe.style.position = "absolute";
-    probe.style.visibility = "hidden";
-    probe.style.pointerEvents = "none";
-    probe.style.width = value.trim() || "0px";
-    element.append(probe);
-    const width = probe.getBoundingClientRect().width;
-    probe.remove();
-    const resolved = Number.isFinite(width) ? width : 0;
-    if (cachedLengths) {
-      cachedLengths.set(value, resolved);
-    } else {
-      cssLengthCache.set(element, /* @__PURE__ */ new Map([[value, resolved]]));
-    }
-    return resolved;
-  }
-
-  // src/shared/tableStructureEdits.ts
-  var EMPTY_DATA_CELL_RAW = "  ";
-  var EMPTY_DELIMITER_CELL_RAW = " --- ";
-  function insertTableColumnEdit(table2, columnIndex) {
-    if (!Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex > table2.columnCount) {
-      return null;
-    }
-    return replaceTableLines(table2, (rawCells, emptyCellRaw) => {
-      const next2 = [...rawCells];
-      next2.splice(columnIndex, 0, emptyCellRaw);
-      return next2;
-    });
-  }
-  function deleteTableColumnEdit(table2, columnIndex) {
-    if (table2.columnCount <= 1 || !Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex >= table2.columnCount) {
-      return null;
-    }
-    return replaceTableLines(table2, (rawCells) => {
-      const next2 = [...rawCells];
-      next2.splice(columnIndex, 1);
-      return next2;
-    });
-  }
-  function insertTableRowEdit(table2, bodyIndex) {
-    if (!Number.isInteger(bodyIndex) || bodyIndex < 0 || bodyIndex > table2.body.length) {
-      return null;
-    }
-    const previousRow = bodyIndex === 0 ? table2.delimiter : table2.body[bodyIndex - 1];
-    const rowText = formatMarkdownRow(
-      Array.from({ length: table2.columnCount }, () => "")
-    );
-    return {
-      from: previousRow.to,
-      to: previousRow.to,
-      insert: `${getTableLineSeparator(table2)}${rowText}`
-    };
-  }
-  function deleteTableRowEdit(table2, bodyIndex) {
-    if (!Number.isInteger(bodyIndex) || bodyIndex < 0) {
-      return null;
-    }
-    const row = table2.body[bodyIndex];
-    if (!row) {
-      return null;
-    }
-    const previousRow = bodyIndex === 0 ? table2.delimiter : table2.body[bodyIndex - 1];
-    return { from: previousRow.to, to: row.to, insert: "" };
-  }
-  function replaceTableLines(table2, mutateRawCells) {
-    const lines = [table2.header, table2.delimiter, ...table2.body].map((row) => {
-      const emptyCellRaw = row === table2.delimiter ? EMPTY_DELIMITER_CELL_RAW : EMPTY_DATA_CELL_RAW;
-      return `|${mutateRawCells(paddedRawCells(row, table2.columnCount, emptyCellRaw), emptyCellRaw).join("|")}|`;
-    });
-    return {
-      from: table2.from,
-      to: table2.to,
-      insert: lines.join(getTableLineSeparator(table2))
-    };
-  }
-  function paddedRawCells(row, columnCount, emptyCellRaw) {
-    return Array.from(
-      { length: columnCount },
-      (_, column) => row.cells[column]?.raw ?? emptyCellRaw
-    );
-  }
-  function getTableLineSeparator(table2) {
-    return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
-  }
-
-  // src/editor/table/tableStructureControls.ts
-  var CONTROLS_OPEN_CLASS = "mlrt-table-controls-open";
-  var INDICATOR_ACTIVE_CLASS = "mlrt-table-indicator-active";
-  var HAIRLINE_THICKNESS = 3;
-  var DOT_THICKNESS = 13;
-  var EDGE_GROW_ZONE = 22;
-  var EDGE_APPROACH_ZONE = 26;
-  var MIN_INDICATOR_LENGTH = 12;
-  var lastPointerPosition = null;
-  function bindTableStructureControls(options) {
-    const { wrapper, view: view2, tableScroll, tableElement, table: table2 } = options;
-    const doc2 = wrapper.ownerDocument;
-    const layer = doc2.createElement("div");
-    layer.className = "mlrt-table-controls-layer";
-    layer.contentEditable = "false";
-    let menu = null;
-    let menuAnchor = null;
-    let pendingFrame = 0;
-    let indicatorColumn = null;
-    let indicatorRow = null;
-    let minRowIndicatorLengthPx = 0;
-    const currentTable = () => {
-      const widgetTable = getTableWidgetTable(wrapper) ?? table2;
-      return getParsedTables(view2.state.doc).find(
-        (candidate) => candidate.from === widgetTable.from
-      ) ?? widgetTable;
-    };
-    const applyStructureEdit = (makeEdit, makeFocusTarget) => {
-      const current = currentTable();
-      const edit = makeEdit(current);
-      closeMenu();
-      if (!edit) {
-        return;
-      }
-      const focusTarget = makeFocusTarget(current);
-      view2.dispatch({
-        changes: { from: edit.from, to: edit.to, insert: edit.insert },
-        annotations: [allowTableSourceChange.of(true)],
-        userEvent: "input"
-      });
-      if (focusTarget) {
-        focusCellAfterStructureEdit(doc2, current.from, focusTarget);
-      } else {
-        view2.focus();
-      }
-    };
-    const closeMenu = () => {
-      if (!menu) {
-        return;
-      }
-      menu.remove();
-      menu = null;
-      menuAnchor?.classList.remove(INDICATOR_ACTIVE_CLASS);
-      menuAnchor = null;
-      wrapper.classList.remove(CONTROLS_OPEN_CLASS);
-      doc2.removeEventListener("pointerdown", onDocumentPointerDown, true);
-      doc2.removeEventListener("keydown", onDocumentKeyDown, true);
-      scheduleUpdate();
-    };
-    const onDocumentPointerDown = (event) => {
-      if (menu && event.target instanceof Node && !menu.contains(event.target) && event.target !== menuAnchor && !(menuAnchor?.contains(event.target) ?? false)) {
-        closeMenu();
-      }
-    };
-    const onDocumentKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        closeMenu();
-      }
-    };
-    const openMenu = (anchor, entries2) => {
-      closeMenu();
-      menu = doc2.createElement("div");
-      menu.className = "mlrt-table-structure-menu";
-      menu.setAttribute("role", "menu");
-      for (const entry of entries2) {
-        const item = doc2.createElement("button");
-        item.type = "button";
-        item.className = "mlrt-table-structure-menu-item";
-        item.setAttribute("role", "menuitem");
-        item.dataset.action = entry.action;
-        item.disabled = entry.disabled === true;
-        const label = doc2.createElement("span");
-        label.className = "mlrt-table-structure-menu-label";
-        label.textContent = entry.label;
-        item.append(createStructureMenuIcon(doc2, entry.icon), label);
-        item.addEventListener("mousedown", preventFocusSteal);
-        item.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          entry.apply();
-        });
-        menu.append(item);
-      }
-      menuAnchor = anchor;
-      anchor.classList.add(INDICATOR_ACTIVE_CLASS);
-      wrapper.classList.add(CONTROLS_OPEN_CLASS);
-      wrapper.append(menu);
-      positionMenu(anchor);
-      doc2.addEventListener("pointerdown", onDocumentPointerDown, true);
-      doc2.addEventListener("keydown", onDocumentKeyDown, true);
-    };
-    const positionMenu = (anchor) => {
-      if (!menu) {
-        return;
-      }
-      const wrapperRect = wrapper.getBoundingClientRect();
-      const anchorRect = anchor.getBoundingClientRect();
-      const menuWidth = menu.offsetWidth;
-      const isColumnAnchor = anchor.classList.contains(
-        "mlrt-table-col-indicator"
-      );
-      let left;
-      let top2;
-      if (isColumnAnchor) {
-        left = anchorRect.left - wrapperRect.left;
-        top2 = anchorRect.bottom - wrapperRect.top + 3;
-      } else {
-        left = anchorRect.right - wrapperRect.left + 3;
-        top2 = anchorRect.top - wrapperRect.top;
-      }
-      const maxLeft = wrapperRect.width - menuWidth - 2;
-      menu.style.left = `${Math.max(Math.min(left, maxLeft), -DOT_THICKNESS)}px`;
-      menu.style.top = `${top2}px`;
-    };
-    const openColumnMenu = (anchor, column) => {
-      const canDelete = currentTable().columnCount > 1;
-      openMenu(anchor, [
-        {
-          icon: "select",
-          label: "Select column",
-          action: "select-column",
-          apply: () => {
-            const current = currentTable();
-            closeMenu();
-            selectTableColumn(
-              wrapper,
-              current.from,
-              column,
-              current.body.length + 1
-            );
-          }
-        },
-        {
-          icon: "insert-column-left",
-          label: "Insert column left",
-          action: "insert-column-left",
-          apply: () => applyStructureEdit(
-            (current) => insertTableColumnEdit(current, column),
-            () => ({ rowKind: "header", rowIndex: 0, column })
-          )
-        },
-        {
-          icon: "insert-column-right",
-          label: "Insert column right",
-          action: "insert-column-right",
-          apply: () => applyStructureEdit(
-            (current) => insertTableColumnEdit(current, column + 1),
-            () => ({ rowKind: "header", rowIndex: 0, column: column + 1 })
-          )
-        },
-        {
-          icon: "delete",
-          label: "Delete column",
-          action: "delete-column",
-          disabled: !canDelete,
-          apply: () => applyStructureEdit(
-            (current) => deleteTableColumnEdit(current, column),
-            (current) => ({
-              rowKind: "header",
-              rowIndex: 0,
-              column: Math.max(0, Math.min(column, current.columnCount - 2))
-            })
-          )
-        }
-      ]);
-    };
-    const openRowMenu = (anchor, rowKind, rowIndex) => {
-      if (rowKind === "header") {
-        openMenu(anchor, [
-          {
-            icon: "select",
-            label: "Select row",
-            action: "select-row",
-            apply: () => {
-              const current = currentTable();
-              closeMenu();
-              selectTableRow(wrapper, current.from, 0, current.columnCount);
-            }
-          },
-          {
-            icon: "insert-row-below",
-            label: "Insert row below",
-            action: "insert-row-below",
-            apply: () => applyStructureEdit(
-              (current) => insertTableRowEdit(current, 0),
-              () => ({ rowKind: "body", rowIndex: 0, column: 0 })
-            )
-          }
-        ]);
-        return;
-      }
-      openMenu(anchor, [
-        {
-          icon: "select",
-          label: "Select row",
-          action: "select-row",
-          apply: () => {
-            const current = currentTable();
-            closeMenu();
-            selectTableRow(
-              wrapper,
-              current.from,
-              rowIndex + 1,
-              current.columnCount
-            );
-          }
-        },
-        {
-          icon: "insert-row-above",
-          label: "Insert row above",
-          action: "insert-row-above",
-          apply: () => applyStructureEdit(
-            (current) => insertTableRowEdit(current, rowIndex),
-            () => ({ rowKind: "body", rowIndex, column: 0 })
-          )
-        },
-        {
-          icon: "insert-row-below",
-          label: "Insert row below",
-          action: "insert-row-below",
-          apply: () => applyStructureEdit(
-            (current) => insertTableRowEdit(current, rowIndex + 1),
-            () => ({ rowKind: "body", rowIndex: rowIndex + 1, column: 0 })
-          )
-        },
-        {
-          icon: "delete",
-          label: "Delete row",
-          action: "delete-row",
-          apply: () => applyStructureEdit(
-            (current) => deleteTableRowEdit(current, rowIndex),
-            (current) => current.body.length > 1 ? {
-              rowKind: "body",
-              rowIndex: Math.min(rowIndex, current.body.length - 2),
-              column: 0
-            } : null
-          )
-        }
-      ]);
-    };
-    const columnIndicator = createIndicatorButton(
-      doc2,
-      "mlrt-table-col-indicator"
-    );
-    columnIndicator.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (indicatorColumn === null) {
-        return;
-      }
-      if (menuAnchor === columnIndicator) {
-        closeMenu();
-        return;
-      }
-      openColumnMenu(columnIndicator, indicatorColumn);
-    });
-    layer.append(columnIndicator);
-    const rowIndicator = createIndicatorButton(doc2, "mlrt-table-row-indicator");
-    rowIndicator.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!indicatorRow) {
-        return;
-      }
-      if (menuAnchor === rowIndicator) {
-        closeMenu();
-        return;
-      }
-      openRowMenu(rowIndicator, indicatorRow.rowKind, indicatorRow.rowIndex);
-    });
-    layer.append(rowIndicator);
-    const focusColumnIndicator = doc2.createElement("div");
-    focusColumnIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-col-indicator";
-    focusColumnIndicator.hidden = true;
-    layer.append(focusColumnIndicator);
-    const focusRowIndicator = doc2.createElement("div");
-    focusRowIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-row-indicator";
-    focusRowIndicator.hidden = true;
-    layer.append(focusRowIndicator);
-    const minColumnIndicatorLengthPx = () => Math.max(
-      MIN_INDICATOR_LENGTH,
-      MIN_COLUMN_WIDTH_CH * measureChWidth(tableElement)
-    );
-    const minRowIndicatorLengthPxFor = (cell2) => {
-      if (minRowIndicatorLengthPx > 0) {
-        return minRowIndicatorLengthPx;
-      }
-      if (!cell2) {
-        return 16;
-      }
-      const styles = getComputedStyle(cell2);
-      const lineHeight = Number.parseFloat(styles.lineHeight);
-      const fontSize = Number.parseFloat(styles.fontSize);
-      minRowIndicatorLengthPx = Math.max(
-        MIN_INDICATOR_LENGTH,
-        Number.isFinite(lineHeight) ? lineHeight : Number.isFinite(fontSize) ? fontSize * 1.4 : 16
-      );
-      return minRowIndicatorLengthPx;
-    };
-    const positionColumnIndicator = (element, state, cellRect, wrapperRect, tableRect) => {
-      const visibleLeft = Math.max(cellRect.left, wrapperRect.left);
-      const visibleRight = Math.min(cellRect.right, wrapperRect.right);
-      const visibleWidth = visibleRight - visibleLeft;
-      if (visibleWidth < MIN_INDICATOR_LENGTH) {
-        element.hidden = true;
-        return false;
-      }
-      const width = Math.max(
-        MIN_INDICATOR_LENGTH,
-        Math.min(minColumnIndicatorLengthPx(), visibleWidth - 4)
-      );
-      const left = (visibleLeft + visibleRight) / 2 - width / 2 - wrapperRect.left;
-      const tableTop = tableRect.top - wrapperRect.top;
-      element.hidden = false;
-      element.style.left = `${left}px`;
-      element.style.width = `${width}px`;
-      if (state === "dots") {
-        element.dataset.state = "dots";
-        element.style.top = `${tableTop - (DOT_THICKNESS - 1)}px`;
-        element.style.height = `${DOT_THICKNESS}px`;
-      } else {
-        if (state) {
-          element.dataset.state = "line";
-        }
-        element.style.top = `${tableTop - 1}px`;
-        element.style.height = `${HAIRLINE_THICKNESS}px`;
-      }
-      return true;
-    };
-    const positionRowIndicator = (element, state, rowRect, wrapperRect, referenceCell) => {
-      const height = Math.max(
-        MIN_INDICATOR_LENGTH,
-        Math.min(minRowIndicatorLengthPxFor(referenceCell), rowRect.height - 4)
-      );
-      const top2 = rowRect.top + (rowRect.height - height) / 2 - wrapperRect.top;
-      element.hidden = false;
-      element.style.top = `${top2}px`;
-      element.style.height = `${height}px`;
-      if (state === "dots") {
-        element.dataset.state = "dots";
-        element.style.left = `${-(DOT_THICKNESS - 1)}px`;
-        element.style.width = `${DOT_THICKNESS}px`;
-      } else {
-        if (state) {
-          element.dataset.state = "line";
-        }
-        element.style.left = `-1px`;
-        element.style.width = `${HAIRLINE_THICKNESS}px`;
-      }
-      return true;
-    };
-    const update = () => {
-      pendingFrame = 0;
-      if (menu) {
-        return;
-      }
-      const wrapperRect = wrapper.getBoundingClientRect();
-      const tableRect = tableElement.getBoundingClientRect();
-      if (wrapperRect.width <= 0 || tableRect.height <= 0) {
-        columnIndicator.hidden = true;
-        rowIndicator.hidden = true;
-        focusColumnIndicator.hidden = true;
-        focusRowIndicator.hidden = true;
-        return;
-      }
-      const dataLeftX = wrapperRect.left;
-      const dataRightX = Math.min(tableRect.right, wrapperRect.right);
-      const rows = collectRenderedRows(tableElement);
-      const headerCells = Array.from(
-        tableElement.querySelectorAll(
-          `thead ${TABLE_CELL_SELECTOR}`
-        )
-      );
-      const pointer = lastPointerPosition;
-      let mouseColumn = null;
-      let mouseColumnState = "line";
-      let mouseRow = null;
-      let mouseRowState = "line";
-      if (pointer) {
-        const { x, y } = pointer;
-        if (y >= tableRect.top - EDGE_APPROACH_ZONE && y <= tableRect.bottom && x >= dataLeftX && x <= dataRightX) {
-          mouseColumn = findColumnAt(headerCells, x);
-          mouseColumnState = y <= tableRect.top + EDGE_GROW_ZONE ? "dots" : "line";
-        }
-        if (x >= dataLeftX - EDGE_APPROACH_ZONE && x <= dataRightX && y >= tableRect.top && y <= tableRect.bottom) {
-          mouseRow = findRowAt(rows, y);
-          mouseRowState = x <= dataLeftX + EDGE_GROW_ZONE ? "dots" : "line";
-        }
-      }
-      const activeCell = findFocusedCell(doc2, wrapper);
-      let focusColumn = null;
-      let focusRow = null;
-      if (activeCell) {
-        const column = Number(activeCell.dataset.column ?? "");
-        focusColumn = Number.isInteger(column) && column >= 0 && column < headerCells.length ? column : null;
-        focusRow = rows.find(
-          (row) => row.rowKind === activeCell.dataset.rowKind && row.rowIndex === Number(activeCell.dataset.rowIndex ?? "")
-        ) ?? null;
-      }
-      indicatorColumn = mouseColumn;
-      if (mouseColumn !== null && headerCells[mouseColumn]) {
-        const shown = positionColumnIndicator(
-          columnIndicator,
-          mouseColumnState,
-          headerCells[mouseColumn].getBoundingClientRect(),
-          wrapperRect,
-          tableRect
-        );
-        if (!shown) {
-          indicatorColumn = null;
-        }
-        columnIndicator.setAttribute(
-          "aria-label",
-          `Column ${mouseColumn + 1} actions`
-        );
-      } else {
-        columnIndicator.hidden = true;
-      }
-      indicatorRow = mouseRow;
-      if (mouseRow) {
-        positionRowIndicator(
-          rowIndicator,
-          mouseRowState,
-          mouseRow.element.getBoundingClientRect(),
-          wrapperRect,
-          mouseRow.element.querySelector(TABLE_CELL_SELECTOR)
-        );
-        rowIndicator.setAttribute(
-          "aria-label",
-          mouseRow.rowKind === "header" ? "Header row actions" : `Row ${mouseRow.rowIndex + 1} actions`
-        );
-      } else {
-        rowIndicator.hidden = true;
-      }
-      if (focusColumn !== null && focusColumn !== mouseColumn) {
-        positionColumnIndicator(
-          focusColumnIndicator,
-          null,
-          headerCells[focusColumn].getBoundingClientRect(),
-          wrapperRect,
-          tableRect
-        );
-      } else {
-        focusColumnIndicator.hidden = true;
-      }
-      if (focusRow && !(mouseRow && mouseRow.rowKind === focusRow.rowKind && mouseRow.rowIndex === focusRow.rowIndex)) {
-        positionRowIndicator(
-          focusRowIndicator,
-          null,
-          focusRow.element.getBoundingClientRect(),
-          wrapperRect,
-          focusRow.element.querySelector(TABLE_CELL_SELECTOR)
-        );
-      } else {
-        focusRowIndicator.hidden = true;
-      }
-    };
-    const scheduleUpdate = () => {
-      if (pendingFrame !== 0) {
-        return;
-      }
-      const raf = doc2.defaultView?.requestAnimationFrame;
-      if (!raf) {
-        update();
-        return;
-      }
-      pendingFrame = raf(() => update());
-    };
-    const onScrollerMouseMove = (event) => {
-      lastPointerPosition = { x: event.clientX, y: event.clientY };
-      scheduleUpdate();
-    };
-    const onScrollerMouseLeave = () => {
-      lastPointerPosition = null;
-      scheduleUpdate();
-    };
-    const scroller = view2.scrollDOM;
-    scroller.addEventListener("mousemove", onScrollerMouseMove);
-    scroller.addEventListener("mouseleave", onScrollerMouseLeave);
-    wrapper.addEventListener("focusin", scheduleUpdate);
-    wrapper.addEventListener("focusout", scheduleUpdate);
-    tableScroll.addEventListener("scroll", scheduleUpdate);
-    const ResizeObserverCtor = doc2.defaultView?.ResizeObserver;
-    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleUpdate) : void 0;
-    resizeObserver?.observe(tableElement);
-    resizeObserver?.observe(tableScroll);
-    wrapper.append(layer);
-    scheduleUpdate();
-    return () => {
-      closeMenu();
-      if (pendingFrame !== 0) {
-        doc2.defaultView?.cancelAnimationFrame(pendingFrame);
-        pendingFrame = 0;
-      }
-      scroller.removeEventListener("mousemove", onScrollerMouseMove);
-      scroller.removeEventListener("mouseleave", onScrollerMouseLeave);
-      wrapper.removeEventListener("focusin", scheduleUpdate);
-      wrapper.removeEventListener("focusout", scheduleUpdate);
-      tableScroll.removeEventListener("scroll", scheduleUpdate);
-      resizeObserver?.disconnect();
-      layer.remove();
-    };
-  }
-  function createIndicatorButton(doc2, className) {
-    const button = doc2.createElement("button");
-    button.type = "button";
-    button.tabIndex = -1;
-    button.className = className;
-    button.dataset.state = "line";
-    button.hidden = true;
-    button.addEventListener("mousedown", preventFocusSteal);
-    const dots = doc2.createElement("span");
-    dots.className = "mlrt-table-indicator-dots";
-    dots.setAttribute("aria-hidden", "true");
-    for (let index = 0; index < 3; index++) {
-      const dot2 = doc2.createElement("span");
-      dot2.className = "mlrt-table-indicator-dot";
-      dots.append(dot2);
-    }
-    button.append(dots);
-    return button;
-  }
-  function preventFocusSteal(event) {
-    event.preventDefault();
-  }
-  function createStructureMenuIcon(doc2, icon) {
-    const svg2 = doc2.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg2.classList.add("mlrt-table-structure-menu-icon");
-    svg2.setAttribute("viewBox", "0 0 16 16");
-    svg2.setAttribute("width", "16");
-    svg2.setAttribute("height", "16");
-    svg2.setAttribute("aria-hidden", "true");
-    svg2.setAttribute("focusable", "false");
-    const appendPath = (d) => {
-      const path = doc2.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", d);
-      svg2.append(path);
-    };
-    switch (icon) {
-      case "select":
-        appendPath("M3 3h10v10H3V3Zm1 1v8h8V4H4Zm2 2h4v4H6V6Z");
-        break;
-      case "insert-column-left":
-        appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
-        appendPath("M2 4h1v8H2V4Zm4 3h2V5h1v2h2v1H9v2H8V8H6V7Z");
-        break;
-      case "insert-column-right":
-        appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
-        appendPath("M13 4h1v8h-1V4ZM6 7h2V5h1v2h2v1H9v2H8V8H6V7Z");
-        break;
-      case "insert-row-above":
-        appendPath("M2 4h12v8H2V4Zm1 1v6h10V5H3Z");
-        appendPath("M4 2h8v1H4V2Zm3 4h2V4h1v2h2v1h-2v2H9V7H7V6Z");
-        break;
-      case "insert-row-below":
-        appendPath("M2 4h12v8H2V4Zm1 1v6h10V5H3Z");
-        appendPath("M4 13h8v1H4v-1Zm3-6h2V5h1v2h2v1h-2v2H9V8H7V7Z");
-        break;
-      case "delete":
-        appendPath("M6 2h4l1 1h3v1H2V3h3l1-1Zm-2 3h8l-.5 9h-7L4 5Zm1.1 1 .39 7h5.02l.39-7H5.1Z");
-        break;
-    }
-    return svg2;
-  }
-  function findColumnAt(headerCells, x) {
-    for (let column = 0; column < headerCells.length; column++) {
-      const rect = headerCells[column].getBoundingClientRect();
-      if (x <= rect.right) {
-        return x >= rect.left - 1 ? column : null;
-      }
-    }
-    return null;
-  }
-  function findRowAt(rows, y) {
-    for (const row of rows) {
-      const rect = row.element.getBoundingClientRect();
-      if (y <= rect.bottom) {
-        return y >= rect.top - 1 ? row : null;
-      }
-    }
-    return null;
-  }
-  function findFocusedCell(doc2, wrapper) {
-    const active = doc2.activeElement;
-    if (active instanceof HTMLElement && wrapper.contains(active) && active.classList.contains("mlrt-table-cell")) {
-      return active;
-    }
-    return null;
-  }
-  function collectRenderedRows(tableElement) {
-    const rows = [];
-    const headerRow = tableElement.querySelector(
-      "thead tr"
-    );
-    if (headerRow) {
-      rows.push({ element: headerRow, rowKind: "header", rowIndex: 0 });
-    }
-    tableElement.querySelectorAll("tbody tr").forEach((element, rowIndex) => {
-      rows.push({ element, rowKind: "body", rowIndex });
-    });
-    return rows;
-  }
-  function focusCellAfterStructureEdit(doc2, tableFrom, target) {
-    setTimeout(() => {
-      const cell2 = doc2.querySelector(
-        [
-          `${TABLE_CELL_SELECTOR}[data-table-from="${tableFrom}"]`,
-          `[data-row-kind="${target.rowKind}"]`,
-          `[data-row-index="${target.rowIndex}"]`,
-          `[data-column="${target.column}"]`
-        ].join("")
-      );
-      if (cell2) {
-        focusCellAtEnd(cell2);
-      }
-    }, 0);
   }
 
   // node_modules/dompurify/dist/purify.es.mjs
@@ -28048,12 +25552,12 @@
     let URI_SAFE_ATTRIBUTES = null;
     const DEFAULT_URI_SAFE_ATTRIBUTES = addToSet({}, ["alt", "class", "for", "id", "label", "name", "pattern", "placeholder", "role", "summary", "title", "value", "style", "xmlns"]);
     const MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML";
-    const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+    const SVG_NAMESPACE2 = "http://www.w3.org/2000/svg";
     const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
     let NAMESPACE = HTML_NAMESPACE;
     let IS_EMPTY_INPUT = false;
     let ALLOWED_NAMESPACES = null;
-    const DEFAULT_ALLOWED_NAMESPACES = addToSet({}, [MATHML_NAMESPACE, SVG_NAMESPACE, HTML_NAMESPACE], stringToString);
+    const DEFAULT_ALLOWED_NAMESPACES = addToSet({}, [MATHML_NAMESPACE, SVG_NAMESPACE2, HTML_NAMESPACE], stringToString);
     const DEFAULT_MATHML_TEXT_INTEGRATION_POINTS = freeze(["mi", "mo", "mn", "ms", "mtext"]);
     let MATHML_TEXT_INTEGRATION_POINTS = addToSet({}, DEFAULT_MATHML_TEXT_INTEGRATION_POINTS);
     const DEFAULT_HTML_INTEGRATION_POINTS = freeze(["annotation-xml"]);
@@ -28260,13 +25764,13 @@
       if (parent.namespaceURI === HTML_NAMESPACE) {
         return tagName === "math";
       }
-      if (parent.namespaceURI === SVG_NAMESPACE) {
+      if (parent.namespaceURI === SVG_NAMESPACE2) {
         return tagName === "math" && HTML_INTEGRATION_POINTS[parentTagName];
       }
       return Boolean(ALL_MATHML_TAGS[tagName]);
     };
     const _checkHtmlNamespace = function _checkHtmlNamespace2(tagName, parent, parentTagName) {
-      if (parent.namespaceURI === SVG_NAMESPACE && !HTML_INTEGRATION_POINTS[parentTagName]) {
+      if (parent.namespaceURI === SVG_NAMESPACE2 && !HTML_INTEGRATION_POINTS[parentTagName]) {
         return false;
       }
       if (parent.namespaceURI === MATHML_NAMESPACE && !MATHML_TEXT_INTEGRATION_POINTS[parentTagName]) {
@@ -28287,7 +25791,7 @@
       if (!ALLOWED_NAMESPACES[element.namespaceURI]) {
         return false;
       }
-      if (element.namespaceURI === SVG_NAMESPACE) {
+      if (element.namespaceURI === SVG_NAMESPACE2) {
         return _checkSvgNamespace(tagName, parent, parentTagName);
       }
       if (element.namespaceURI === MATHML_NAMESPACE) {
@@ -29000,7 +26504,7 @@
     arrayReplaceAt: () => arrayReplaceAt,
     asciiTrim: () => asciiTrim,
     assign: () => assign,
-    escapeHtml: () => escapeHtml2,
+    escapeHtml: () => escapeHtml,
     escapeRE: () => escapeRE,
     fromCodePoint: () => fromCodePoint3,
     has: () => has,
@@ -30016,7 +27520,7 @@
   function replaceUnsafeChar(ch) {
     return HTML_REPLACEMENTS[ch];
   }
-  function escapeHtml2(str) {
+  function escapeHtml(str) {
     if (HTML_ESCAPE_TEST_RE.test(str)) {
       return str.replace(HTML_ESCAPE_REPLACE_RE, replaceUnsafeChar);
     }
@@ -30306,11 +27810,11 @@
   var default_rules = {};
   default_rules.code_inline = function(tokens, idx, options, env, slf) {
     const token = tokens[idx];
-    return "<code" + slf.renderAttrs(token) + ">" + escapeHtml2(token.content) + "</code>";
+    return "<code" + slf.renderAttrs(token) + ">" + escapeHtml(token.content) + "</code>";
   };
   default_rules.code_block = function(tokens, idx, options, env, slf) {
     const token = tokens[idx];
-    return "<pre" + slf.renderAttrs(token) + "><code>" + escapeHtml2(tokens[idx].content) + "</code></pre>\n";
+    return "<pre" + slf.renderAttrs(token) + "><code>" + escapeHtml(tokens[idx].content) + "</code></pre>\n";
   };
   default_rules.fence = function(tokens, idx, options, env, slf) {
     const token = tokens[idx];
@@ -30324,9 +27828,9 @@
     }
     let highlighted;
     if (options.highlight) {
-      highlighted = options.highlight(token.content, langName, langAttrs) || escapeHtml2(token.content);
+      highlighted = options.highlight(token.content, langName, langAttrs) || escapeHtml(token.content);
     } else {
-      highlighted = escapeHtml2(token.content);
+      highlighted = escapeHtml(token.content);
     }
     if (highlighted.indexOf("<pre") === 0) {
       return highlighted + "\n";
@@ -30361,7 +27865,7 @@
     return options.breaks ? options.xhtmlOut ? "<br />\n" : "<br>\n" : "\n";
   };
   default_rules.text = function(tokens, idx) {
-    return escapeHtml2(tokens[idx].content);
+    return escapeHtml(tokens[idx].content);
   };
   default_rules.html_block = function(tokens, idx) {
     return tokens[idx].content;
@@ -30379,7 +27883,7 @@
     }
     result = "";
     for (i2 = 0, l = token.attrs.length; i2 < l; i2++) {
-      result += " " + escapeHtml2(token.attrs[i2][0]) + '="' + escapeHtml2(token.attrs[i2][1]) + '"';
+      result += " " + escapeHtml(token.attrs[i2][0]) + '="' + escapeHtml(token.attrs[i2][1]) + '"';
     }
     return result;
   };
@@ -35269,6 +32773,5277 @@
     ]);
   }
 
+  // src/shared/clipboardModel.ts
+  var MLRT_CLIPBOARD_MIME = "application/x-markdown-live-editor+json";
+  var MLRT_CLIPBOARD_VERSION = 1;
+  var VALID_ALIGNMENTS = /* @__PURE__ */ new Set([
+    "left",
+    "center",
+    "right"
+  ]);
+  function normalizeCellText(value) {
+    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+  }
+  function validateClipboardPayload(value) {
+    if (!isRecord(value) || value.version !== MLRT_CLIPBOARD_VERSION) {
+      return null;
+    }
+    if (typeof value.sourceDocument !== "string") {
+      return null;
+    }
+    const cutToken = value.cutToken === void 0 || typeof value.cutToken === "string" ? value.cutToken : null;
+    if (cutToken === null) {
+      return null;
+    }
+    if (value.kind === "document") {
+      if (typeof value.markdown !== "string") {
+        return null;
+      }
+      return {
+        version: MLRT_CLIPBOARD_VERSION,
+        kind: "document",
+        sourceDocument: value.sourceDocument,
+        markdown: normalizeCellText(value.markdown),
+        ...cutToken ? { cutToken } : {}
+      };
+    }
+    if (value.kind !== "grid" || !Array.isArray(value.rows) || value.rows.length === 0 || !Array.isArray(value.alignments) || typeof value.includesHeader !== "boolean" || value.exactMarkdown !== void 0 && typeof value.exactMarkdown !== "string") {
+      return null;
+    }
+    const width = Array.isArray(value.rows[0]) ? value.rows[0].length : 0;
+    if (width === 0) {
+      return null;
+    }
+    const rows = [];
+    for (const candidateRow of value.rows) {
+      if (!Array.isArray(candidateRow) || candidateRow.length !== width) {
+        return null;
+      }
+      const row = [];
+      for (const candidateCell of candidateRow) {
+        if (!isRecord(candidateCell) || typeof candidateCell.text !== "string" || candidateCell.markdown !== void 0 && typeof candidateCell.markdown !== "string") {
+          return null;
+        }
+        const text3 = normalizeCellText(candidateCell.text);
+        const markdown2 = candidateCell.markdown;
+        row.push({
+          text: text3,
+          ...typeof markdown2 === "string" && isSafeRawCellSource(markdown2, text3) ? { markdown: markdown2 } : {}
+        });
+      }
+      rows.push(row);
+    }
+    const alignments = [];
+    for (let column = 0; column < width; column++) {
+      const alignment = value.alignments[column];
+      alignments.push(
+        typeof alignment === "string" && VALID_ALIGNMENTS.has(alignment) ? alignment : "left"
+      );
+    }
+    return {
+      version: MLRT_CLIPBOARD_VERSION,
+      kind: "grid",
+      sourceDocument: value.sourceDocument,
+      rows,
+      alignments,
+      includesHeader: value.includesHeader,
+      ...typeof value.exactMarkdown === "string" ? { exactMarkdown: normalizeCellText(value.exactMarkdown) } : {},
+      ...cutToken ? { cutToken } : {}
+    };
+  }
+  function parseClipboardPayload(text3) {
+    try {
+      return validateClipboardPayload(JSON.parse(text3));
+    } catch {
+      return null;
+    }
+  }
+  function serializeDelimitedGrid(rows, delimiter2) {
+    return rows.map((row) => row.map((value) => quoteDelimited(value, delimiter2)).join(delimiter2)).join("\r\n");
+  }
+  function parseDelimitedGrid(input, delimiter2) {
+    const text3 = normalizeCellText(input);
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let index = 0; index < text3.length; index++) {
+      const character = text3[index];
+      if (quoted) {
+        if (character === '"') {
+          if (text3[index + 1] === '"') {
+            field += '"';
+            index++;
+          } else {
+            quoted = false;
+          }
+        } else {
+          field += character;
+        }
+        continue;
+      }
+      if (character === '"' && field.length === 0) {
+        quoted = true;
+        continue;
+      }
+      if (character === delimiter2) {
+        row.push(field);
+        field = "";
+        continue;
+      }
+      if (character === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+        continue;
+      }
+      field += character;
+    }
+    if (quoted) {
+      return null;
+    }
+    row.push(field);
+    rows.push(row);
+    if (rows.length > 1 && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "" && text3.endsWith("\n")) {
+      rows.pop();
+    }
+    const width = Math.max(...rows.map((candidate) => candidate.length));
+    return rows.map((candidate) => [
+      ...candidate,
+      ...Array.from({ length: width - candidate.length }, () => "")
+    ]);
+  }
+  function gridToMarkdown(rows, alignments = []) {
+    if (rows.length === 0 || rows[0].length === 0) {
+      return "";
+    }
+    const width = rows[0].length;
+    const sourceRows = rows.map(
+      (row) => `|${Array.from(
+        { length: width },
+        (_, column) => sourceCellForMarkdown(row[column])
+      ).join("|")}|`
+    );
+    const delimiter2 = `|${Array.from(
+      { length: width },
+      (_, column) => alignmentDelimiter(alignments[column] ?? "left")
+    ).join("|")}|`;
+    return [sourceRows[0], delimiter2, ...sourceRows.slice(1)].join("\n");
+  }
+  function gridToHtml(rows, options = {}) {
+    const alignments = options.alignments ?? [];
+    const metadata = options.embeddedPayload ? `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute(options.embeddedPayload)}">` : "";
+    const body = rows.map((row, rowIndex) => {
+      const tagName = rowIndex === 0 && options.headerRow !== false ? "th" : "td";
+      return `<tr>${row.map((cell2, column) => {
+        const alignment = alignments[column] ?? "left";
+        const style = `text-align:${alignment};border:1px solid #000000;padding:2px 6px;vertical-align:top;white-space:pre-wrap`;
+        const content2 = options.rich && options.richCells?.[rowIndex]?.[column] !== void 0 ? options.richCells[rowIndex][column] : cellTextToHtml(cell2.text);
+        return `<${tagName} style="${style}">${content2}</${tagName}>`;
+      }).join("")}</tr>`;
+    }).join("");
+    return `${metadata}<table style="border-collapse:collapse">${body}</table>`;
+  }
+  function tableRectanglePayload(table2, rectangle, sourceDocument, cutToken) {
+    const rows = tableDataRows(table2);
+    const selected = rows.slice(rectangle.top, rectangle.bottom + 1).map((row) => row.slice(rectangle.left, rectangle.right + 1));
+    const fullTable = rectangle.top === 0 && rectangle.bottom === rows.length - 1 && rectangle.left === 0 && rectangle.right === table2.columnCount - 1;
+    return {
+      version: MLRT_CLIPBOARD_VERSION,
+      kind: "grid",
+      sourceDocument,
+      rows: selected,
+      alignments: table2.alignments.slice(rectangle.left, rectangle.right + 1),
+      includesHeader: rectangle.top === 0,
+      ...fullTable ? { exactMarkdown: tableSourceText(table2) } : {},
+      ...cutToken ? { cutToken } : {}
+    };
+  }
+  function resolveGridPasteRows(source, destination) {
+    if (source.length === 0 || source[0]?.length === 0) {
+      return null;
+    }
+    const sourceHeight = source.length;
+    const sourceWidth = source[0].length;
+    if (source.some((row) => row.length !== sourceWidth)) {
+      return null;
+    }
+    const destinationHeight = destination.bottom - destination.top + 1;
+    const destinationWidth = destination.right - destination.left + 1;
+    const isSingleAnchor = destinationHeight === 1 && destinationWidth === 1;
+    if (isSingleAnchor) {
+      return source.map((row) => row.map(cloneCell));
+    }
+    if (destinationHeight % sourceHeight !== 0 || destinationWidth % sourceWidth !== 0) {
+      return null;
+    }
+    return Array.from(
+      { length: destinationHeight },
+      (_, row) => Array.from(
+        { length: destinationWidth },
+        (_2, column) => cloneCell(source[row % sourceHeight][column % sourceWidth])
+      )
+    );
+  }
+  function buildGridPasteEdit(table2, plan) {
+    const sourceHeight = plan.rows.length;
+    const sourceWidth = plan.rows[0]?.length ?? 0;
+    const requiredRows = Math.max(
+      table2.body.length + 1,
+      plan.destination.top + sourceHeight
+    );
+    const requiredColumns = Math.max(
+      table2.columnCount,
+      plan.destination.left + sourceWidth
+    );
+    const dataRows = [table2.header, ...table2.body];
+    const rawRows = Array.from(
+      { length: requiredRows },
+      (_, rowIndex) => Array.from(
+        { length: requiredColumns },
+        (_2, column) => existingRawCell(dataRows[rowIndex], column)
+      )
+    );
+    for (let row = 0; row < sourceHeight; row++) {
+      for (let column = 0; column < sourceWidth; column++) {
+        const targetRow = plan.destination.top + row;
+        const targetColumn = plan.destination.left + column;
+        const sourceCell = plan.rows[row][column];
+        const existingRaw = rawRows[targetRow][targetColumn];
+        rawRows[targetRow][targetColumn] = sourceCell.markdown ?? formatDisplayCellForDestination(sourceCell.text, existingRaw);
+      }
+    }
+    const delimiterRaw = Array.from({ length: requiredColumns }, (_, column) => {
+      if (column < table2.columnCount) {
+        return table2.delimiter.cells[column]?.raw ?? " --- ";
+      }
+      const sourceColumn = column - plan.destination.left;
+      const alignment = plan.sourceAlignments?.[sourceColumn] ?? "left";
+      return alignmentDelimiter(alignment);
+    });
+    const lines = [rawRows[0], delimiterRaw, ...rawRows.slice(1)].map(
+      (rawCells) => `|${rawCells.join("|")}|`
+    );
+    return {
+      from: table2.from,
+      to: table2.to,
+      insert: lines.join(tableLineSeparator(table2))
+    };
+  }
+  function buildGridClearEdit(table2, rectangle) {
+    const rows = Array.from(
+      { length: rectangle.bottom - rectangle.top + 1 },
+      () => Array.from(
+        { length: rectangle.right - rectangle.left + 1 },
+        () => ({ text: "" })
+      )
+    );
+    return buildGridPasteEdit(table2, { rows, destination: rectangle });
+  }
+  function tableDataRows(table2) {
+    return [table2.header, ...table2.body].map(
+      (row) => Array.from({ length: table2.columnCount }, (_, column) => ({
+        text: markdownCellToDisplayText(row.cells[column]?.raw ?? ""),
+        markdown: row.cells[column]?.raw ?? "  "
+      }))
+    );
+  }
+  function tableSourceText(table2) {
+    return [table2.header, table2.delimiter, ...table2.body].map((row) => row.text).join(tableLineSeparator(table2));
+  }
+  function existingRawCell(row, column) {
+    return row?.cells[column]?.raw ?? "  ";
+  }
+  function formatDisplayCellForDestination(text3, raw) {
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(raw);
+    const leading = leadingWhitespace || " ";
+    const trailing = trailingWhitespace || " ";
+    return `${leading}${formatMarkdownCell(normalizeCellText(text3), {
+      trim: false
+    })}${trailing}`;
+  }
+  function sourceCellForMarkdown(cell2) {
+    if (cell2?.markdown && isSafeRawCellSource(cell2.markdown, cell2.text)) {
+      return cell2.markdown;
+    }
+    return ` ${formatMarkdownCell(cell2?.text ?? "", { trim: false })} `;
+  }
+  function isSafeRawCellSource(raw, text3) {
+    return !/[\r\n]/.test(raw) && !raw.includes("|") && markdownCellToDisplayText(raw) === text3;
+  }
+  function alignmentDelimiter(alignment) {
+    if (alignment === "center") {
+      return " :---: ";
+    }
+    if (alignment === "right") {
+      return " ---: ";
+    }
+    return " --- ";
+  }
+  function tableLineSeparator(table2) {
+    return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
+  }
+  function quoteDelimited(value, delimiter2) {
+    const normalized = normalizeCellText(value);
+    if (normalized.includes(delimiter2) || normalized.includes('"') || normalized.includes("\n")) {
+      return `"${normalized.replace(/"/g, '""')}"`;
+    }
+    return normalized;
+  }
+  function cellTextToHtml(value) {
+    return escapeHtml2(normalizeCellText(value)).replace(/\n/g, "<br>");
+  }
+  function escapeHtml2(value) {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function escapeHtmlAttribute(value) {
+    return escapeHtml2(value).replace(/\r?\n/g, "&#10;");
+  }
+  function cloneCell(cell2) {
+    return { text: cell2.text, ...cell2.markdown ? { markdown: cell2.markdown } : {} };
+  }
+  function isRecord(value) {
+    return Boolean(value) && typeof value === "object";
+  }
+
+  // src/editor/dragPosition.ts
+  function editorDragPosition(view2, clientX, clientY) {
+    const editorRect = view2.dom.getBoundingClientRect();
+    if (clientY < editorRect.top) {
+      return 0;
+    }
+    if (clientY > editorRect.bottom) {
+      return view2.state.doc.length;
+    }
+    if (editorRect.width <= 1) {
+      return null;
+    }
+    const clampedX = Math.max(
+      editorRect.left + 0.5,
+      Math.min(clientX, editorRect.right - 0.5)
+    );
+    return view2.posAtCoords({ x: clampedX, y: clientY });
+  }
+
+  // src/editor/documentSelectionState.ts
+  var projections = /* @__PURE__ */ new WeakMap();
+  var documentSelectionProjectionTransaction = Annotation.define();
+  function setDocumentSelectionProjection(doc2, projection) {
+    projections.set(doc2, {
+      anchor: projection.anchor,
+      head: projection.head,
+      tableRegions: projection.tableRegions.map(normalizeRegion)
+    });
+  }
+  function getDocumentSelectionProjection(doc2, selection) {
+    const projection = projections.get(doc2) ?? null;
+    if (projection && selection && (projection.anchor !== selection.anchor || projection.head !== selection.head)) {
+      projections.delete(doc2);
+      return null;
+    }
+    return projection ? {
+      anchor: projection.anchor,
+      head: projection.head,
+      tableRegions: projection.tableRegions.map((region) => ({ ...region }))
+    } : null;
+  }
+  function clearDocumentSelectionProjection(doc2) {
+    projections.delete(doc2);
+  }
+  function proseToTableRectangle(direction, cell2, dimensions) {
+    const address = clampCell(cell2, dimensions);
+    if (direction === "forward") {
+      return {
+        top: 0,
+        bottom: address.row,
+        left: 0,
+        right: address.column
+      };
+    }
+    return {
+      top: address.row,
+      bottom: Math.max(0, dimensions.rowCount - 1),
+      left: address.column,
+      right: Math.max(0, dimensions.columnCount - 1)
+    };
+  }
+  function tableToProseRectangle(direction, anchor, dimensions) {
+    const address = clampCell(anchor, dimensions);
+    return direction === "above" ? {
+      top: 0,
+      bottom: address.row,
+      left: 0,
+      right: Math.max(0, dimensions.columnCount - 1)
+    } : {
+      top: address.row,
+      bottom: Math.max(0, dimensions.rowCount - 1),
+      left: 0,
+      right: Math.max(0, dimensions.columnCount - 1)
+    };
+  }
+  function fullTableRectangle(dimensions) {
+    return {
+      top: 0,
+      bottom: Math.max(0, dimensions.rowCount - 1),
+      left: 0,
+      right: Math.max(0, dimensions.columnCount - 1)
+    };
+  }
+  function normalizeRegion(region) {
+    return {
+      tableFrom: region.tableFrom,
+      top: Math.min(region.top, region.bottom),
+      bottom: Math.max(region.top, region.bottom),
+      left: Math.min(region.left, region.right),
+      right: Math.max(region.left, region.right)
+    };
+  }
+  function clampCell(cell2, dimensions) {
+    return {
+      row: Math.max(0, Math.min(dimensions.rowCount - 1, cell2.row)),
+      column: Math.max(0, Math.min(dimensions.columnCount - 1, cell2.column))
+    };
+  }
+
+  // src/editor/clipboardCutState.ts
+  var pendingCuts = /* @__PURE__ */ new WeakMap();
+  function getPendingClipboardCut(doc2) {
+    return pendingCuts.get(doc2) ?? null;
+  }
+  function setPendingClipboardCut(doc2, pending) {
+    clearPendingClipboardCut(doc2);
+    pendingCuts.set(doc2, pending);
+  }
+  function clearPendingClipboardCut(doc2) {
+    pendingCuts.delete(doc2);
+    doc2.querySelectorAll(".mlrt-table-cut-source-pending").forEach((wrapper) => wrapper.classList.remove("mlrt-table-cut-source-pending"));
+    doc2.querySelectorAll(".mlrt-table-cut-source").forEach(
+      (cell2) => cell2.classList.remove(
+        "mlrt-table-cut-source",
+        "mlrt-table-cut-source-top",
+        "mlrt-table-cut-source-right",
+        "mlrt-table-cut-source-bottom",
+        "mlrt-table-cut-source-left"
+      )
+    );
+  }
+
+  // src/editor/table/tableRangeSelection.ts
+  var TABLE_SELECTION_CHANGE_EVENT = "mlrt:table-selection-change";
+  var TABLE_SELECTION_CLEAR_EVENT = "mlrt:table-selection-clear";
+  var TABLE_CUT_CANCEL_EVENT = "mlrt:table-cut-cancel";
+  var states = /* @__PURE__ */ new WeakMap();
+  function bindTableRangeSelection(wrapper, view2, table2) {
+    wrapper.tabIndex = -1;
+    wrapper.setAttribute("role", "group");
+    wrapper.setAttribute("aria-label", "Markdown table cell selection");
+    let suppressNativeMouseDrag = false;
+    let lastDocumentDragRange = null;
+    let lastDocumentDragProjection = null;
+    let lastDocumentDragDocument = null;
+    let pointerCaptureId = null;
+    let pointerCaptureGeneration = null;
+    let ownsPointerCapture = false;
+    let pointerCleanupTimer = null;
+    let gestureGeneration = 0;
+    let activeGestureGeneration = null;
+    const currentTable = () => getTableWidgetTable(wrapper) ?? table2;
+    stateFor(wrapper.ownerDocument).view = view2;
+    const onPointerDown = (event) => {
+      const cell2 = findCell(event.target);
+      if (!cell2 || !wrapper.contains(cell2)) {
+        return;
+      }
+      if (event.button !== 0) {
+        if (event.button === 2) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (!event.isPrimary) {
+        return;
+      }
+      const address = addressFromCell(cell2);
+      if (!address) {
+        return;
+      }
+      const state = stateFor(wrapper.ownerDocument);
+      state.pointerCleanup?.();
+      if (!view2.state.selection.main.empty) {
+        view2.dispatch({
+          selection: EditorSelection.cursor(positionBeforeTable(currentTable()), 1)
+        });
+      }
+      clearDocumentSelectionProjection(wrapper.ownerDocument);
+      if (event.shiftKey) {
+        const current = getTableRangeSelection(wrapper.ownerDocument);
+        const focusedCell = findCell(wrapper.ownerDocument.activeElement);
+        const focusedAddress = focusedCell && wrapper.contains(focusedCell) ? addressFromCell(focusedCell) : null;
+        const anchor = current?.wrapper === wrapper ? current.anchor : focusedAddress ?? address;
+        event.preventDefault();
+        setTableRangeSelection(wrapper, currentTable().from, anchor, address, true);
+        return;
+      }
+      state.pointerAnchor = address;
+      state.pointerId = event.pointerId;
+      state.pointerCrossedCells = false;
+      activeGestureGeneration = ++gestureGeneration;
+      suppressNativeMouseDrag = false;
+      lastDocumentDragRange = null;
+      lastDocumentDragProjection = null;
+      lastDocumentDragDocument = null;
+      wrapper.ownerDocument.addEventListener("pointermove", onPointerMove, true);
+      wrapper.ownerDocument.addEventListener("pointerup", onPointerUp, true);
+      wrapper.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
+      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
+      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
+      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
+      state.pointerCleanup = removeDocumentPointerListeners;
+      if (state.selection?.wrapper === wrapper) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const claimPointerCapture = (event) => {
+      if (!("pointerId" in event)) {
+        return;
+      }
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerCleanup !== removeDocumentPointerListeners || state.pointerId !== event.pointerId || ownsPointerCapture) {
+        return;
+      }
+      try {
+        if (!wrapper.hasPointerCapture(event.pointerId)) {
+          wrapper.setPointerCapture(event.pointerId);
+        }
+        ownsPointerCapture = wrapper.hasPointerCapture(event.pointerId);
+        pointerCaptureId = ownsPointerCapture ? event.pointerId : null;
+        pointerCaptureGeneration = ownsPointerCapture ? activeGestureGeneration : null;
+      } catch {
+      }
+    };
+    const updateDragSelection = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if ("pointerId" in event && state.pointerId !== -1 && state.pointerId !== event.pointerId || !state.pointerAnchor || (event.buttons & 1) === 0) {
+        return;
+      }
+      const target = wrapper.ownerDocument.elementFromPoint(
+        event.clientX,
+        event.clientY
+      );
+      const cell2 = findCell(target);
+      if (cell2 && wrapper.contains(cell2)) {
+        const address = addressFromCell(cell2);
+        if (!address) {
+          return;
+        }
+        if (sameAddress(address, state.pointerAnchor) && !state.pointerCrossedCells && !lastDocumentDragRange) {
+          return;
+        }
+        state.pointerCrossedCells = true;
+        suppressNativeMouseDrag = true;
+        claimPointerCapture(event);
+        event.preventDefault();
+        event.stopPropagation();
+        lastDocumentDragRange = null;
+        lastDocumentDragProjection = null;
+        lastDocumentDragDocument = null;
+        clearDocumentSelectionProjection(wrapper.ownerDocument);
+        setTableRangeSelection(
+          wrapper,
+          currentTable().from,
+          state.pointerAnchor,
+          address,
+          true
+        );
+        return;
+      }
+      const latestTable = currentTable();
+      const tableRect = wrapper.querySelector(".mlrt-table")?.getBoundingClientRect() ?? wrapper.getBoundingClientRect();
+      if (event.clientY >= tableRect.top && event.clientY <= tableRect.bottom) {
+        const clampedCell = nearestCellInWrapper(
+          wrapper,
+          event.clientX,
+          event.clientY
+        );
+        const address = clampedCell ? addressFromCell(clampedCell) : null;
+        if (address) {
+          state.pointerCrossedCells = true;
+          suppressNativeMouseDrag = true;
+          claimPointerCapture(event);
+          event.preventDefault();
+          event.stopPropagation();
+          lastDocumentDragRange = null;
+          lastDocumentDragProjection = null;
+          lastDocumentDragDocument = null;
+          clearDocumentSelectionProjection(wrapper.ownerDocument);
+          setTableRangeSelection(
+            wrapper,
+            latestTable.from,
+            state.pointerAnchor,
+            address,
+            true
+          );
+        }
+        return;
+      }
+      const tableFrom = Number(wrapper.dataset.srcFrom ?? latestTable.from);
+      const parsedTables = getParsedTables(view2.state.doc);
+      const parsedTable = parsedTables.find(
+        (candidate) => candidate.from === tableFrom
+      );
+      const tableTo = parsedTable?.to ?? tableFrom + (latestTable.to - latestTable.from);
+      const movingBeforeTable = event.clientY < tableRect.top;
+      const movingAfterTable = event.clientY > tableRect.bottom;
+      if (!movingBeforeTable && !movingAfterTable) {
+        return;
+      }
+      const targetCell = cell2 ?? documentCellAtPoint(
+        wrapper.ownerDocument,
+        event.clientX,
+        event.clientY,
+        wrapper
+      );
+      let documentPosition = null;
+      let targetTable = null;
+      let targetAddress = null;
+      if (targetCell) {
+        const targetFrom = Number(targetCell.dataset.tableFrom ?? "NaN");
+        targetTable = parsedTables.find(
+          (candidate) => candidate.from === targetFrom
+        ) ?? null;
+        targetAddress = addressFromCell(targetCell);
+        if (targetTable && targetAddress) {
+          const sourceSpan = renderedCellSpan(targetCell, targetTable);
+          documentPosition = movingAfterTable ? sourceSpan?.to ?? targetTable.to : sourceSpan?.from ?? targetTable.from;
+        }
+      }
+      if (documentPosition === null) {
+        documentPosition = editorDragPosition(
+          view2,
+          event.clientX,
+          event.clientY
+        );
+      }
+      if (documentPosition === null) {
+        return;
+      }
+      state.pointerCrossedCells = true;
+      suppressNativeMouseDrag = true;
+      claimPointerCapture(event);
+      event.preventDefault();
+      event.stopPropagation();
+      clearTableRangeSelection(wrapper.ownerDocument);
+      clearNativeSelection(wrapper.ownerDocument);
+      if (!view2.hasFocus) {
+        view2.focus();
+      }
+      const anchorPosition = movingBeforeTable ? tableTo : tableFrom;
+      lastDocumentDragRange = {
+        anchor: anchorPosition,
+        head: documentPosition
+      };
+      lastDocumentDragProjection = {
+        ...lastDocumentDragRange,
+        tableRegions: regionsForTableToDocument(
+          parsedTables,
+          parsedTable ?? latestTable,
+          state.pointerAnchor,
+          movingBeforeTable ? "above" : "below",
+          documentPosition,
+          targetTable,
+          targetAddress
+        )
+      };
+      lastDocumentDragDocument = view2.state.doc;
+      setDocumentSelectionProjection(
+        wrapper.ownerDocument,
+        lastDocumentDragProjection
+      );
+      view2.dispatch({
+        selection: EditorSelection.range(
+          lastDocumentDragRange.anchor,
+          lastDocumentDragRange.head
+        ),
+        scrollIntoView: true,
+        annotations: documentSelectionProjectionTransaction.of(true)
+      });
+    };
+    const onPointerMove = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerCleanup !== removeDocumentPointerListeners) {
+        return;
+      }
+      if (ownsPointerCapture && pointerCaptureId !== null && pointerCaptureGeneration === activeGestureGeneration && !wrapper.hasPointerCapture(pointerCaptureId)) {
+        finishDocumentPointerGesture(true, activeGestureGeneration);
+        return;
+      }
+      updateDragSelection(event);
+    };
+    const onPointerUp = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerId !== event.pointerId) {
+        return;
+      }
+      state.pointerAnchor = null;
+      state.pointerId = null;
+      state.pointerCrossedCells = false;
+      if (suppressNativeMouseDrag) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const generation = activeGestureGeneration;
+      queueMicrotask(() => restoreLastDocumentDragRange(generation));
+      schedulePointerCleanup();
+    };
+    const onMouseMove = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerAnchor && (event.buttons & 1) !== 0) {
+        updateDragSelection(event);
+      }
+      if (suppressNativeMouseDrag) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    const onMouseUp = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (suppressNativeMouseDrag) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (state.pointerId === -1) {
+        state.pointerAnchor = null;
+        state.pointerId = null;
+        state.pointerCrossedCells = false;
+        schedulePointerCleanup();
+      }
+      const generation = activeGestureGeneration;
+      queueMicrotask(() => restoreLastDocumentDragRange(generation));
+    };
+    const onClickAfterDrag = (event) => {
+      if (!suppressNativeMouseDrag) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNativeMouseDrag = false;
+    };
+    const restoreLastDocumentDragRange = (expectedGeneration = activeGestureGeneration) => {
+      if (expectedGeneration === null || expectedGeneration !== activeGestureGeneration || !lastDocumentDragRange) {
+        return;
+      }
+      restoreDocumentDragRange(
+        lastDocumentDragRange,
+        lastDocumentDragProjection,
+        lastDocumentDragDocument
+      );
+    };
+    const restoreDocumentDragRange = (range, projection, documentSnapshot) => {
+      if (!view2.dom.isConnected || view2.dom.ownerDocument !== wrapper.ownerDocument || documentSnapshot === null || view2.state.doc !== documentSnapshot) {
+        return;
+      }
+      const documentLength = view2.state.doc.length;
+      const clampedRange = {
+        anchor: Math.max(0, Math.min(documentLength, range.anchor)),
+        head: Math.max(0, Math.min(documentLength, range.head))
+      };
+      const clampedProjection = projection ? { ...projection, ...clampedRange } : null;
+      if (clampedProjection) {
+        setDocumentSelectionProjection(
+          wrapper.ownerDocument,
+          clampedProjection
+        );
+      }
+      view2.dispatch({
+        selection: EditorSelection.range(
+          clampedRange.anchor,
+          clampedRange.head
+        ),
+        ...clampedProjection ? {
+          annotations: documentSelectionProjectionTransaction.of(true)
+        } : {}
+      });
+    };
+    const schedulePointerCleanup = () => {
+      const generation = activeGestureGeneration;
+      if (generation === null) {
+        return;
+      }
+      if (pointerCleanupTimer !== null) {
+        clearTimeout(pointerCleanupTimer);
+      }
+      const timer = setTimeout(() => {
+        if (pointerCleanupTimer !== timer) {
+          return;
+        }
+        pointerCleanupTimer = null;
+        if (activeGestureGeneration !== generation) {
+          return;
+        }
+        finishDocumentPointerGesture(true, generation);
+      }, 0);
+      pointerCleanupTimer = timer;
+    };
+    const onMouseDown = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (event.button !== 0) {
+        return;
+      }
+      if (state.pointerAnchor) {
+        if (state.pointerId !== -1) {
+          return;
+        }
+        state.pointerCleanup?.();
+      }
+      const cell2 = findCell(event.target);
+      const address = cell2 && wrapper.contains(cell2) ? addressFromCell(cell2) : null;
+      if (!address) {
+        return;
+      }
+      state.pointerAnchor = address;
+      state.pointerId = -1;
+      state.pointerCrossedCells = false;
+      activeGestureGeneration = ++gestureGeneration;
+      suppressNativeMouseDrag = false;
+      lastDocumentDragRange = null;
+      lastDocumentDragProjection = null;
+      lastDocumentDragDocument = null;
+      if (!view2.state.selection.main.empty) {
+        view2.dispatch({
+          selection: EditorSelection.cursor(positionBeforeTable(currentTable()), 1)
+        });
+      }
+      clearDocumentSelectionProjection(wrapper.ownerDocument);
+      wrapper.ownerDocument.addEventListener("mousemove", onMouseMove, true);
+      wrapper.ownerDocument.addEventListener("mouseup", onMouseUp, true);
+      wrapper.ownerDocument.addEventListener("click", onClickAfterDrag, true);
+      state.pointerCleanup = removeDocumentPointerListeners;
+      if (state.selection?.wrapper === wrapper) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const removeDocumentPointerListeners = () => {
+      finishDocumentPointerGesture(true, activeGestureGeneration);
+    };
+    const finishDocumentPointerGesture = (restoreFinalRange, expectedGeneration) => {
+      const state = stateFor(wrapper.ownerDocument);
+      const ownsGesture = expectedGeneration !== null && expectedGeneration === activeGestureGeneration && state.pointerCleanup === removeDocumentPointerListeners;
+      const finalRange = ownsGesture && restoreFinalRange ? lastDocumentDragRange : null;
+      const finalProjection = ownsGesture && restoreFinalRange ? lastDocumentDragProjection : null;
+      const finalDocument = ownsGesture && restoreFinalRange ? lastDocumentDragDocument : null;
+      const capturedPointerId = pointerCaptureId;
+      if (pointerCleanupTimer !== null) {
+        clearTimeout(pointerCleanupTimer);
+        pointerCleanupTimer = null;
+      }
+      pointerCaptureId = null;
+      pointerCaptureGeneration = null;
+      ownsPointerCapture = false;
+      wrapper.ownerDocument.removeEventListener("pointermove", onPointerMove, true);
+      wrapper.ownerDocument.removeEventListener("pointerup", onPointerUp, true);
+      wrapper.ownerDocument.removeEventListener("pointercancel", onPointerUp, true);
+      wrapper.ownerDocument.removeEventListener("mousemove", onMouseMove, true);
+      wrapper.ownerDocument.removeEventListener("mouseup", onMouseUp, true);
+      wrapper.ownerDocument.removeEventListener("click", onClickAfterDrag, true);
+      suppressNativeMouseDrag = false;
+      lastDocumentDragRange = null;
+      lastDocumentDragProjection = null;
+      lastDocumentDragDocument = null;
+      if (ownsGesture) {
+        state.pointerAnchor = null;
+        state.pointerId = null;
+        state.pointerCrossedCells = false;
+        state.pointerCleanup = null;
+        activeGestureGeneration = null;
+      }
+      if (capturedPointerId !== null && wrapper.hasPointerCapture(capturedPointerId)) {
+        try {
+          wrapper.releasePointerCapture(capturedPointerId);
+        } catch {
+        }
+      }
+      if (finalRange) {
+        clearNativeSelection(wrapper.ownerDocument);
+        restoreDocumentDragRange(finalRange, finalProjection, finalDocument);
+      }
+    };
+    const onLostPointerCapture = (event) => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (event.pointerId !== pointerCaptureId || pointerCaptureGeneration !== activeGestureGeneration || state.pointerCleanup !== removeDocumentPointerListeners) {
+        return;
+      }
+      if (wrapper.hasPointerCapture(event.pointerId)) {
+        return;
+      }
+      if (state.pointerId === null) {
+        pointerCaptureId = null;
+        pointerCaptureGeneration = null;
+        ownsPointerCapture = false;
+        return;
+      }
+      finishDocumentPointerGesture(true, activeGestureGeneration);
+    };
+    const onWindowBlur = () => {
+      const state = stateFor(wrapper.ownerDocument);
+      if (state.pointerCleanup === removeDocumentPointerListeners) {
+        finishDocumentPointerGesture(true, activeGestureGeneration);
+      }
+    };
+    const onFocusIn = (event) => {
+      const cell2 = findCell(event.target);
+      if (cell2 && wrapper.contains(cell2)) {
+        if (!view2.state.selection.main.empty) {
+          const latestTable = currentTable();
+          view2.dispatch({
+            selection: EditorSelection.cursor(positionBeforeTable(latestTable), 1)
+          });
+        }
+        clearDocumentSelectionProjection(wrapper.ownerDocument);
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const onDocumentSelectionPointerDown = (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      const selection = getTableRangeSelection(wrapper.ownerDocument);
+      if (selection?.wrapper === wrapper && event.target instanceof Node && !wrapper.contains(event.target)) {
+        clearTableRangeSelection(wrapper.ownerDocument);
+      }
+    };
+    const onKeyDown = (event) => {
+      const activeCell = findCell(event.target);
+      if (activeCell && wrapper.contains(activeCell)) {
+        const latestTable2 = currentTable();
+        if (event.key === "Escape") {
+          const address = addressFromCell(activeCell);
+          if (!address) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          activeCell.blur();
+          setTableRangeSelection(
+            wrapper,
+            Number(wrapper.dataset.srcFrom ?? latestTable2.from),
+            address,
+            address,
+            true
+          );
+          return;
+        }
+        if (isSelectAll(event)) {
+          handleCellSelectAll(event, wrapper, latestTable2, activeCell);
+        }
+        return;
+      }
+      const selection = getTableRangeSelection(wrapper.ownerDocument);
+      if (!selection || selection.wrapper !== wrapper) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (selection.pendingCutToken || getPendingClipboardCut(wrapper.ownerDocument)?.kind === "table") {
+          wrapper.dispatchEvent(
+            new CustomEvent(TABLE_CUT_CANCEL_EVENT, { bubbles: true })
+          );
+        } else {
+          const target = cellFromAddress(wrapper, selection.head);
+          clearTableRangeSelection(wrapper.ownerDocument);
+          if (target) {
+            focusCellAtEnd(target);
+          }
+        }
+        return;
+      }
+      const latestTable = currentTable();
+      if (isSelectAll(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rectangle = selectionRectangle(selection);
+        const rowCount = latestTable.body.length + 1;
+        if (rectangle.top === 0 && rectangle.bottom === rowCount - 1 && rectangle.left === 0 && rectangle.right === latestTable.columnCount - 1) {
+          clearTableRangeSelection(wrapper.ownerDocument);
+          view2.focus();
+          view2.dispatch({
+            selection: EditorSelection.range(0, view2.state.doc.length),
+            scrollIntoView: true
+          });
+        } else {
+          setTableRangeSelection(
+            wrapper,
+            selection.tableFrom,
+            { row: 0, column: 0 },
+            { row: rowCount - 1, column: latestTable.columnCount - 1 },
+            true
+          );
+        }
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Tab") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Tab") {
+          const nextHead2 = tabDestination(
+            selection.head,
+            latestTable,
+            event.shiftKey
+          );
+          if (nextHead2) {
+            setTableRangeSelection(
+              wrapper,
+              latestTable.from,
+              nextHead2,
+              nextHead2,
+              true
+            );
+          } else {
+            clearTableRangeSelection(wrapper.ownerDocument);
+            view2.focus();
+            view2.dispatch({
+              selection: EditorSelection.cursor(
+                event.shiftKey ? positionBeforeTable(latestTable) : positionAfterTable(view2.state.doc, latestTable),
+                event.shiftKey ? -1 : 1
+              ),
+              scrollIntoView: true
+            });
+          }
+          return;
+        }
+        const delta = keyDelta(event);
+        const nextHead = clampAddress(
+          {
+            row: selection.head.row + delta.row,
+            column: selection.head.column + delta.column
+          },
+          latestTable
+        );
+        const nextAnchor = event.shiftKey ? selection.anchor : nextHead;
+        setTableRangeSelection(
+          wrapper,
+          selection.tableFrom,
+          nextAnchor,
+          nextHead,
+          true
+        );
+        return;
+      }
+      if (event.key === "Enter" || event.key === "F2") {
+        event.preventDefault();
+        event.stopPropagation();
+        const target = cellFromAddress(wrapper, selection.head);
+        clearTableRangeSelection(wrapper.ownerDocument);
+        if (target) {
+          focusCellAtEnd(target);
+        }
+        return;
+      }
+      if (event.key === "Backspace" || event.key === "Delete") {
+        event.preventDefault();
+        event.stopPropagation();
+        wrapper.dispatchEvent(
+          new CustomEvent(TABLE_SELECTION_CLEAR_EVENT, { bubbles: true })
+        );
+        return;
+      }
+      if (isPrintableKey(event)) {
+        const target = cellFromAddress(wrapper, selection.head);
+        event.preventDefault();
+        event.stopPropagation();
+        clearTableRangeSelection(wrapper.ownerDocument);
+        if (target) {
+          target.focus();
+          const nativeSelection = wrapper.ownerDocument.defaultView?.getSelection();
+          const range = wrapper.ownerDocument.createRange();
+          range.selectNodeContents(target);
+          nativeSelection?.removeAllRanges();
+          nativeSelection?.addRange(range);
+          wrapper.ownerDocument.execCommand("insertText", false, event.key);
+        }
+      }
+    };
+    wrapper.addEventListener("pointerdown", onPointerDown);
+    wrapper.addEventListener("lostpointercapture", onLostPointerCapture, true);
+    wrapper.addEventListener("mousedown", onMouseDown);
+    wrapper.addEventListener("focusin", onFocusIn);
+    wrapper.addEventListener("keydown", onKeyDown);
+    wrapper.ownerDocument.addEventListener(
+      "pointerdown",
+      onDocumentSelectionPointerDown,
+      true
+    );
+    wrapper.ownerDocument.defaultView?.addEventListener("blur", onWindowBlur);
+    restoreSelectionClasses(wrapper);
+    return () => {
+      wrapper.removeEventListener("pointerdown", onPointerDown);
+      wrapper.removeEventListener(
+        "lostpointercapture",
+        onLostPointerCapture,
+        true
+      );
+      wrapper.removeEventListener("mousedown", onMouseDown);
+      finishDocumentPointerGesture(false, activeGestureGeneration);
+      wrapper.removeEventListener("focusin", onFocusIn);
+      wrapper.removeEventListener("keydown", onKeyDown);
+      wrapper.ownerDocument.removeEventListener(
+        "pointerdown",
+        onDocumentSelectionPointerDown,
+        true
+      );
+      wrapper.ownerDocument.defaultView?.removeEventListener(
+        "blur",
+        onWindowBlur
+      );
+    };
+  }
+  function getTableRangeSelection(doc2) {
+    const state = states.get(doc2)?.selection ?? null;
+    if (state && !state.wrapper.isConnected) {
+      const replacement = Array.from(
+        doc2.querySelectorAll(".mlrt-table-widget")
+      ).find(
+        (candidate) => Number(candidate.dataset.srcFrom ?? "-1") === state.tableFrom
+      );
+      if (replacement) {
+        state.wrapper = replacement;
+        applySelectionClasses(state);
+        return state;
+      }
+      return null;
+    }
+    if (state) {
+      const currentFrom = Number(state.wrapper.dataset.srcFrom ?? "NaN");
+      if (Number.isFinite(currentFrom)) {
+        state.tableFrom = currentFrom;
+      }
+    }
+    return state;
+  }
+  function setTableRangeSelection(wrapper, tableFrom, anchor, head, focusWrapper) {
+    const doc2 = wrapper.ownerDocument;
+    const state = stateFor(doc2);
+    const activeView = state.view;
+    if (activeView && !activeView.state.selection.main.empty) {
+      const activeTable = getTableWidgetTable(wrapper);
+      activeView.dispatch({
+        selection: EditorSelection.cursor(
+          activeTable ? positionBeforeTable(activeTable) : tableFrom,
+          1
+        )
+      });
+    }
+    clearDocumentSelectionProjection(doc2);
+    if (state.selection?.wrapper !== wrapper) {
+      clearSelectionClasses(state.selection?.wrapper);
+    }
+    const selection = {
+      version: MLRT_CLIPBOARD_VERSION,
+      wrapper,
+      tableFrom,
+      anchor,
+      head
+    };
+    state.selection = selection;
+    applySelectionClasses(selection);
+    clearNativeSelection(doc2);
+    if (focusWrapper) {
+      wrapper.focus({ preventScroll: true });
+    }
+    dispatchSelectionChange(wrapper);
+    return selection;
+  }
+  function selectTableRow(wrapper, tableFrom, row, columnCount) {
+    setTableRangeSelection(
+      wrapper,
+      tableFrom,
+      { row, column: 0 },
+      { row, column: Math.max(0, columnCount - 1) },
+      true
+    );
+  }
+  function selectTableColumn(wrapper, tableFrom, column, rowCount) {
+    setTableRangeSelection(
+      wrapper,
+      tableFrom,
+      { row: 0, column },
+      { row: Math.max(0, rowCount - 1), column },
+      true
+    );
+  }
+  function selectionRectangle(selection) {
+    return {
+      top: Math.min(selection.anchor.row, selection.head.row),
+      bottom: Math.max(selection.anchor.row, selection.head.row),
+      left: Math.min(selection.anchor.column, selection.head.column),
+      right: Math.max(selection.anchor.column, selection.head.column)
+    };
+  }
+  function isCellInSelection(selection, address) {
+    const rectangle = selectionRectangle(selection);
+    return address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right;
+  }
+  function clearTableRangeSelection(doc2) {
+    const state = states.get(doc2);
+    if (!state?.selection) {
+      return;
+    }
+    const wrapper = state.selection.wrapper;
+    clearSelectionClasses(wrapper);
+    state.selection = null;
+    dispatchSelectionChange(wrapper);
+  }
+  function setPendingCutToken(doc2, token) {
+    const selection = getTableRangeSelection(doc2);
+    if (!selection) {
+      return;
+    }
+    selection.pendingCutToken = token;
+    applySelectionClasses(selection);
+    dispatchSelectionChange(selection.wrapper);
+  }
+  function ensureContextCellSelection(wrapper, tableFrom, cell2) {
+    const address = addressFromCell(cell2);
+    if (!address) {
+      return null;
+    }
+    const current = getTableRangeSelection(wrapper.ownerDocument);
+    if (current?.wrapper === wrapper && isCellInSelection(current, address)) {
+      return current;
+    }
+    return setTableRangeSelection(wrapper, tableFrom, address, address, false);
+  }
+  function addressFromCell(cell2) {
+    const rowKind = cell2.dataset.rowKind;
+    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
+    const column = Number(cell2.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
+      return null;
+    }
+    return { row: rowKind === "header" ? 0 : rowIndex + 1, column };
+  }
+  function cellFromAddress(wrapper, address) {
+    const rowKind = address.row === 0 ? "header" : "body";
+    const rowIndex = address.row === 0 ? 0 : address.row - 1;
+    return wrapper.querySelector(
+      `${TABLE_CELL_SELECTOR}[data-row-kind="${rowKind}"][data-row-index="${rowIndex}"][data-column="${address.column}"]`
+    );
+  }
+  function handleCellSelectAll(event, wrapper, table2, activeCell) {
+    const selection = wrapper.ownerDocument.defaultView?.getSelection();
+    const valueLength = readCellDisplayValue(activeCell).length;
+    const selectedLength = selection?.toString().replace(/\u00a0/g, " ").length ?? 0;
+    if (selectedLength < valueLength) {
+      event.preventDefault();
+      event.stopPropagation();
+      const range = wrapper.ownerDocument.createRange();
+      range.selectNodeContents(activeCell);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    activeCell.blur();
+    setTableRangeSelection(
+      wrapper,
+      Number(wrapper.dataset.srcFrom ?? table2.from),
+      { row: 0, column: 0 },
+      { row: table2.body.length, column: table2.columnCount - 1 },
+      true
+    );
+  }
+  function applySelectionClasses(selection) {
+    const rectangle = selectionRectangle(selection);
+    const selectedRowCount = rectangle.bottom - rectangle.top + 1;
+    const selectedColumnCount = rectangle.right - rectangle.left + 1;
+    selection.wrapper.classList.remove("mlrt-document-selection-mode");
+    selection.wrapper.classList.add("mlrt-table-selection-mode");
+    selection.wrapper.setAttribute(
+      "aria-label",
+      `${selectedRowCount} by ${selectedColumnCount} table cell selection`
+    );
+    selection.wrapper.classList.toggle(
+      "mlrt-table-cut-pending",
+      Boolean(selection.pendingCutToken)
+    );
+    selection.wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
+      const address = addressFromCell(cell2);
+      const selected = Boolean(
+        address && address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right
+      );
+      cell2.classList.toggle("mlrt-table-cell-selected", selected);
+      cell2.classList.toggle(
+        "mlrt-table-selection-top",
+        selected && Boolean(address && address.row === rectangle.top)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-selection-bottom",
+        selected && Boolean(address && address.row === rectangle.bottom)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-selection-left",
+        selected && Boolean(address && address.column === rectangle.left)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-selection-right",
+        selected && Boolean(address && address.column === rectangle.right)
+      );
+      cell2.classList.toggle(
+        "mlrt-table-cell-selection-head",
+        selected && Boolean(address && sameAddress(address, selection.head))
+      );
+    });
+    syncTableSelectionOverlay(selection.wrapper);
+  }
+  function restoreSelectionClasses(wrapper) {
+    const selection = states.get(wrapper.ownerDocument)?.selection;
+    if (selection && selection.tableFrom === Number(wrapper.dataset.srcFrom ?? "-1")) {
+      selection.wrapper = wrapper;
+      applySelectionClasses(selection);
+    }
+  }
+  function clearSelectionClasses(wrapper) {
+    if (!wrapper) {
+      return;
+    }
+    wrapper.classList.remove(
+      "mlrt-table-selection-mode",
+      "mlrt-table-cut-pending"
+    );
+    wrapper.setAttribute("aria-label", "Markdown table cell selection");
+    wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
+      cell2.classList.remove(
+        "mlrt-table-cell-selected",
+        "mlrt-table-cell-selection-head",
+        "mlrt-table-selection-top",
+        "mlrt-table-selection-bottom",
+        "mlrt-table-selection-left",
+        "mlrt-table-selection-right"
+      );
+    });
+    syncTableSelectionOverlay(wrapper);
+  }
+  function dispatchSelectionChange(wrapper) {
+    wrapper.dispatchEvent(
+      new CustomEvent(TABLE_SELECTION_CHANGE_EVENT, { bubbles: true })
+    );
+  }
+  function stateFor(doc2) {
+    const current = states.get(doc2);
+    if (current) {
+      return current;
+    }
+    const state = {
+      selection: null,
+      pointerAnchor: null,
+      pointerId: null,
+      pointerCrossedCells: false,
+      pointerCleanup: null,
+      view: null
+    };
+    states.set(doc2, state);
+    return state;
+  }
+  function tableDimensions(table2) {
+    return {
+      rowCount: table2.body.length + 1,
+      columnCount: table2.columnCount
+    };
+  }
+  function regionsForTableToDocument(tables2, sourceTable, sourceAnchor, direction, documentPosition, targetTable, targetAddress) {
+    const forward = direction === "below";
+    const regions = [
+      {
+        tableFrom: sourceTable.from,
+        ...tableToProseRectangle(
+          direction,
+          sourceAnchor,
+          tableDimensions(sourceTable)
+        )
+      }
+    ];
+    for (const table2 of tables2) {
+      if (table2.from === sourceTable.from || table2.from === targetTable?.from) {
+        continue;
+      }
+      const between = forward ? table2.from > sourceTable.from && table2.from < documentPosition : table2.from < sourceTable.from && table2.to > documentPosition;
+      if (between) {
+        regions.push({
+          tableFrom: table2.from,
+          ...fullTableRectangle(tableDimensions(table2))
+        });
+      }
+    }
+    if (targetTable && targetAddress && targetTable.from !== sourceTable.from) {
+      regions.push({
+        tableFrom: targetTable.from,
+        ...proseToTableRectangle(
+          forward ? "forward" : "backward",
+          targetAddress,
+          tableDimensions(targetTable)
+        )
+      });
+    }
+    return regions;
+  }
+  function documentCellAtPoint(doc2, clientX, clientY, excludedWrapper) {
+    const direct = findCell(doc2.elementFromPoint(clientX, clientY));
+    if (direct && !excludedWrapper.contains(direct)) {
+      return direct;
+    }
+    const wrapper = Array.from(
+      doc2.querySelectorAll(".mlrt-table-widget")
+    ).find((candidate) => {
+      if (candidate === excludedWrapper) {
+        return false;
+      }
+      const rect = candidate.querySelector(".mlrt-table")?.getBoundingClientRect() ?? candidate.getBoundingClientRect();
+      return clientY >= rect.top && clientY <= rect.bottom;
+    });
+    return wrapper ? nearestCellInWrapper(wrapper, clientX, clientY) : null;
+  }
+  function nearestCellInWrapper(wrapper, clientX, clientY) {
+    const cells = Array.from(
+      wrapper.querySelectorAll(TABLE_CELL_SELECTOR)
+    );
+    if (cells.length === 0) {
+      return null;
+    }
+    return cells.reduce((nearest, candidate) => {
+      const distance = distanceToRect(
+        candidate.getBoundingClientRect(),
+        clientX,
+        clientY
+      );
+      const nearestDistance = distanceToRect(
+        nearest.getBoundingClientRect(),
+        clientX,
+        clientY
+      );
+      return distance < nearestDistance ? candidate : nearest;
+    });
+  }
+  function distanceToRect(rect, clientX, clientY) {
+    const dx = Math.max(rect.left - clientX, 0, clientX - rect.right);
+    const dy = Math.max(rect.top - clientY, 0, clientY - rect.bottom);
+    return dx * dx + dy * dy;
+  }
+  function renderedCellSpan(cell2, table2) {
+    const directFrom = Number(cell2.dataset.sourceFrom ?? "NaN");
+    const directTo = Number(cell2.dataset.sourceTo ?? "NaN");
+    if (Number.isFinite(directFrom) && Number.isFinite(directTo)) {
+      return { from: directFrom, to: Math.max(directFrom + 1, directTo) };
+    }
+    const row = cell2.dataset.rowKind === "header" ? table2.header : table2.body[Number(cell2.dataset.rowIndex ?? "0")];
+    return row ? { from: row.from, to: Math.max(row.from + 1, row.to) } : null;
+  }
+  function clearNativeSelection(doc2) {
+    doc2.defaultView?.getSelection()?.removeAllRanges();
+  }
+  function clampAddress(address, table2) {
+    return {
+      row: Math.max(0, Math.min(table2.body.length, address.row)),
+      column: Math.max(0, Math.min(table2.columnCount - 1, address.column))
+    };
+  }
+  function keyDelta(event) {
+    if (event.key === "ArrowUp") {
+      return { row: -1, column: 0 };
+    }
+    if (event.key === "ArrowDown") {
+      return { row: 1, column: 0 };
+    }
+    if (event.key === "ArrowLeft") {
+      return { row: 0, column: -1 };
+    }
+    return { row: 0, column: 1 };
+  }
+  function tabDestination(address, table2, reverse) {
+    const lastRow = table2.body.length;
+    const lastColumn = table2.columnCount - 1;
+    if (reverse) {
+      if (address.column > 0) {
+        return { row: address.row, column: address.column - 1 };
+      }
+      return address.row > 0 ? { row: address.row - 1, column: lastColumn } : null;
+    }
+    if (address.column < lastColumn) {
+      return { row: address.row, column: address.column + 1 };
+    }
+    return address.row < lastRow ? { row: address.row + 1, column: 0 } : null;
+  }
+  function isSelectAll(event) {
+    return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a";
+  }
+  function isPrintableKey(event) {
+    return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
+  }
+  function sameAddress(left, right) {
+    return left.row === right.row && left.column === right.column;
+  }
+
+  // src/editor/documentClipboard.ts
+  var markdownRenderer = new lib_default({
+    html: false,
+    linkify: false,
+    breaks: false
+  });
+  var richMarkdownRenderer = new lib_default({
+    html: true,
+    linkify: false,
+    breaks: true
+  });
+  var turndown = new TurndownService({
+    bulletListMarker: "-",
+    codeBlockStyle: "fenced",
+    emDelimiter: "*",
+    strongDelimiter: "**"
+  });
+  turndown.use(gfm);
+  var armedDocumentPasteMode = null;
+  var requestedDocumentCopyMode = null;
+  var documentMenuClosers = /* @__PURE__ */ new WeakMap();
+  function createDocumentSelectionInputHandler() {
+    return EditorView.inputHandler.of((view2, _from, _to, text3, insert2) => {
+      const projection = getDocumentSelectionProjection(
+        view2.dom.ownerDocument,
+        view2.state.selection.main
+      );
+      if (!projection) {
+        return false;
+      }
+      const userEvent = insert2().annotation(Transaction.userEvent) ?? "input.type";
+      return dispatchCompositeSelectionReplacement(
+        view2,
+        projection,
+        text3,
+        userEvent
+      );
+    });
+  }
+  function installDocumentClipboard(root2, view2) {
+    const doc2 = root2.ownerDocument;
+    let mixedDragAnchor = null;
+    let mixedDragRange = null;
+    let mixedDragProjection = null;
+    let mixedDragActive = false;
+    let mixedDragPointerId = null;
+    let mixedDragOwnsPointerCapture = false;
+    let mixedDragGeneration = 0;
+    let mixedDragCleanupTimer = null;
+    let mixedDragDocument = null;
+    let documentClipboardDisposed = false;
+    const onCopy = (event) => {
+      if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target)) {
+        return;
+      }
+      const projection = getDocumentSelectionProjection(
+        doc2,
+        view2.state.selection.main
+      );
+      const range = atomicDocumentSelection(view2);
+      if (!range && !projection || !event.clipboardData) {
+        return;
+      }
+      const mode = requestedDocumentCopyMode ?? readCopyMode(doc2);
+      requestedDocumentCopyMode = null;
+      event.preventDefault();
+      const representations = projection ? documentRepresentationsForMarkdown(
+        view2,
+        compositeSelectionMarkdown(view2, projection),
+        mode
+      ) : documentRepresentations(view2, range.from, range.to, mode);
+      writeDocumentTransfer(event.clipboardData, representations);
+      clearPendingClipboardCut(doc2);
+      setPendingCutToken(doc2, void 0);
+      view2.dom.classList.remove("mlrt-document-cut-pending");
+      announce(doc2, "Copied document selection.");
+    };
+    const onCut = (event) => {
+      if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target)) {
+        return;
+      }
+      const projection = getDocumentSelectionProjection(
+        doc2,
+        view2.state.selection.main
+      );
+      const range = atomicDocumentSelection(view2);
+      if (!range && !projection || !event.clipboardData) {
+        return;
+      }
+      const token = createToken();
+      const markdown2 = projection ? compositeSelectionMarkdown(view2, projection) : view2.state.doc.sliceString(range.from, range.to);
+      const payload = {
+        version: MLRT_CLIPBOARD_VERSION,
+        kind: "document",
+        sourceDocument: readDocumentToken(doc2),
+        markdown: markdown2,
+        cutToken: token
+      };
+      event.preventDefault();
+      writeDocumentTransfer(
+        event.clipboardData,
+        projection ? documentRepresentationsForMarkdown(
+          view2,
+          markdown2,
+          readCopyMode(doc2),
+          payload
+        ) : documentRepresentations(
+          view2,
+          range.from,
+          range.to,
+          readCopyMode(doc2),
+          payload
+        )
+      );
+      setPendingClipboardCut(
+        doc2,
+        projection ? {
+          kind: "composite",
+          token,
+          sourceDocument: readDocumentToken(doc2),
+          sourceDocumentText: view2.state.doc.toString(),
+          markdown: markdown2,
+          changes: compositeSelectionChanges(view2, projection)
+        } : {
+          kind: "document",
+          token,
+          sourceDocument: readDocumentToken(doc2),
+          from: range.from,
+          to: range.to,
+          markdown: markdown2
+        }
+      );
+      view2.dom.classList.add("mlrt-document-cut-pending");
+      announce(
+        doc2,
+        "Move pending. Paste in this document to move; external paste copies."
+      );
+    };
+    const onPaste = (event) => {
+      if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target) || !event.clipboardData) {
+        return;
+      }
+      const mode = armedDocumentPasteMode ?? readPasteMode(doc2);
+      armedDocumentPasteMode = null;
+      const data2 = readTransfer(event.clipboardData);
+      const markdown2 = documentPasteMarkdown(data2, mode);
+      if (markdown2 === null) {
+        if (atomicDocumentSelection(view2)) {
+          event.preventDefault();
+          event.stopPropagation();
+          announce(doc2, "Clipboard does not contain pasteable text.");
+        }
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (applyDocumentPaste(view2, markdown2, data2)) {
+        announce(doc2, "Pasted document content.");
+      }
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && getPendingClipboardCut(doc2)) {
+        clearPendingClipboardCut(doc2);
+        setPendingCutToken(doc2, void 0);
+        view2.dom.classList.remove("mlrt-document-cut-pending");
+        announce(doc2, "Pending move cancelled.");
+        return;
+      }
+      if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        const selected = view2.state.selection.main;
+        const projection = getDocumentSelectionProjection(doc2, selected);
+        if (projection) {
+          event.preventDefault();
+          event.stopPropagation();
+          applyCompositeSelectionDelete(view2, projection);
+          return;
+        }
+        const range = atomicDocumentSelection(view2);
+        const touchesTable = !selected.empty && getParsedTables(view2.state.doc).some(
+          (table2) => selected.from < table2.to && selected.to > table2.from
+        );
+        if (range && touchesTable) {
+          event.preventDefault();
+          event.stopPropagation();
+          view2.dispatch({
+            changes: { from: range.from, to: range.to, insert: "" },
+            selection: EditorSelection.cursor(range.from, 1),
+            annotations: [
+              allowTableSourceChange.of(true),
+              Transaction.addToHistory.of(true)
+            ],
+            userEvent: "delete.selection"
+          });
+        }
+      }
+    };
+    const onContextMenu = (event) => {
+      if (!root2.contains(event.target) || !shouldPreserveContextSelection(event)) {
+        return;
+      }
+      const range = atomicDocumentSelection(view2);
+      if (!range) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      showDocumentMenu(doc2, view2, event.clientX, event.clientY);
+    };
+    const shouldPreserveContextSelection = (event) => {
+      const range = view2.state.selection.main;
+      if (range.empty) {
+        return false;
+      }
+      const cell2 = findCell(event.target);
+      if (cell2) {
+        return cell2.classList.contains("mlrt-document-range-selected");
+      }
+      const position = view2.posAtCoords({ x: event.clientX, y: event.clientY });
+      return position !== null && position >= range.from && position <= range.to;
+    };
+    const onRootPointerDown = (event) => {
+      if (mixedDragPointerId !== null) {
+        if (!event.isPrimary) {
+          return;
+        }
+        finishMixedDrag(true);
+      }
+      if (event.button === 2) {
+        if (shouldPreserveContextSelection(event)) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (event.button !== 0 || findCell(event.target) || event.target instanceof Element && Boolean(event.target.closest(".mlrt-table-widget"))) {
+        return;
+      }
+      const anchor = view2.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (anchor === null) {
+        return;
+      }
+      mixedDragAnchor = anchor;
+      mixedDragRange = null;
+      mixedDragProjection = null;
+      mixedDragActive = false;
+      mixedDragPointerId = event.pointerId;
+      mixedDragOwnsPointerCapture = false;
+      mixedDragGeneration += 1;
+      mixedDragDocument = view2.state.doc;
+      clearDocumentSelectionProjection(doc2);
+      doc2.addEventListener("pointermove", onMixedPointerMove, true);
+      doc2.addEventListener("pointerup", onMixedPointerUp, true);
+      doc2.addEventListener("pointercancel", onMixedPointerUp, true);
+      doc2.addEventListener("mousemove", onMixedMouseMove, true);
+      doc2.addEventListener("mouseup", onMixedMouseUp, true);
+      doc2.addEventListener("click", onMixedClick, true);
+    };
+    const onRootMouseDown = (event) => {
+      if (event.button === 2 && shouldPreserveContextSelection(event)) {
+        event.preventDefault();
+      }
+    };
+    const updateMixedDrag = (event) => {
+      if (mixedDragAnchor === null || (event.buttons & 1) === 0 || "pointerId" in event && mixedDragPointerId !== null && event.pointerId !== mixedDragPointerId) {
+        return;
+      }
+      if (mixedDragDocument !== view2.state.doc) {
+        finishMixedDrag(false, mixedDragGeneration);
+        clearDocumentSelectionProjection(doc2);
+        return;
+      }
+      const cell2 = documentSelectionCellAtPoint(
+        doc2,
+        event.clientX,
+        event.clientY
+      );
+      if (!cell2) {
+        if (!mixedDragActive) {
+          return;
+        }
+        const head = editorDragPosition(view2, event.clientX, event.clientY);
+        if (head === null) {
+          return;
+        }
+        mixedDragRange = { anchor: mixedDragAnchor, head };
+        const tableRegions = fullRegionsForEnvelope(
+          getParsedTables(view2.state.doc),
+          mixedDragRange.anchor,
+          mixedDragRange.head
+        );
+        mixedDragProjection = tableRegions.length > 0 ? {
+          ...mixedDragRange,
+          tableRegions
+        } : null;
+        if (mixedDragProjection) {
+          setDocumentSelectionProjection(doc2, mixedDragProjection);
+        } else {
+          clearDocumentSelectionProjection(doc2);
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        doc2.defaultView?.getSelection()?.removeAllRanges();
+        if (!view2.hasFocus) {
+          view2.focus();
+        }
+        view2.dispatch({
+          selection: EditorSelection.range(mixedDragRange.anchor, mixedDragRange.head),
+          scrollIntoView: true,
+          ...mixedDragProjection ? {
+            annotations: documentSelectionProjectionTransaction.of(true)
+          } : {}
+        });
+        return;
+      }
+      const tableFrom = Number(cell2.dataset.tableFrom ?? "NaN");
+      if (!Number.isFinite(tableFrom)) {
+        return;
+      }
+      const table2 = getParsedTables(view2.state.doc).find(
+        (candidate) => candidate.from === tableFrom
+      );
+      if (!table2) {
+        return;
+      }
+      const span = renderedCellSourceSpan(cell2, table2);
+      const address = addressFromCell(cell2);
+      if (!span || !address) {
+        return;
+      }
+      const movingForward = mixedDragAnchor <= table2.from;
+      mixedDragRange = {
+        anchor: mixedDragAnchor,
+        head: movingForward ? span.to : span.from
+      };
+      mixedDragProjection = {
+        ...mixedDragRange,
+        tableRegions: regionsForProseToCell(
+          getParsedTables(view2.state.doc),
+          mixedDragAnchor,
+          table2,
+          address,
+          movingForward ? "forward" : "backward"
+        )
+      };
+      setDocumentSelectionProjection(doc2, mixedDragProjection);
+      mixedDragActive = true;
+      if (mixedDragPointerId !== null && !root2.hasPointerCapture(mixedDragPointerId)) {
+        try {
+          root2.setPointerCapture(mixedDragPointerId);
+          mixedDragOwnsPointerCapture = root2.hasPointerCapture(
+            mixedDragPointerId
+          );
+        } catch {
+        }
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      doc2.defaultView?.getSelection()?.removeAllRanges();
+      if (!view2.hasFocus) {
+        view2.focus();
+      }
+      view2.dispatch({
+        selection: EditorSelection.range(
+          mixedDragRange.anchor,
+          mixedDragRange.head
+        ),
+        scrollIntoView: true,
+        annotations: documentSelectionProjectionTransaction.of(true)
+      });
+    };
+    const onMixedPointerMove = (event) => {
+      if (mixedDragOwnsPointerCapture && mixedDragPointerId !== null && !root2.hasPointerCapture(mixedDragPointerId)) {
+        finishMixedDrag(true, mixedDragGeneration);
+        return;
+      }
+      updateMixedDrag(event);
+    };
+    const onMixedMouseMove = (event) => {
+      updateMixedDrag(event);
+      if (mixedDragActive) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    const restoreMixedDrag = (expectedGeneration) => {
+      if (expectedGeneration !== mixedDragGeneration) {
+        return;
+      }
+      if (!mixedDragRange) {
+        return;
+      }
+      restoreMixedDragRange(
+        mixedDragRange,
+        mixedDragProjection,
+        mixedDragDocument
+      );
+    };
+    const restoreMixedDragRange = (range, projection, documentSnapshot) => {
+      if (documentSnapshot !== null && view2.dom.isConnected && view2.dom.ownerDocument === doc2 && view2.state.doc !== documentSnapshot) {
+        clearDocumentSelectionProjection(doc2);
+        return;
+      }
+      if (documentClipboardDisposed || !root2.isConnected || !view2.dom.isConnected || view2.dom.ownerDocument !== doc2 || documentSnapshot === null || view2.state.doc !== documentSnapshot) {
+        return;
+      }
+      const documentLength = view2.state.doc.length;
+      const clampedRange = {
+        anchor: Math.max(0, Math.min(documentLength, range.anchor)),
+        head: Math.max(0, Math.min(documentLength, range.head))
+      };
+      const clampedProjection = projection ? { ...projection, ...clampedRange } : null;
+      if (clampedProjection) {
+        setDocumentSelectionProjection(doc2, clampedProjection);
+      }
+      view2.dispatch({
+        selection: EditorSelection.range(
+          clampedRange.anchor,
+          clampedRange.head
+        ),
+        ...clampedProjection ? {
+          annotations: documentSelectionProjectionTransaction.of(true)
+        } : {}
+      });
+    };
+    const onMixedPointerUp = (event) => {
+      if (mixedDragPointerId !== null && event.pointerId !== mixedDragPointerId) {
+        return;
+      }
+      if (mixedDragActive) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const generation = mixedDragGeneration;
+      queueMicrotask(() => restoreMixedDrag(generation));
+      if (mixedDragCleanupTimer !== null) {
+        clearTimeout(mixedDragCleanupTimer);
+      }
+      mixedDragCleanupTimer = setTimeout(() => {
+        mixedDragCleanupTimer = null;
+        finishMixedDrag(true, generation);
+      }, 0);
+    };
+    const onMixedMouseUp = (event) => {
+      if (mixedDragActive) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const generation = mixedDragGeneration;
+      queueMicrotask(() => restoreMixedDrag(generation));
+    };
+    const onMixedClick = (event) => {
+      if (!mixedDragActive) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const onLostPointerCapture = (event) => {
+      if (!mixedDragOwnsPointerCapture || event.pointerId !== mixedDragPointerId || root2.hasPointerCapture(event.pointerId)) {
+        return;
+      }
+      finishMixedDrag(true, mixedDragGeneration);
+    };
+    const onWindowBlur = () => {
+      if (mixedDragPointerId !== null) {
+        finishMixedDrag(true);
+      }
+    };
+    const finishMixedDrag = (restoreFinalRange, expectedGeneration) => {
+      if (expectedGeneration !== void 0 && expectedGeneration !== mixedDragGeneration) {
+        return;
+      }
+      if (mixedDragCleanupTimer !== null) {
+        clearTimeout(mixedDragCleanupTimer);
+        mixedDragCleanupTimer = null;
+      }
+      const finalRange = mixedDragRange;
+      const finalProjection = mixedDragProjection;
+      const finalDocument = mixedDragDocument;
+      const pointerId = mixedDragPointerId;
+      mixedDragGeneration += 1;
+      mixedDragPointerId = null;
+      mixedDragOwnsPointerCapture = false;
+      doc2.removeEventListener("pointermove", onMixedPointerMove, true);
+      doc2.removeEventListener("pointerup", onMixedPointerUp, true);
+      doc2.removeEventListener("pointercancel", onMixedPointerUp, true);
+      doc2.removeEventListener("mousemove", onMixedMouseMove, true);
+      doc2.removeEventListener("mouseup", onMixedMouseUp, true);
+      doc2.removeEventListener("click", onMixedClick, true);
+      mixedDragAnchor = null;
+      mixedDragRange = null;
+      mixedDragProjection = null;
+      mixedDragActive = false;
+      mixedDragDocument = null;
+      if (pointerId !== null && root2.hasPointerCapture(pointerId)) {
+        try {
+          root2.releasePointerCapture(pointerId);
+        } catch {
+        }
+      }
+      if (restoreFinalRange && finalRange) {
+        restoreMixedDragRange(finalRange, finalProjection, finalDocument);
+      }
+    };
+    doc2.addEventListener("copy", onCopy, true);
+    doc2.addEventListener("cut", onCut, true);
+    doc2.addEventListener("paste", onPaste, true);
+    doc2.addEventListener("keydown", onKeyDown);
+    root2.addEventListener("contextmenu", onContextMenu, true);
+    root2.addEventListener("pointerdown", onRootPointerDown, true);
+    root2.addEventListener("lostpointercapture", onLostPointerCapture, true);
+    root2.addEventListener("mousedown", onRootMouseDown, true);
+    doc2.defaultView?.addEventListener("blur", onWindowBlur);
+    return () => {
+      documentClipboardDisposed = true;
+      finishMixedDrag(false);
+      doc2.removeEventListener("copy", onCopy, true);
+      doc2.removeEventListener("cut", onCut, true);
+      doc2.removeEventListener("paste", onPaste, true);
+      doc2.removeEventListener("keydown", onKeyDown);
+      root2.removeEventListener("contextmenu", onContextMenu, true);
+      root2.removeEventListener("pointerdown", onRootPointerDown, true);
+      root2.removeEventListener("lostpointercapture", onLostPointerCapture, true);
+      root2.removeEventListener("mousedown", onRootMouseDown, true);
+      doc2.defaultView?.removeEventListener("blur", onWindowBlur);
+    };
+  }
+  var documentSelectionSyncSignatures = /* @__PURE__ */ new WeakMap();
+  function syncDocumentRangeSelection(view2, hydrateNewWrappersOnly = false) {
+    const editorRange = view2.state.selection.main;
+    if (!editorRange.empty && getTableRangeSelection(view2.dom.ownerDocument)) {
+      clearTableRangeSelection(view2.dom.ownerDocument);
+    }
+    const projection = getDocumentSelectionProjection(
+      view2.dom.ownerDocument,
+      editorRange
+    );
+    const range = editorRange;
+    const tables2 = getParsedTables(view2.state.doc);
+    if (hydrateNewWrappersOnly && range.empty && !view2.dom.ownerDocument.querySelector(".mlrt-document-range-selected")) {
+      return;
+    }
+    view2.dom.ownerDocument.querySelectorAll(".mlrt-table-widget").forEach((wrapper) => {
+      const from = Number(wrapper.dataset.srcFrom ?? "-1");
+      const table2 = tables2.find((candidate) => candidate.from === from);
+      const explicitRegion = projection?.tableRegions.find(
+        (candidate) => candidate.tableFrom === from
+      );
+      const fallbackRegion = table2 && !range.empty && range.from < table2.to && range.to > table2.from ? {
+        tableFrom: table2.from,
+        ...fullTableRectangle(tableDimensions2(table2))
+      } : null;
+      const region = projection ? explicitRegion ?? null : fallbackRegion;
+      const signature = [
+        range.anchor,
+        range.head,
+        table2?.from ?? -1,
+        table2?.to ?? -1,
+        region?.top ?? -1,
+        region?.bottom ?? -1,
+        region?.left ?? -1,
+        region?.right ?? -1
+      ].join(":");
+      if (hydrateNewWrappersOnly && documentSelectionSyncSignatures.get(wrapper) === signature) {
+        return;
+      }
+      const cells = Array.from(
+        wrapper.querySelectorAll(".mlrt-table-cell")
+      );
+      const selectedAddresses = /* @__PURE__ */ new Set();
+      if (table2 && !range.empty && region) {
+        cells.forEach((cell2) => {
+          const row = renderedCellRow(cell2);
+          const column = Number(cell2.dataset.column ?? "0");
+          if (row >= region.top && row <= region.bottom && column >= region.left && column <= region.right) {
+            selectedAddresses.add(renderedCellAddressKey(cell2));
+          }
+        });
+      }
+      wrapper.classList.toggle(
+        "mlrt-document-selection-mode",
+        selectedAddresses.size > 0
+      );
+      cells.forEach((cell2) => {
+        const row = renderedCellRow(cell2);
+        const column = Number(cell2.dataset.column ?? "0");
+        const selected = selectedAddresses.has(renderedCellAddressKey(cell2));
+        cell2.classList.toggle("mlrt-document-range-selected", selected);
+        const tableSelected = cell2.classList.contains("mlrt-table-cell-selected");
+        const syncEdge = (className, edge) => {
+          if (selected) {
+            cell2.classList.toggle(className, edge);
+          } else if (!tableSelected) {
+            cell2.classList.remove(className);
+          }
+        };
+        syncEdge(
+          "mlrt-table-selection-top",
+          !selectedAddresses.has(`${row - 1}:${column}`)
+        );
+        syncEdge(
+          "mlrt-table-selection-bottom",
+          !selectedAddresses.has(`${row + 1}:${column}`)
+        );
+        syncEdge(
+          "mlrt-table-selection-left",
+          !selectedAddresses.has(`${row}:${column - 1}`)
+        );
+        syncEdge(
+          "mlrt-table-selection-right",
+          !selectedAddresses.has(`${row}:${column + 1}`)
+        );
+      });
+      syncTableSelectionOverlay(wrapper);
+      documentSelectionSyncSignatures.set(wrapper, signature);
+    });
+  }
+  function tableDimensions2(table2) {
+    return {
+      rowCount: table2.body.length + 1,
+      columnCount: table2.columnCount
+    };
+  }
+  function fullRegionsForEnvelope(tables2, anchor, head) {
+    const from = Math.min(anchor, head);
+    const to = Math.max(anchor, head);
+    return tables2.filter((table2) => from < table2.to && to > table2.from).map((table2) => ({
+      tableFrom: table2.from,
+      ...fullTableRectangle(tableDimensions2(table2))
+    }));
+  }
+  function regionsForProseToCell(tables2, anchor, targetTable, targetCell, direction) {
+    const regions = tables2.filter(
+      (table2) => direction === "forward" ? table2.from > anchor && table2.from < targetTable.from : table2.from < anchor && table2.from > targetTable.from
+    ).map((table2) => ({
+      tableFrom: table2.from,
+      ...fullTableRectangle(tableDimensions2(table2))
+    }));
+    regions.push({
+      tableFrom: targetTable.from,
+      ...proseToTableRectangle(
+        direction,
+        targetCell,
+        tableDimensions2(targetTable)
+      )
+    });
+    return regions;
+  }
+  function documentSelectionCellAtPoint(doc2, clientX, clientY) {
+    const direct = findCell(doc2.elementFromPoint(clientX, clientY));
+    if (direct) {
+      return direct;
+    }
+    const wrapper = Array.from(
+      doc2.querySelectorAll(".mlrt-table-widget")
+    ).find((candidate) => {
+      const rect = candidate.querySelector(".mlrt-table")?.getBoundingClientRect() ?? candidate.getBoundingClientRect();
+      return clientY >= rect.top && clientY <= rect.bottom;
+    });
+    if (!wrapper) {
+      return null;
+    }
+    const cells = Array.from(
+      wrapper.querySelectorAll(".mlrt-table-cell")
+    );
+    if (cells.length === 0) {
+      return null;
+    }
+    return cells.reduce((nearest, candidate) => {
+      const distance = distanceToRect2(
+        candidate.getBoundingClientRect(),
+        clientX,
+        clientY
+      );
+      const nearestDistance = distanceToRect2(
+        nearest.getBoundingClientRect(),
+        clientX,
+        clientY
+      );
+      return distance < nearestDistance ? candidate : nearest;
+    });
+  }
+  function distanceToRect2(rect, clientX, clientY) {
+    const dx = Math.max(rect.left - clientX, 0, clientX - rect.right);
+    const dy = Math.max(rect.top - clientY, 0, clientY - rect.bottom);
+    return dx * dx + dy * dy;
+  }
+  function renderedCellRow(cell2) {
+    return cell2.dataset.rowKind === "header" ? 0 : Number(cell2.dataset.rowIndex ?? "0") + 1;
+  }
+  function renderedCellAddressKey(cell2) {
+    return `${renderedCellRow(cell2)}:${Number(cell2.dataset.column ?? "0")}`;
+  }
+  function renderedCellSourceSpan(cell2, table2) {
+    const directFrom = Number(cell2.dataset.sourceFrom ?? "NaN");
+    const directTo = Number(cell2.dataset.sourceTo ?? "NaN");
+    if (Number.isFinite(directFrom) && Number.isFinite(directTo)) {
+      return { from: directFrom, to: Math.max(directFrom + 1, directTo) };
+    }
+    const row = cell2.dataset.rowKind === "header" ? table2.header : table2.body[Number(cell2.dataset.rowIndex ?? "0")];
+    if (!row) {
+      return null;
+    }
+    return { from: row.from, to: Math.max(row.from + 1, row.to) };
+  }
+  function documentRepresentations(view2, from, to, mode, suppliedPayload) {
+    const markdown2 = view2.state.doc.sliceString(from, to);
+    return documentRepresentationsForMarkdown(
+      view2,
+      markdown2,
+      mode,
+      suppliedPayload
+    );
+  }
+  function documentRepresentationsForMarkdown(view2, markdown2, mode, suppliedPayload) {
+    const cutPrivatePayload = suppliedPayload ? JSON.stringify(suppliedPayload) : null;
+    if (mode === "markdown") {
+      return {
+        plain: markdown2,
+        markdown: markdown2,
+        ...cutPrivatePayload ? {
+          privatePayload: cutPrivatePayload,
+          html: metadataTextCarrierHtml(cutPrivatePayload, markdown2)
+        } : {}
+      };
+    }
+    const worksheet = buildClipboardWorksheet(markdown2, mode === "rich");
+    const plain = worksheet.plain;
+    if (mode === "plain") {
+      return {
+        plain,
+        ...cutPrivatePayload ? {
+          privatePayload: cutPrivatePayload,
+          html: metadataTextCarrierHtml(cutPrivatePayload, plain)
+        } : {}
+      };
+    }
+    const rendered = worksheet.html;
+    const sanitized = purify.sanitize(rendered, {
+      FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
+      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
+    });
+    const payload = suppliedPayload ?? {
+      version: MLRT_CLIPBOARD_VERSION,
+      kind: "document",
+      sourceDocument: readDocumentToken(view2.dom.ownerDocument),
+      markdown: markdown2
+    };
+    const privatePayload = JSON.stringify(payload);
+    const metadata = `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute2(
+      encodePayload(privatePayload)
+    )}">`;
+    return { plain, html: `${metadata}${sanitized}`, privatePayload };
+  }
+  function compositeSelectionMarkdown(view2, projection) {
+    const tables2 = getParsedTables(view2.state.doc);
+    const regions = projection.tableRegions.map((region) => ({
+      region,
+      table: tables2.find((candidate) => candidate.from === region.tableFrom)
+    })).filter(
+      (entry) => Boolean(entry.table)
+    ).sort((left, right) => left.table.from - right.table.from);
+    const selectionFrom = Math.min(projection.anchor, projection.head);
+    const selectionTo = Math.max(projection.anchor, projection.head);
+    const fragments = [];
+    let cursor = selectionFrom;
+    for (const { table: table2, region } of regions) {
+      if (table2.to <= selectionFrom || table2.from >= selectionTo) {
+        continue;
+      }
+      if (cursor < table2.from) {
+        fragments.push(
+          view2.state.doc.sliceString(cursor, Math.min(selectionTo, table2.from))
+        );
+      }
+      const payload = tableRectanglePayload(
+        table2,
+        region,
+        readDocumentToken(view2.dom.ownerDocument)
+      );
+      fragments.push(markdownForGridPayload(payload));
+      cursor = Math.max(cursor, table2.to);
+    }
+    if (cursor < selectionTo) {
+      fragments.push(view2.state.doc.sliceString(cursor, selectionTo));
+    }
+    return joinCompositeMarkdownFragments(fragments);
+  }
+  function joinCompositeMarkdownFragments(fragments) {
+    let result = "";
+    for (const fragment of fragments.filter((candidate) => candidate.length > 0)) {
+      if (result.length > 0 && !result.endsWith("\n") && !fragment.startsWith("\n")) {
+        result += "\n";
+      }
+      result += fragment;
+    }
+    return result;
+  }
+  function compositeSelectionChanges(view2, projection) {
+    if (projection.tableRegions.length === 0) {
+      const from2 = Math.min(projection.anchor, projection.head);
+      const to2 = Math.max(projection.anchor, projection.head);
+      return from2 < to2 ? [{ from: from2, to: to2, insert: "" }] : [];
+    }
+    const tables2 = getParsedTables(view2.state.doc);
+    const selectedTables = projection.tableRegions.map((region) => ({
+      region,
+      table: tables2.find((candidate) => candidate.from === region.tableFrom)
+    })).filter(
+      (entry) => Boolean(entry.table)
+    ).sort((left, right) => left.table.from - right.table.from);
+    const from = Math.min(projection.anchor, projection.head);
+    const to = Math.max(projection.anchor, projection.head);
+    const source = view2.state.doc.toString();
+    const changes = [];
+    let cursor = from;
+    for (const { table: table2, region } of selectedTables) {
+      if (table2.to <= from || table2.from >= to) {
+        continue;
+      }
+      if (cursor < table2.from) {
+        const proseTo = trimTrailingLineBreaks(
+          source,
+          cursor,
+          Math.min(to, table2.from)
+        );
+        if (cursor < proseTo) {
+          changes.push({ from: cursor, to: proseTo, insert: "" });
+        }
+      }
+      const full = isFullTableRegion(table2, region);
+      changes.push(
+        full ? { from: table2.from, to: table2.to, insert: "" } : buildGridClearEdit(table2, region)
+      );
+      cursor = Math.max(cursor, table2.to);
+    }
+    if (cursor < to) {
+      const proseFrom = trimLeadingLineBreaks(
+        source,
+        cursor,
+        to
+      );
+      if (proseFrom < to) {
+        changes.push({ from: proseFrom, to, insert: "" });
+      }
+    }
+    return changes.filter((change) => change.from < change.to || change.insert.length > 0).sort((left, right) => left.from - right.from);
+  }
+  function isFullTableRegion(table2, region) {
+    return region.top === 0 && region.bottom === table2.body.length && region.left === 0 && region.right === table2.columnCount - 1;
+  }
+  function trimTrailingLineBreaks(source, from, to) {
+    let result = to;
+    while (result > from && source[result - 1] === "\n") {
+      result--;
+    }
+    return result;
+  }
+  function trimLeadingLineBreaks(source, from, to) {
+    let result = from;
+    while (result < to && source[result] === "\n") {
+      result++;
+    }
+    return result;
+  }
+  function applyCompositeSelectionDelete(view2, projection) {
+    const changes = compositeSelectionChanges(view2, projection);
+    if (changes.length === 0) {
+      return;
+    }
+    const changeSet = view2.state.changes(changes);
+    const selectionFrom = Math.min(projection.anchor, projection.head);
+    clearDocumentSelectionProjection(view2.dom.ownerDocument);
+    view2.dispatch({
+      changes: changeSet,
+      selection: EditorSelection.cursor(changeSet.mapPos(selectionFrom, -1), 1),
+      annotations: [
+        allowTableSourceChange.of(true),
+        Transaction.addToHistory.of(true)
+      ],
+      userEvent: "delete.selection"
+    });
+  }
+  function buildClipboardWorksheet(markdown2, rich) {
+    const tables2 = parseMarkdownTables(markdown2);
+    const rows = [];
+    let cursor = 0;
+    for (const table2 of tables2) {
+      rows.push(...proseWorksheetRows(markdown2.slice(cursor, table2.from)));
+      rows.push({
+        cells: tableRowDisplayValues(table2.header.cells.map((cell2) => cell2.raw)),
+        ...rich ? { richCells: tableRowRichValues(table2.header.cells.map((cell2) => cell2.raw)) } : {},
+        kind: "table-header",
+        alignments: table2.alignments
+      });
+      for (const row of table2.body) {
+        rows.push({
+          cells: tableRowDisplayValues(Array.from(
+            { length: table2.columnCount },
+            (_, column) => row.cells[column]?.raw ?? ""
+          )),
+          ...rich ? { richCells: tableRowRichValues(Array.from(
+            { length: table2.columnCount },
+            (_, column) => row.cells[column]?.raw ?? ""
+          )) } : {},
+          kind: "table-body",
+          alignments: table2.alignments
+        });
+      }
+      cursor = table2.to;
+    }
+    rows.push(...proseWorksheetRows(markdown2.slice(cursor)));
+    if (rows.length === 0) {
+      rows.push({ cells: [""], kind: "prose" });
+    }
+    const width = Math.max(1, ...rows.map((row) => row.cells.length));
+    const plain = serializeDelimitedGrid(
+      rows.map((row) => row.cells),
+      "	"
+    );
+    const htmlRows = rows.map((row) => {
+      const cells = Array.from({ length: width }, (_, column) => {
+        const value = row.cells[column] ?? "";
+        const isTable = row.kind !== "prose";
+        const alignment = row.alignments?.[column] ?? "left";
+        const tag = row.kind === "table-header" ? "th" : "td";
+        const style = isTable ? `border:1px solid #000000;padding:2px 6px;text-align:${alignment};vertical-align:top;white-space:pre-wrap` : "border:none;padding:2px 6px;text-align:left;vertical-align:top;white-space:pre-wrap";
+        const content2 = row.richCells?.[column] ?? escapeWorksheetText(value);
+        return `<${tag} style="${style}">${content2}</${tag}>`;
+      }).join("");
+      return `<tr data-mlrt-row-kind="${row.kind}">${cells}</tr>`;
+    }).join("");
+    return {
+      plain,
+      html: `<table data-mlrt-clipboard-layout="worksheet" style="border-collapse:collapse;border-spacing:0"><tbody>${htmlRows}</tbody></table>`
+    };
+  }
+  function proseWorksheetRows(markdown2) {
+    if (markdown2.trim().length === 0) {
+      return [];
+    }
+    const rendered = purify.sanitize(markdownRenderer.render(markdown2), {
+      FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
+      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
+    });
+    const parsed = new DOMParser().parseFromString(rendered, "text/html");
+    const values2 = [];
+    for (const child of Array.from(parsed.body.children)) {
+      if (child.tagName === "UL" || child.tagName === "OL") {
+        appendListValues(child, values2, 0);
+        continue;
+      }
+      visibleElementText(child).split("\n").map((value) => value.trimEnd()).filter((value) => value.length > 0).forEach((value) => values2.push(value));
+    }
+    return values2.map((value) => ({ cells: [value], kind: "prose" }));
+  }
+  function appendListValues(list2, values2, depth) {
+    const ordered = list2.tagName === "OL";
+    let index = Number(list2.getAttribute("start") ?? "1");
+    for (const item of Array.from(list2.children)) {
+      if (item.tagName !== "LI") {
+        continue;
+      }
+      const clone2 = item.cloneNode(true);
+      clone2.querySelectorAll(":scope > ul, :scope > ol").forEach((nested) => nested.remove());
+      const prefix = ordered ? `${index}. ` : "\u2022 ";
+      values2.push(`${"  ".repeat(depth)}${prefix}${visibleElementText(clone2).trim()}`);
+      for (const nested of Array.from(item.children)) {
+        if (nested.tagName === "UL" || nested.tagName === "OL") {
+          appendListValues(nested, values2, depth + 1);
+        }
+      }
+      index++;
+    }
+  }
+  function tableRowDisplayValues(rawCells) {
+    return rawCells.map((raw) => {
+      const displayed = markdownCellToDisplayText(raw).trim();
+      const rendered = markdownRenderer.renderInline(displayed);
+      const parsed = new DOMParser().parseFromString(rendered, "text/html");
+      return visibleElementText(parsed.body).trim();
+    });
+  }
+  function tableRowRichValues(rawCells) {
+    return rawCells.map((raw) => {
+      const sanitized = purify.sanitize(
+        richMarkdownRenderer.renderInline(
+          markdownCellToDisplayText(raw).trim()
+        ),
+        {
+          ALLOWED_TAGS: [
+            "a",
+            "b",
+            "strong",
+            "i",
+            "em",
+            "u",
+            "s",
+            "del",
+            "code",
+            "br",
+            "sub",
+            "sup"
+          ],
+          ALLOWED_ATTR: ["href", "title"],
+          ALLOW_UNKNOWN_PROTOCOLS: false
+        }
+      );
+      return excelSafeRichInline(sanitized);
+    });
+  }
+  function excelSafeRichInline(html3) {
+    const parsed = new DOMParser().parseFromString(html3, "text/html");
+    const replaceWithSpan = (selector, style) => {
+      parsed.body.querySelectorAll(selector).forEach((element) => {
+        const span = parsed.createElement("span");
+        span.setAttribute("style", style);
+        span.append(...Array.from(element.childNodes));
+        element.replaceWith(span);
+      });
+    };
+    replaceWithSpan("strong, b", "font-weight:700");
+    replaceWithSpan("em, i", "font-style:italic");
+    replaceWithSpan("code", "font-family:monospace");
+    replaceWithSpan("s, del", "text-decoration:line-through");
+    parsed.body.querySelectorAll("br").forEach(
+      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
+    );
+    return parsed.body.innerHTML;
+  }
+  function visibleElementText(element) {
+    const clone2 = element.cloneNode(true);
+    clone2.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return (clone2.textContent ?? "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+  }
+  function escapeWorksheetText(value) {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\n/g, "<br>");
+  }
+  function writeDocumentTransfer(transfer, representations) {
+    transfer.setData("text/plain", representations.plain);
+    if (representations.html) {
+      transfer.setData("text/html", representations.html);
+    }
+    if (representations.markdown) {
+      transfer.setData("text/markdown", representations.markdown);
+    }
+    if (representations.privatePayload) {
+      transfer.setData(MLRT_CLIPBOARD_MIME, representations.privatePayload);
+    }
+  }
+  function readTransfer(transfer) {
+    return {
+      privatePayload: readTransferType(transfer, MLRT_CLIPBOARD_MIME),
+      html: readTransferType(transfer, "text/html"),
+      markdown: readTransferType(transfer, "text/markdown"),
+      plain: readTransferType(transfer, "text/plain", true)
+    };
+  }
+  function readTransferType(transfer, type, preserveEmpty = false) {
+    const available = Array.from(transfer.types).some(
+      (candidate) => candidate.toLowerCase() === type.toLowerCase()
+    );
+    if (!available) {
+      return void 0;
+    }
+    const value = transfer.getData(type);
+    return preserveEmpty || value.length > 0 ? value : void 0;
+  }
+  function documentPasteMarkdown(data2, mode) {
+    if (mode === "auto") {
+      const privatePayload = readPrivatePayload(data2);
+      if (privatePayload?.kind === "document") {
+        return privatePayload.markdown;
+      }
+      if (privatePayload?.kind === "grid") {
+        return markdownForGridPayload(privatePayload);
+      }
+    }
+    if (mode === "markdown") {
+      const markdown2 = data2.markdown ?? data2.plain;
+      return markdown2 === void 0 ? null : normalizeText(markdown2);
+    }
+    if ((mode === "auto" || mode === "rich") && data2.html) {
+      return htmlToReadableMarkdown(data2.html);
+    }
+    if (mode !== "plain" && data2.markdown) {
+      return normalizeText(data2.markdown);
+    }
+    return data2.plain === void 0 ? null : normalizeText(data2.plain);
+  }
+  function markdownForGridPayload(payload) {
+    return payload.exactMarkdown ?? gridToMarkdown(payload.rows, payload.alignments);
+  }
+  function htmlToReadableMarkdown(html3) {
+    const classStyles = officeClassStyles(html3);
+    const sanitized = purify.sanitize(html3, {
+      FORBID_TAGS: [
+        "script",
+        "style",
+        "meta",
+        "link",
+        "object",
+        "embed",
+        "iframe",
+        "form",
+        "input"
+      ],
+      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
+    });
+    const parsed = new DOMParser().parseFromString(sanitized, "text/html");
+    const replacements = /* @__PURE__ */ new Map();
+    Array.from(parsed.querySelectorAll("table")).forEach((table2, index) => {
+      const token = `MLRTTABLETOKEN${index}X`;
+      replacements.set(token, htmlTableToReadableMarkdown(table2, classStyles));
+      table2.replaceWith(parsed.createTextNode(token));
+    });
+    let markdown2 = turndown.turndown(parsed.body.innerHTML);
+    replacements.forEach((replacement, token) => {
+      markdown2 = markdown2.replace(token, `
+
+${replacement}
+
+`);
+    });
+    return normalizeText(markdown2).replace(/\n{3,}/g, "\n\n").trimEnd();
+  }
+  function htmlTableToReadableMarkdown(table2, classStyles) {
+    const rows = [];
+    Array.from(table2.rows).forEach((row, rowIndex) => {
+      rows[rowIndex] ??= [];
+      let column = 0;
+      Array.from(row.cells).forEach((cell2) => {
+        while (rows[rowIndex][column] !== void 0) {
+          column++;
+        }
+        const markdown2 = htmlCellToMarkdown(cell2);
+        const bordered = cellHasVisibleBorder(cell2, classStyles);
+        const rowSpan = Math.max(1, cell2.rowSpan || 1);
+        const columnSpan = Math.max(1, cell2.colSpan || 1);
+        for (let rowOffset = 0; rowOffset < rowSpan; rowOffset++) {
+          rows[rowIndex + rowOffset] ??= [];
+          for (let columnOffset = 0; columnOffset < columnSpan; columnOffset++) {
+            rows[rowIndex + rowOffset][column + columnOffset] = {
+              markdown: rowOffset === 0 && columnOffset === 0 ? markdown2 : "",
+              bordered
+            };
+          }
+        }
+        column += columnSpan;
+      });
+    });
+    if (rows.length === 0) {
+      return "";
+    }
+    const width = Math.max(...rows.map((row) => row.length));
+    const normalized = rows.map(
+      (row) => Array.from(
+        { length: width },
+        (_, column) => row[column] ?? {
+          markdown: "",
+          bordered: false
+        }
+      )
+    );
+    const borderedRows = normalized.map(
+      (row) => row.some((cell2) => cell2.bordered)
+    );
+    const hasBorderedRows = borderedRows.some(Boolean);
+    const hasUnborderedRows = borderedRows.some((bordered) => !bordered);
+    if (!hasBorderedRows || !hasUnborderedRows) {
+      return importedRowsToMarkdownTable(normalized);
+    }
+    const blocks = [];
+    let index = 0;
+    while (index < normalized.length) {
+      if (borderedRows[index]) {
+        const start = index;
+        while (index < normalized.length && borderedRows[index]) {
+          index++;
+        }
+        blocks.push(importedRowsToMarkdownTable(normalized.slice(start, index)));
+        continue;
+      }
+      const prose = importedRowToProse(normalized[index]);
+      if (prose.length > 0) {
+        blocks.push(prose);
+      }
+      index++;
+    }
+    return blocks.join("\n\n");
+  }
+  function importedRowsToMarkdownTable(rows) {
+    const width = Math.max(1, ...rows.map((row) => row.length));
+    const sourceRows = rows.length > 0 ? rows : [[]];
+    const renderRow = (row) => `| ${Array.from(
+      { length: width },
+      (_, column) => markdownForTableCell(row[column]?.markdown ?? "")
+    ).join(" | ")} |`;
+    return [
+      renderRow(sourceRows[0]),
+      `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
+      ...sourceRows.slice(1).map(renderRow)
+    ].join("\n");
+  }
+  function importedRowToProse(row) {
+    const populated = row.map((cell2, column) => ({ column, value: cell2.markdown.trim() })).filter(({ value }) => value.length > 0);
+    if (populated.length === 0) {
+      return "";
+    }
+    if (populated.length === 1) {
+      return populated[0].value.replace(/^(\s*)[•·]\s+/, "$1- ");
+    }
+    return Array.from(
+      { length: populated[populated.length - 1].column + 1 },
+      (_, column) => row[column]?.markdown.trim() ?? ""
+    ).join("	");
+  }
+  function htmlCellToMarkdown(cell2) {
+    const clone2 = cell2.cloneNode(true);
+    clone2.querySelectorAll(
+      [
+        "[hidden]",
+        '[style*="display:none"]',
+        '[style*="display: none"]',
+        '[style*="visibility:hidden"]',
+        '[style*="visibility: hidden"]',
+        '[style*="mso-hide"]'
+      ].join(",")
+    ).forEach((element) => element.remove());
+    clone2.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return normalizeText(turndown.turndown(clone2.innerHTML)).replace(/\n{2,}/g, "\n").trim();
+  }
+  function markdownForTableCell(value) {
+    return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+  }
+  function officeClassStyles(html3) {
+    const styles = /* @__PURE__ */ new Map();
+    const styleBlocks = Array.from(html3.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi));
+    for (const styleBlock of styleBlocks) {
+      const css2 = styleBlock[1];
+      for (const rule of css2.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const declaration2 = rule[2];
+        for (const classMatch of rule[1].matchAll(/\.([a-zA-Z_][\w-]*)/g)) {
+          const className = classMatch[1];
+          styles.set(
+            className,
+            `${styles.get(className) ?? ""};${declaration2}`
+          );
+        }
+      }
+    }
+    return styles;
+  }
+  function cellHasVisibleBorder(cell2, classStyles) {
+    const css2 = [
+      cell2.getAttribute("style") ?? "",
+      ...Array.from(cell2.classList).map((className) => classStyles.get(className) ?? "")
+    ].join(";");
+    return /(?:^|;)\s*border(?:-(?:top|right|bottom|left))?\s*:\s*(?!(?:none|0(?:px|pt)?)(?:\s|;|$))[^;]+/i.test(css2);
+  }
+  function applyDocumentPaste(view2, markdown2, data2) {
+    const doc2 = view2.dom.ownerDocument;
+    const projection = getDocumentSelectionProjection(
+      doc2,
+      view2.state.selection.main
+    );
+    const range = atomicDocumentSelection(view2) ?? view2.state.selection.main;
+    const privatePayload = readPrivatePayload(data2);
+    const documentPayload = privatePayload?.kind === "document" ? privatePayload : null;
+    const gridPayload = privatePayload?.kind === "grid" ? privatePayload : null;
+    const pending = getPendingClipboardCut(doc2);
+    const completesDocumentMove = Boolean(
+      pending?.kind === "document" && documentPayload?.cutToken === pending.token && documentPayload.sourceDocument === pending.sourceDocument && documentPayload.markdown === pending.markdown && pending.sourceDocument === readDocumentToken(doc2)
+    );
+    const completesCompositeMove = Boolean(
+      pending?.kind === "composite" && documentPayload?.cutToken === pending.token && documentPayload.sourceDocument === pending.sourceDocument && documentPayload.markdown === pending.markdown && pending.sourceDocument === readDocumentToken(doc2)
+    );
+    const completesTableMove = Boolean(
+      pending?.kind === "table" && gridPayload?.cutToken === pending.token && gridPayload.sourceDocument === pending.sourceDocument && pending.sourceDocument === readDocumentToken(doc2)
+    );
+    if (projection) {
+      if (completesCompositeMove || completesDocumentMove || completesTableMove) {
+        announce(
+          doc2,
+          "Move rejected: choose a text cursor or table range as the destination."
+        );
+        return false;
+      }
+      if (!dispatchCompositeSelectionReplacement(
+        view2,
+        projection,
+        markdown2,
+        "input.paste"
+      )) {
+        announce(doc2, "Paste cancelled because the mixed selection changed.");
+        return false;
+      }
+      clearPendingClipboardCut(doc2);
+      setPendingCutToken(doc2, void 0);
+      view2.dom.classList.remove("mlrt-document-cut-pending");
+      return true;
+    }
+    if (completesCompositeMove && pending?.kind === "composite" && documentPayload) {
+      const outcome = dispatchCompositeMoveToDocument(
+        view2,
+        range,
+        pending,
+        documentPayload
+      );
+      if (outcome !== "completed") {
+        announce(
+          doc2,
+          outcome === "destination-overlap" ? "Move rejected: choose a destination outside the cut source." : "Move cancelled because the cut source changed."
+        );
+        if (outcome === "source-changed") {
+          clearPendingClipboardCut(doc2);
+          view2.dom.classList.remove("mlrt-document-cut-pending");
+        }
+        return false;
+      }
+    } else if (completesDocumentMove && pending?.kind === "document" && documentPayload) {
+      if (view2.state.doc.sliceString(pending.from, pending.to) !== pending.markdown) {
+        announce(doc2, "Move cancelled because the cut source changed.");
+        clearPendingClipboardCut(doc2);
+        view2.dom.classList.remove("mlrt-document-cut-pending");
+        return false;
+      }
+      if (rangesOverlap(
+        { from: pending.from, to: pending.to },
+        { from: range.from, to: range.to }
+      ) || range.empty && range.from > pending.from && range.from < pending.to) {
+        announce(doc2, "Move rejected: choose a destination outside the cut source.");
+        return false;
+      }
+      const moveMarkdown = documentPayload.markdown;
+      const changeSpecs = [
+        { from: pending.from, to: pending.to, insert: "" },
+        { from: range.from, to: range.to, insert: moveMarkdown }
+      ].sort((left, right) => left.from - right.from);
+      const changes = view2.state.changes(changeSpecs);
+      const insertionFrom = changes.mapPos(range.from, -1);
+      view2.dispatch({
+        changes,
+        selection: EditorSelection.cursor(insertionFrom + moveMarkdown.length, 1),
+        annotations: [
+          allowTableSourceChange.of(true),
+          Transaction.addToHistory.of(true)
+        ],
+        userEvent: "input.paste"
+      });
+    } else if (completesTableMove && pending?.kind === "table" && gridPayload) {
+      const outcome = dispatchTableMoveToDocument(
+        view2,
+        range,
+        pending,
+        gridPayload
+      );
+      if (outcome !== "completed") {
+        announce(
+          doc2,
+          outcome === "destination-overlap" ? "Move rejected: choose a destination outside the cut source." : "Move cancelled because the cut source changed."
+        );
+        if (outcome === "source-changed") {
+          clearPendingClipboardCut(doc2);
+          setPendingCutToken(doc2, void 0);
+        }
+        return false;
+      }
+    } else {
+      view2.dispatch({
+        changes: { from: range.from, to: range.to, insert: markdown2 },
+        selection: EditorSelection.cursor(range.from + markdown2.length, 1),
+        annotations: [
+          allowTableSourceChange.of(true),
+          Transaction.addToHistory.of(true)
+        ],
+        userEvent: "input.paste"
+      });
+    }
+    clearPendingClipboardCut(doc2);
+    setPendingCutToken(doc2, void 0);
+    view2.dom.classList.remove("mlrt-document-cut-pending");
+    return true;
+  }
+  function dispatchCompositeSelectionReplacement(view2, projection, markdown2, userEvent) {
+    const edits = compositeSelectionChanges(view2, projection).map((edit) => ({
+      ...edit
+    }));
+    if (edits.length === 0) {
+      return false;
+    }
+    const anchor = projection.anchor;
+    let insertionEdit = edits.find(
+      (edit) => anchor === edit.from || anchor === edit.to
+    );
+    let insertionOffset = markdown2.length;
+    if (!insertionEdit) {
+      insertionEdit = { from: anchor, to: anchor, insert: markdown2 };
+      edits.push(insertionEdit);
+    } else if (anchor === insertionEdit.from) {
+      insertionEdit.insert = editRewritesTable(view2, insertionEdit) ? joinMarkdownAtBlockBoundary(markdown2, insertionEdit.insert) : markdown2 + insertionEdit.insert;
+    } else {
+      insertionEdit.insert = editRewritesTable(view2, insertionEdit) ? joinMarkdownAtBlockBoundary(insertionEdit.insert, markdown2) : insertionEdit.insert + markdown2;
+      insertionOffset = insertionEdit.insert.length;
+    }
+    edits.sort((left, right) => left.from - right.from || left.to - right.to);
+    for (let index = 1; index < edits.length; index++) {
+      if (edits[index - 1].to > edits[index].from) {
+        return false;
+      }
+    }
+    const changes = view2.state.changes(edits);
+    const cursor = changes.mapPos(insertionEdit.from, -1) + insertionOffset;
+    clearDocumentSelectionProjection(view2.dom.ownerDocument);
+    view2.dispatch({
+      changes,
+      selection: EditorSelection.cursor(cursor, 1),
+      annotations: [
+        allowTableSourceChange.of(true),
+        Transaction.addToHistory.of(true),
+        // A spatial replacement can touch several non-contiguous prose/table
+        // spans. It must begin a fresh undo event, while remaining open on the
+        // trailing side so later IME composition updates still undo with it.
+        isolateHistory.of("before")
+      ],
+      userEvent
+    });
+    return true;
+  }
+  function editRewritesTable(view2, edit) {
+    return getParsedTables(view2.state.doc).some(
+      (table2) => edit.from === table2.from && edit.to === table2.to
+    );
+  }
+  function joinMarkdownAtBlockBoundary(left, right) {
+    if (!left || !right) {
+      return left + right;
+    }
+    const trailingBreaks = left.match(/\n+$/)?.[0].length ?? 0;
+    const leadingBreaks = right.match(/^\n+/)?.[0].length ?? 0;
+    const missingBreaks = Math.max(0, 2 - trailingBreaks - leadingBreaks);
+    return left + "\n".repeat(missingBreaks) + right;
+  }
+  function dispatchCompositeMoveToDocument(view2, destination, pending, payload) {
+    if (view2.state.doc.toString() !== pending.sourceDocumentText || payload.markdown !== pending.markdown) {
+      return "source-changed";
+    }
+    if (pending.changes.some(
+      (change) => rangesOverlap(
+        { from: change.from, to: change.to },
+        { from: destination.from, to: destination.to }
+      ) || destination.empty && destination.from > change.from && destination.from < change.to
+    )) {
+      return "destination-overlap";
+    }
+    const changeSpecs = [
+      ...pending.changes,
+      {
+        from: destination.from,
+        to: destination.to,
+        insert: pending.markdown
+      }
+    ].sort((left, right) => left.from - right.from);
+    for (let index = 1; index < changeSpecs.length; index++) {
+      if (changeSpecs[index - 1].to > changeSpecs[index].from) {
+        return "destination-overlap";
+      }
+    }
+    const changes = view2.state.changes(changeSpecs);
+    const insertionFrom = changes.mapPos(destination.from, -1);
+    view2.dispatch({
+      changes,
+      selection: EditorSelection.cursor(
+        insertionFrom + pending.markdown.length,
+        1
+      ),
+      annotations: [
+        allowTableSourceChange.of(true),
+        Transaction.addToHistory.of(true)
+      ],
+      userEvent: "input.paste"
+    });
+    return "completed";
+  }
+  function dispatchTableMoveToDocument(view2, destination, pending, payload) {
+    const sourceTable = getParsedTables(view2.state.doc).find(
+      (candidate) => candidate.from === pending.tableFrom
+    );
+    if (!sourceTable || view2.state.doc.sliceString(sourceTable.from, sourceTable.to) !== pending.sourceTableText) {
+      return "source-changed";
+    }
+    if (rangesOverlap(
+      { from: sourceTable.from, to: sourceTable.to },
+      destination
+    ) || destination.empty && destination.from > sourceTable.from && destination.from < sourceTable.to) {
+      return "destination-overlap";
+    }
+    const expectedPayload = tableRectanglePayload(
+      sourceTable,
+      pending.rectangle,
+      pending.sourceDocument
+    );
+    if (!sameGridPayloadText(payload, expectedPayload)) {
+      return "source-changed";
+    }
+    const markdown2 = markdownForGridPayload(expectedPayload);
+    const sourceEdit = buildGridClearEdit(sourceTable, pending.rectangle);
+    const changeSpecs = [
+      sourceEdit,
+      { from: destination.from, to: destination.to, insert: markdown2 }
+    ].sort((left, right) => left.from - right.from).map((edit) => ({ from: edit.from, to: edit.to, insert: edit.insert }));
+    const changes = view2.state.changes(changeSpecs);
+    const insertionFrom = changes.mapPos(destination.from, -1);
+    view2.dispatch({
+      changes,
+      selection: EditorSelection.cursor(insertionFrom + markdown2.length, 1),
+      annotations: [
+        allowTableSourceChange.of(true),
+        Transaction.addToHistory.of(true)
+      ],
+      userEvent: "input.paste"
+    });
+    return "completed";
+  }
+  function sameGridPayloadText(left, right) {
+    return left.rows.length === right.rows.length && left.rows.every(
+      (row, rowIndex) => row.length === right.rows[rowIndex]?.length && row.every(
+        (cell2, column) => cell2.text === right.rows[rowIndex]?.[column]?.text
+      )
+    );
+  }
+  function readPrivatePayload(data2) {
+    const direct = data2.privatePayload ? parseClipboardPayload(data2.privatePayload) : null;
+    if (direct) {
+      return direct;
+    }
+    if (!data2.html) {
+      return null;
+    }
+    const parsed = new DOMParser().parseFromString(data2.html, "text/html");
+    const encoded = parsed.querySelector(
+      'meta[name="mlrt-clipboard"]'
+    )?.content;
+    if (!encoded) {
+      return null;
+    }
+    const text3 = decodePayload(encoded);
+    return text3 ? parseClipboardPayload(text3) : null;
+  }
+  function atomicDocumentSelection(view2) {
+    const selection = view2.state.selection.main;
+    if (selection.empty) {
+      return null;
+    }
+    let from = selection.from;
+    let to = selection.to;
+    for (const table2 of getParsedTables(view2.state.doc)) {
+      if (from < table2.to && to > table2.from) {
+        from = Math.min(from, table2.from);
+        to = Math.max(to, table2.to);
+      }
+    }
+    return { from, to, empty: false };
+  }
+  function showDocumentMenu(doc2, view2, clientX, clientY) {
+    documentMenuClosers.get(doc2)?.();
+    const menu = doc2.createElement("div");
+    menu.className = "mlrt-clipboard-menu mlrt-document-clipboard-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Document clipboard actions");
+    const close = (restoreFocus = false) => {
+      menu.remove();
+      doc2.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      documentMenuClosers.delete(doc2);
+      if (restoreFocus) {
+        view2.focus();
+      }
+    };
+    const closeOnOutsidePointer = (event) => {
+      if (event.target instanceof Node && !menu.contains(event.target)) {
+        close();
+      }
+    };
+    const add2 = (label, callback) => {
+      const item = doc2.createElement("button");
+      item.type = "button";
+      item.className = "mlrt-clipboard-menu-item";
+      item.setAttribute("role", "menuitem");
+      item.textContent = label;
+      item.addEventListener("click", () => {
+        close();
+        view2.focus();
+        callback();
+      });
+      item.addEventListener("keydown", (event) => {
+        const items2 = Array.from(
+          menu.querySelectorAll("button")
+        );
+        const index = items2.indexOf(item);
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          close(true);
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          event.stopPropagation();
+          close(true);
+          return;
+        }
+        if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          const target2 = event.key === "Home" ? items2[0] : items2[items2.length - 1];
+          items2.forEach((candidate) => {
+            candidate.tabIndex = candidate === target2 ? 0 : -1;
+          });
+          target2?.focus();
+          return;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+          return;
+        }
+        event.preventDefault();
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        const target = items2[(index + delta + items2.length) % items2.length];
+        items2.forEach((candidate) => {
+          candidate.tabIndex = candidate === target ? 0 : -1;
+        });
+        target?.focus();
+      });
+      menu.append(item);
+    };
+    add2("Cut / Move within document", () => {
+      if (!doc2.execCommand("cut")) {
+        announce(doc2, "Cut failed. Use Cmd/Ctrl+X.");
+      }
+    });
+    ["smart", "rich", "plain", "markdown"].forEach(
+      (mode) => add2(`Copy ${capitalize(mode)}`, () => {
+        requestedDocumentCopyMode = mode;
+        if (!doc2.execCommand("copy")) {
+          requestedDocumentCopyMode = null;
+          announce(doc2, "Copy failed. Use Cmd/Ctrl+C.");
+        }
+      })
+    );
+    ["auto", "rich", "plain", "markdown"].forEach(
+      (mode) => add2(`Paste ${capitalize(mode)}`, () => {
+        armedDocumentPasteMode = mode;
+        announce(doc2, `Paste ${capitalize(mode)} armed \u2014 press Cmd/Ctrl+V.`);
+      })
+    );
+    add2(
+      "Clipboard Settings\u2026",
+      () => view2.dom.dispatchEvent(
+        new CustomEvent("mlrt:open-clipboard-settings", { bubbles: true })
+      )
+    );
+    const items = Array.from(
+      menu.querySelectorAll("button")
+    );
+    items.forEach((item, index) => {
+      item.tabIndex = index === 0 ? 0 : -1;
+    });
+    doc2.body.append(menu);
+    menu.style.position = "fixed";
+    const viewportWidth = doc2.documentElement.clientWidth;
+    const viewportHeight = doc2.documentElement.clientHeight;
+    menu.style.left = `${Math.max(
+      4,
+      Math.min(clientX, viewportWidth - menu.offsetWidth - 4)
+    )}px`;
+    menu.style.top = `${Math.max(
+      4,
+      Math.min(clientY, viewportHeight - menu.offsetHeight - 4)
+    )}px`;
+    menu.querySelector("button")?.focus();
+    documentMenuClosers.set(doc2, close);
+    doc2.addEventListener("pointerdown", closeOnOutsidePointer, true);
+  }
+  function announce(doc2, message) {
+    let status = doc2.querySelector(".mlrt-clipboard-status");
+    if (!status) {
+      status = doc2.createElement("div");
+      status.className = "mlrt-clipboard-status";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "polite");
+      doc2.body.append(status);
+    }
+    status.textContent = "";
+    requestAnimationFrame(() => {
+      if (!status) {
+        return;
+      }
+      status.textContent = message;
+      status.dataset.visible = "true";
+      setTimeout(() => {
+        if (status?.textContent === message) {
+          delete status.dataset.visible;
+        }
+      }, 2400);
+    });
+  }
+  function readCopyMode(doc2) {
+    const value = doc2.documentElement.dataset.mlrtDefaultCopyMode;
+    return value === "rich" || value === "plain" || value === "markdown" ? value : "smart";
+  }
+  function readPasteMode(doc2) {
+    const value = doc2.documentElement.dataset.mlrtDefaultPasteMode;
+    return value === "rich" || value === "plain" || value === "markdown" ? value : "auto";
+  }
+  function readDocumentToken(doc2) {
+    return doc2.documentElement.dataset.mlrtDocumentToken ?? "";
+  }
+  function normalizeText(value) {
+    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+  }
+  function rangesOverlap(left, right) {
+    return left.from < right.to && right.from < left.to;
+  }
+  function createToken() {
+    return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  function encodePayload(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    bytes.forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+  }
+  function decodePayload(value) {
+    try {
+      return new TextDecoder().decode(
+        Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
+      );
+    } catch {
+      return null;
+    }
+  }
+  function escapeHtmlAttribute2(value) {
+    return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function metadataTextCarrierHtml(privatePayload, text3) {
+    return `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute2(
+      encodePayload(privatePayload)
+    )}"><pre style="white-space:pre-wrap">${escapeHtmlAttribute2(text3)}</pre>`;
+  }
+  function capitalize(value) {
+    return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+  }
+
+  // src/editor/documentSelectionDecorations.ts
+  var proseSelectionMark = Decoration.mark({
+    class: "mlrt-prose-selection"
+  });
+  function createDocumentSelectionDecorations() {
+    return ViewPlugin.fromClass(
+      class {
+        decorations;
+        constructor(view2) {
+          this.decorations = buildProseSelectionDecorations(view2);
+        }
+        update(update) {
+          if (update.selectionSet || update.docChanged || update.viewportChanged) {
+            this.decorations = buildProseSelectionDecorations(update.view);
+          }
+        }
+      },
+      { decorations: (plugin) => plugin.decorations }
+    );
+  }
+  function buildProseSelectionDecorations(view2) {
+    const range = view2.state.selection.main;
+    if (range.empty) {
+      return Decoration.none;
+    }
+    const tables2 = getParsedTables(view2.state.doc).filter((table2) => range.from < table2.to && range.to > table2.from).sort((left, right) => left.from - right.from);
+    const proseSegments = [];
+    let cursor = range.from;
+    for (const table2 of tables2) {
+      if (cursor < table2.from) {
+        proseSegments.push({ from: cursor, to: Math.min(range.to, table2.from) });
+      }
+      cursor = Math.max(cursor, table2.to);
+    }
+    if (cursor < range.to) {
+      proseSegments.push({ from: cursor, to: range.to });
+    }
+    const builder = new RangeSetBuilder();
+    for (const segment of proseSegments) {
+      let line = view2.state.doc.lineAt(segment.from);
+      while (line.from <= segment.to) {
+        const from = Math.max(segment.from, line.from);
+        const to = Math.min(segment.to, line.to);
+        if (from < to) {
+          builder.add(from, to, proseSelectionMark);
+        }
+        if (line.to >= segment.to || line.number >= view2.state.doc.lines) {
+          break;
+        }
+        line = view2.state.doc.line(line.number + 1);
+      }
+    }
+    return builder.finish();
+  }
+
+  // src/editor/tableBoundaryNavigation.ts
+  function createTableBoundaryArrowNavigation() {
+    return keymap.of([
+      {
+        key: "ArrowDown",
+        run: (view2) => focusTableAcrossBoundary(view2, "down")
+      },
+      {
+        key: "ArrowUp",
+        run: (view2) => focusTableAcrossBoundary(view2, "up")
+      }
+    ]);
+  }
+  function focusTableAcrossBoundary(view2, direction) {
+    if (!view2.state.selection.main.empty || isRenderedTableCellFocused(view2)) {
+      return false;
+    }
+    const head = view2.state.selection.main.head;
+    const line = view2.state.doc.lineAt(head);
+    const tables2 = getParsedTables(view2.state.doc);
+    for (const table2 of tables2) {
+      const lineNumberAboveTable = table2.startLine;
+      const afterTable = positionAfterTable(view2.state.doc, table2);
+      if (direction === "down" && line.number === lineNumberAboveTable) {
+        return focusRenderedTableCell(view2, table2, "first");
+      }
+      if (direction === "up" && line.from === afterTable && head >= afterTable) {
+        return focusRenderedTableCell(view2, table2, "last");
+      }
+      if (head >= table2.from && head <= table2.to) {
+        return focusRenderedTableCell(
+          view2,
+          table2,
+          direction === "down" ? "first" : "last"
+        );
+      }
+    }
+    return false;
+  }
+  function focusRenderedTableCell(view2, table2, target) {
+    const wrapper = view2.dom.querySelector(
+      `${TABLE_WIDGET_SELECTOR}[data-src-from="${table2.from}"]`
+    );
+    const cells = Array.from(
+      wrapper?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
+    );
+    const cell2 = target === "first" ? cells[0] : cells[cells.length - 1];
+    if (!cell2) {
+      return false;
+    }
+    focusCellAtEnd(cell2);
+    return true;
+  }
+  function isRenderedTableCellFocused(view2) {
+    return Boolean(findCell(view2.dom.ownerDocument.activeElement));
+  }
+
+  // src/editor/tableCellFocus.ts
+  var TABLE_CELL_FOCUSED_CLASS = "mlrt-table-cell-focused";
+  function createTableCellFocusClassSync() {
+    return ViewPlugin.fromClass(
+      class {
+        constructor(view2) {
+          this.view = view2;
+          this.syncFocusClass = () => this.sync();
+          const doc2 = view2.dom.ownerDocument;
+          doc2.addEventListener("focusin", this.syncFocusClass, true);
+          doc2.addEventListener("focusout", this.syncFocusClass, true);
+          this.sync();
+        }
+        view;
+        syncFocusClass;
+        recheckScheduled = false;
+        update(update) {
+          if (update.focusChanged || update.selectionSet || update.docChanged) {
+            this.sync();
+          }
+        }
+        destroy() {
+          const doc2 = this.view.dom.ownerDocument;
+          doc2.removeEventListener("focusin", this.syncFocusClass, true);
+          doc2.removeEventListener("focusout", this.syncFocusClass, true);
+        }
+        sync() {
+          queueMicrotask(() => {
+            const ownerDocument = this.view.dom.ownerDocument;
+            const hasTableCellFocus = Boolean(
+              findCell(ownerDocument.activeElement)
+            );
+            if (!hasTableCellFocus && ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
+              this.scheduleRecheck();
+              return;
+            }
+            this.view.dom.classList.toggle(
+              TABLE_CELL_FOCUSED_CLASS,
+              hasTableCellFocus
+            );
+          });
+        }
+        scheduleRecheck() {
+          if (this.recheckScheduled) {
+            return;
+          }
+          this.recheckScheduled = true;
+          const ownerWindow = this.view.dom.ownerDocument.defaultView;
+          const raf = ownerWindow ? ownerWindow.requestAnimationFrame.bind(ownerWindow) : requestAnimationFrame;
+          raf(() => {
+            raf(() => {
+              this.recheckScheduled = false;
+              this.sync();
+            });
+          });
+        }
+      }
+    );
+  }
+
+  // src/shared/tableColumnSizing.ts
+  var CELL_HORIZONTAL_PADDING_CH = 2;
+  var CELL_COMFORT_CH = 1;
+  var TOKEN_COMFORT_CH = 0.5;
+  var MIN_COLUMN_WIDTH_CH = 3;
+  var READABLE_COLUMN_WIDTH_CH = 12;
+  var READABLE_LINE_LENGTH_THRESHOLD_CH = 32;
+  var MAX_UNBROKEN_TOKEN_WIDTH_CH = 36;
+  var MAX_PREFERRED_COLUMN_WIDTH_CH = 96;
+  var HEADER_PREFERRED_WIDTH_CAP_CH = 24;
+  var HEADER_TOKEN_WIDTH_CAP_CH = 24;
+  var WIDTH_STEP_CH = 0.5;
+  function measureTableColumnSizing(table2, availableDataWidthCh, cellOverride) {
+    const rows = [
+      { row: table2.header, rowKind: "header", rowIndex: 0 },
+      ...table2.body.map((row, rowIndex) => ({
+        row,
+        rowKind: "body",
+        rowIndex
+      }))
+    ];
+    const columns = Array.from(
+      { length: table2.columnCount },
+      (_value, column) => measureColumn(rows, table2.columnCount, column, cellOverride)
+    );
+    const totalPreferredWidth = columns.reduce(
+      (total, column) => total + column.preferredWidthCh,
+      0
+    );
+    const totalMinWidth = columns.reduce(
+      (total, column) => total + column.minWidthCh,
+      0
+    );
+    const safeTotalWidth = totalPreferredWidth > 0 ? totalPreferredWidth : table2.columnCount;
+    const targetWidth = availableDataWidthCh === void 0 || availableDataWidthCh <= 0 ? safeTotalWidth : Math.min(safeTotalWidth, availableDataWidthCh);
+    const allocatedColumns = targetWidth >= totalMinWidth ? allocateColumnWidths(columns, targetWidth) : columns.map((column) => ({ ...column, widthCh: column.minWidthCh }));
+    if (availableDataWidthCh !== void 0 && availableDataWidthCh > 0) {
+      distributeWidthSteps(
+        allocatedColumns,
+        availableDataWidthCh,
+        (column) => column.fullPreferredWidthCh
+      );
+    }
+    const dataWidthCh = allocatedColumns.reduce(
+      (total, column) => total + column.widthCh,
+      0
+    );
+    const safeDataWidth = dataWidthCh > 0 ? dataWidthCh : table2.columnCount;
+    return {
+      columns: allocatedColumns,
+      dataWidthCh: safeDataWidth,
+      widthPercentages: allocatedColumns.map(
+        (column) => column.widthCh / safeDataWidth * 100
+      )
+    };
+  }
+  function measureColumn(rows, columnCount, column, cellOverride) {
+    let longestLine = 0;
+    let longestToken = 0;
+    let longestBodyLine = 0;
+    let longestBodyToken = 0;
+    let longestHeaderLine = 0;
+    let longestHeaderToken = 0;
+    let hasBodyRow = false;
+    const cellLineLengths = [];
+    for (const source of rows) {
+      const value = getCellDisplayValue(
+        source,
+        columnCount,
+        column,
+        cellOverride
+      );
+      for (const line of splitDisplayLines(value)) {
+        const lineLength = line.length;
+        const tokenLength = measureLongestToken(line);
+        cellLineLengths.push(lineLength);
+        longestLine = Math.max(longestLine, lineLength);
+        longestToken = Math.max(longestToken, tokenLength);
+        if (source.rowKind === "body") {
+          hasBodyRow = true;
+          longestBodyLine = Math.max(longestBodyLine, lineLength);
+          longestBodyToken = Math.max(longestBodyToken, tokenLength);
+        } else {
+          longestHeaderLine = Math.max(longestHeaderLine, lineLength);
+          longestHeaderToken = Math.max(longestHeaderToken, tokenLength);
+        }
+      }
+    }
+    const sizingLine = hasBodyRow ? Math.max(
+      longestBodyLine,
+      Math.min(longestHeaderLine, HEADER_PREFERRED_WIDTH_CAP_CH)
+    ) : longestLine;
+    const sizingToken = hasBodyRow ? Math.max(
+      longestBodyToken,
+      Math.min(longestHeaderToken, HEADER_TOKEN_WIDTH_CAP_CH)
+    ) : longestToken;
+    const hasProseLikeContent = cellLineLengths.some(
+      (lineLength) => lineLength >= READABLE_LINE_LENGTH_THRESHOLD_CH
+    );
+    const readableMinWidthCh = hasProseLikeContent ? READABLE_COLUMN_WIDTH_CH : 0;
+    const minWidthCh = clamp(
+      Math.max(
+        sizingToken + CELL_HORIZONTAL_PADDING_CH + TOKEN_COMFORT_CH,
+        readableMinWidthCh
+      ),
+      MIN_COLUMN_WIDTH_CH,
+      MAX_UNBROKEN_TOKEN_WIDTH_CH
+    );
+    const preferredWidthCh = clamp(
+      sizingLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
+      minWidthCh,
+      MAX_PREFERRED_COLUMN_WIDTH_CH
+    );
+    const fullPreferredWidthCh = clamp(
+      longestLine + CELL_HORIZONTAL_PADDING_CH + CELL_COMFORT_CH,
+      preferredWidthCh,
+      MAX_PREFERRED_COLUMN_WIDTH_CH
+    );
+    return {
+      cellLineLengths,
+      minWidthCh,
+      preferredWidthCh,
+      fullPreferredWidthCh,
+      widthCh: preferredWidthCh
+    };
+  }
+  function getCellDisplayValue(source, columnCount, column, cellOverride) {
+    if (cellOverride && cellOverride.rowKind === source.rowKind && cellOverride.rowIndex === source.rowIndex && cellOverride.column === column) {
+      return cellOverride.value;
+    }
+    return rowToDisplayValues(source.row, columnCount)[column] ?? "";
+  }
+  function allocateColumnWidths(columns, targetWidthCh) {
+    const allocated = columns.map((column) => ({
+      ...column,
+      widthCh: column.minWidthCh
+    }));
+    distributeWidthSteps(
+      allocated,
+      targetWidthCh,
+      (column) => column.preferredWidthCh
+    );
+    return allocated;
+  }
+  function distributeWidthSteps(columns, targetWidthCh, limitOf) {
+    let remainingSteps = Math.round(
+      (targetWidthCh - columns.reduce((total, column) => total + column.widthCh, 0)) / WIDTH_STEP_CH
+    );
+    while (remainingSteps > 0) {
+      let bestColumnIndex = -1;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (let index = 0; index < columns.length; index++) {
+        const column2 = columns[index];
+        const limit = limitOf(column2);
+        if (column2.widthCh >= limit) {
+          continue;
+        }
+        const nextWidth = Math.min(limit, column2.widthCh + WIDTH_STEP_CH);
+        const wrapReduction = measureWrapCost(column2, column2.widthCh) - measureWrapCost(column2, nextWidth);
+        const remainingNeed = limit - column2.widthCh;
+        const score = wrapReduction * 1e3 + remainingNeed;
+        if (score > bestScore) {
+          bestScore = score;
+          bestColumnIndex = index;
+        }
+      }
+      if (bestColumnIndex === -1) {
+        break;
+      }
+      const column = columns[bestColumnIndex];
+      column.widthCh = Math.min(limitOf(column), column.widthCh + WIDTH_STEP_CH);
+      remainingSteps--;
+    }
+  }
+  function measureWrapCost(column, widthCh) {
+    const contentWidthCh = Math.max(1, widthCh - CELL_HORIZONTAL_PADDING_CH);
+    return column.cellLineLengths.reduce(
+      (total, lineLength) => total + Math.max(1, Math.ceil(lineLength / contentWidthCh)),
+      0
+    );
+  }
+  function splitDisplayLines(value) {
+    const lines = value.split(/\r\n?|\n/);
+    return lines.length > 0 ? lines : [""];
+  }
+  function measureLongestToken(value) {
+    return value.trim().split(/\s+/).reduce((longest, token) => Math.max(longest, token.length), 0);
+  }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(value, max));
+  }
+
+  // src/editor/table/tableCellMetadata.ts
+  function syncTableSourceMetadata(dom, table2) {
+    setTableWidgetTable(dom, table2);
+    dom.dataset.srcFrom = String(table2.from);
+    dom.dataset.srcTo = String(table2.to);
+    syncTableRowSourceMetadata(dom, table2, table2.header, "header", 0);
+    table2.body.forEach((row, rowIndex) => {
+      syncTableRowSourceMetadata(dom, table2, row, "body", rowIndex);
+    });
+  }
+  function syncTableRowSourceMetadata(dom, table2, sourceRow, rowKind, rowIndex) {
+    const values2 = rowToDisplayValues(sourceRow, table2.columnCount);
+    for (let column = 0; column < table2.columnCount; column++) {
+      const cell2 = queryCell(dom, rowKind, rowIndex, column);
+      if (!cell2) {
+        continue;
+      }
+      syncCellSourceMetadata(
+        cell2,
+        table2,
+        sourceRow,
+        column,
+        values2[column] ?? ""
+      );
+    }
+  }
+  function syncCellSourceMetadata(cell2, table2, sourceRow, column, value) {
+    cell2.dataset.tableFrom = String(table2.from);
+    cell2.dataset.sourceValue = value;
+    cell2.style.textAlign = table2.alignments[column] ?? "left";
+    const sourceCell = sourceRow.cells[column];
+    if (!sourceCell) {
+      delete cell2.dataset.sourceFrom;
+      delete cell2.dataset.sourceTo;
+      delete cell2.dataset.sourceLeadingWhitespace;
+      delete cell2.dataset.sourceTrailingWhitespace;
+      return;
+    }
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+      sourceCell.raw
+    );
+    cell2.dataset.sourceFrom = String(sourceCell.start);
+    cell2.dataset.sourceTo = String(sourceCell.end);
+    cell2.dataset.sourceLeadingWhitespace = leadingWhitespace;
+    cell2.dataset.sourceTrailingWhitespace = trailingWhitespace;
+  }
+  function queryCell(dom, rowKind, rowIndex, column) {
+    return dom.querySelector(
+      [
+        `.mlrt-table-cell[data-row-kind="${rowKind}"]`,
+        `[data-row-index="${rowIndex}"]`,
+        `[data-column="${column}"]`
+      ].join("")
+    );
+  }
+
+  // src/editor/table/tableCellEditing.ts
+  var TABLE_CELL_COMMIT_EVENT = "mlrt:table-cell-commit";
+  var cellEditHistories = /* @__PURE__ */ new Map();
+  var MAX_TRACKED_CELL_HISTORIES = 512;
+  function bindTableEditing(wrapper, view2, table2, scheduleTableLayout) {
+    const getCurrentTable = () => getTableWidgetTable(wrapper) ?? table2;
+    wrapper.addEventListener("focusin", (event) => {
+      const cell2 = findCell(event.target);
+      if (cell2) {
+        ensureCellEditHistory(cell2);
+        scheduleTableLayout();
+      }
+    });
+    wrapper.addEventListener("beforeinput", (event) => {
+      const cell2 = findCell(event.target);
+      if (!cell2 || !(event instanceof InputEvent)) {
+        return;
+      }
+      const currentTable = getCurrentTable();
+      if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
+        const direction = event.inputType === "historyUndo" ? "undo" : "redo";
+        if (!restoreCellEditHistory(cell2, direction)) {
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell2,
+            scheduleTableLayout
+          );
+          return;
+        }
+        event.preventDefault();
+        applyLiveCellEdit(view2, currentTable, cell2);
+        scheduleTableLayout();
+        return;
+      }
+      const nextSnapshot = computeBeforeInputSnapshot(cell2, event);
+      if (!nextSnapshot) {
+        recordCellEditHistory(cell2);
+        return;
+      }
+      event.preventDefault();
+      applyCellEditSnapshotChange(
+        view2,
+        currentTable,
+        cell2,
+        nextSnapshot,
+        scheduleTableLayout
+      );
+    });
+    wrapper.addEventListener("input", (event) => {
+      const cell2 = findCell(event.target);
+      if (!cell2) {
+        return;
+      }
+      syncCellEditHistory(cell2);
+      applyLiveCellEdit(view2, getCurrentTable(), cell2);
+      scheduleTableLayout();
+    });
+    wrapper.addEventListener("focusout", (event) => {
+      const cell2 = findCell(event.target);
+      if (cell2) {
+        setTimeout(() => {
+          if (wrapper.ownerDocument.documentElement.dataset.mlrtApplyingHostDocument === "true") {
+            return;
+          }
+          if (cell2.isConnected) {
+            commitCellEdit(view2, getCurrentTable(), cell2);
+          }
+        }, 0);
+      }
+    });
+    wrapper.addEventListener("keydown", (event) => {
+      const cell2 = findCell(event.target);
+      if (!cell2) {
+        return;
+      }
+      const currentTable = getCurrentTable();
+      const historyDirection = getCellEditHistoryDirection(event);
+      if (historyDirection) {
+        if (!restoreCellEditHistory(cell2, historyDirection)) {
+          scheduleNativeHistoryFallback(
+            view2,
+            currentTable,
+            cell2,
+            scheduleTableLayout
+          );
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        applyLiveCellEdit(view2, currentTable, cell2);
+        scheduleTableLayout();
+        return;
+      }
+      if (event.key === "Enter" && isPlainKey(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        commitCellEdit(view2, currentTable, cell2, {
+          selectionAnchor: positionAfterTable(view2.state.doc, currentTable)
+        });
+        cell2.blur();
+        view2.focus();
+        return;
+      }
+      if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (!getCellSelectionOffsets(cell2)) {
+          focusCellAtEnd(cell2);
+        }
+        const nextSnapshot = computeCellTextInsertionSnapshot(cell2, "\n");
+        if (!nextSnapshot) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        applyCellEditSnapshotChange(
+          view2,
+          currentTable,
+          cell2,
+          nextSnapshot,
+          scheduleTableLayout
+        );
+        return;
+      }
+      if (isUnmodifiedVerticalArrow(event)) {
+        const rowDelta = event.key === "ArrowUp" ? -1 : 1;
+        if (!isCaretAtVerticalBoundary(cell2, rowDelta)) {
+          return;
+        }
+        const target = resolveVerticalCell(cell2, rowDelta);
+        event.preventDefault();
+        event.stopPropagation();
+        if (target === "before-table") {
+          commitCellEdit(view2, currentTable, cell2, {
+            selectionAnchor: positionBeforeTable(currentTable)
+          });
+          cell2.blur();
+          view2.focus();
+          return;
+        }
+        if (target === "after-table") {
+          commitCellEdit(view2, currentTable, cell2, {
+            selectionAnchor: getEndOfLineAfterTable(view2, currentTable)
+          });
+          cell2.blur();
+          view2.focus();
+          return;
+        }
+        commitCellEdit(view2, currentTable, cell2);
+        focusCellAfterRender(currentTable.from, target);
+        return;
+      }
+      if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        const target = resolveRelativeCell(cell2, event.shiftKey ? -1 : 1);
+        commitCellEdit(view2, currentTable, cell2);
+        focusCellAfterRender(currentTable.from, target);
+      }
+    });
+  }
+  function scheduleNativeHistoryFallback(view2, table2, cell2, scheduleTableLayout) {
+    setTimeout(() => {
+      if (!cell2.isConnected) {
+        return;
+      }
+      syncCellEditHistory(cell2);
+      applyLiveCellEdit(view2, table2, cell2);
+      scheduleTableLayout();
+    }, 0);
+  }
+  function commitCellEdit(view2, table2, cell2, options = {}) {
+    const rowKind = cell2.dataset.rowKind;
+    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
+    const column = Number(cell2.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body") {
+      dispatchSelection(view2, options.selectionAnchor);
+      return;
+    }
+    const sourceRow = rowKind === "header" ? table2.header : table2.body[rowIndex] ?? null;
+    if (!sourceRow || !Number.isInteger(column) || column < 0) {
+      dispatchSelection(view2, options.selectionAnchor);
+      return;
+    }
+    const value = readCellDisplayValue(cell2);
+    if (value === getCellSourceValue(cell2)) {
+      dispatchSelection(view2, options.selectionAnchor);
+      return;
+    }
+    const originalValue = getCellSourceValue(cell2);
+    const caretOffset = getCellCaretOffset(cell2);
+    const restoreCaretOffset = Math.min(
+      originalValue.length,
+      caretOffset + Math.max(0, originalValue.length - value.length)
+    );
+    const valueSteps = buildCellCommitValueSteps(
+      getCellEditHistory(cell2),
+      originalValue,
+      value,
+      restoreCaretOffset
+    );
+    const sourceSteps = buildCellSourceCommitSteps(
+      sourceRow,
+      table2.columnCount,
+      column,
+      valueSteps
+    );
+    const finalSourceStep = sourceSteps[sourceSteps.length - 1];
+    if (!finalSourceStep) {
+      dispatchSelection(view2, options.selectionAnchor);
+      return;
+    }
+    const edit = formatTableCellSourceEdit(
+      sourceRow,
+      table2.columnCount,
+      column,
+      value
+    );
+    view2.dom.dispatchEvent(
+      new CustomEvent(TABLE_CELL_COMMIT_EVENT, {
+        bubbles: true,
+        detail: {
+          tableFrom: table2.from,
+          rowKind,
+          rowIndex,
+          column,
+          from: edit.from,
+          to: edit.to,
+          insertLength: edit.insert.length,
+          valueLength: value.length,
+          restoreCaretOffset: finalSourceStep.restoreCaretOffset
+        }
+      })
+    );
+    const selectionAnchor = options.selectionAnchor === void 0 ? void 0 : mapPositionThroughCellEdit(options.selectionAnchor, edit);
+    view2.dispatch({
+      changes: {
+        from: edit.from,
+        to: edit.to,
+        insert: edit.insert
+      },
+      selection: selectionAnchor === void 0 ? void 0 : EditorSelection.cursor(selectionAnchor, 1),
+      annotations: [
+        allowTableSourceChange.of(true),
+        tableCellCommitSequenceAnnotation.of({
+          steps: sourceSteps.map((step) => ({
+            change: step.change,
+            restore: {
+              tableFrom: table2.from,
+              rowKind,
+              rowIndex,
+              column,
+              from: step.change.from,
+              to: step.change.to,
+              restoreCaretOffset: step.restoreCaretOffset
+            }
+          }))
+        })
+      ],
+      scrollIntoView: true,
+      userEvent: "input"
+    });
+  }
+  function applyLiveCellEdit(view2, table2, cell2) {
+    const rowKind = cell2.dataset.rowKind;
+    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
+    const column = Number(cell2.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
+      return false;
+    }
+    const sourceRow = rowKind === "header" ? table2.header : table2.body[rowIndex] ?? null;
+    if (!sourceRow) {
+      return false;
+    }
+    const value = readCellDisplayValue(cell2);
+    const originalValue = getCellSourceValue(cell2);
+    if (value === originalValue) {
+      return false;
+    }
+    const caretOffset = getCellCaretOffset(cell2);
+    const restoreCaretOffset = Math.min(
+      originalValue.length,
+      caretOffset + Math.max(0, originalValue.length - value.length)
+    );
+    const currentRowText = readCurrentSourceRowText(view2, sourceRow);
+    const edit = formatLiveTableCellSourceEdit(
+      view2,
+      sourceRow,
+      table2.columnCount,
+      column,
+      value
+    ) ?? formatTableCellSourceEdit(sourceRow, table2.columnCount, column, value);
+    const restore = {
+      tableFrom: table2.from,
+      rowKind,
+      rowIndex,
+      column,
+      from: edit.from,
+      to: edit.to,
+      restoreCaretOffset
+    };
+    view2.dom.dispatchEvent(
+      new CustomEvent(TABLE_CELL_COMMIT_EVENT, {
+        bubbles: true,
+        detail: {
+          ...restore,
+          insertLength: edit.insert.length,
+          valueLength: value.length
+        }
+      })
+    );
+    updateTableSourceAfterCellEdit(
+      table2,
+      rowKind,
+      rowIndex,
+      edit,
+      currentRowText
+    );
+    const wrapper = cell2.closest(".mlrt-table-widget");
+    if (wrapper) {
+      syncTableSourceMetadata(wrapper, table2);
+    }
+    preserveTableForLiveEdit(table2.from);
+    view2.dispatch({
+      changes: {
+        from: edit.from,
+        to: edit.to,
+        insert: edit.insert
+      },
+      annotations: [
+        allowTableSourceChange.of(true),
+        tableCellLiveEditAnnotation.of({
+          change: {
+            from: edit.from,
+            to: edit.to,
+            text: edit.insert
+          },
+          restore
+        })
+      ],
+      userEvent: "input"
+    });
+    requestElementAnimationFrame(cell2, () => {
+      releaseTableLiveEditPreservation(table2.from);
+    });
+    if (!cell2.isConnected || cell2.ownerDocument.activeElement !== cell2) {
+      focusCellAfterRenderAtOffset(
+        table2.from,
+        { rowKind, rowIndex: String(rowIndex), column: String(column) },
+        caretOffset
+      );
+    }
+    return true;
+  }
+  function getCellSourceValue(cell2) {
+    return cell2.dataset.sourceValue ?? "";
+  }
+  function formatLiveTableCellSourceEdit(view2, sourceRow, columnCount, column, value) {
+    const currentRowText = readCurrentSourceRowText(view2, sourceRow);
+    if (currentRowText === void 0) {
+      return null;
+    }
+    const currentRow = parseMarkdownTableRow(
+      sourceRow.lineIndex,
+      sourceRow.from,
+      currentRowText
+    );
+    const sourceCell = currentRow.cells[column];
+    if (!sourceCell) {
+      return formatTableCellSourceEdit(currentRow, columnCount, column, value);
+    }
+    const { leadingWhitespace, trailingWhitespace } = getCellPaddingWhitespace(
+      sourceCell.raw
+    );
+    return {
+      from: sourceCell.start,
+      to: sourceCell.end,
+      insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`
+    };
+  }
+  function readCurrentSourceRowText(view2, sourceRow) {
+    try {
+      const line = view2.state.doc.lineAt(sourceRow.from);
+      return line.text;
+    } catch {
+      return void 0;
+    }
+  }
+  function updateTableSourceAfterCellEdit(table2, rowKind, rowIndex, edit, currentRowText) {
+    const sourceRow = rowKind === "header" ? table2.header : table2.body[rowIndex];
+    if (!sourceRow) {
+      return;
+    }
+    const previousRowText = currentRowText ?? sourceRow.text;
+    const previousRowLength = previousRowText.length;
+    const nextRowText = `${previousRowText.slice(0, edit.from - sourceRow.from)}${edit.insert}${previousRowText.slice(edit.to - sourceRow.from)}`;
+    const delta = nextRowText.length - previousRowLength;
+    table2.to += delta;
+    const nextSourceRow = parseMarkdownTableRow(
+      sourceRow.lineIndex,
+      sourceRow.from,
+      nextRowText
+    );
+    sourceRow.to = nextSourceRow.to;
+    sourceRow.text = nextSourceRow.text;
+    sourceRow.cells = nextSourceRow.cells;
+    for (const row of [table2.delimiter, ...table2.body]) {
+      if (row === sourceRow || row.from <= sourceRow.from) {
+        continue;
+      }
+      row.from += delta;
+      row.to += delta;
+      for (const cell2 of row.cells) {
+        cell2.start += delta;
+        cell2.end += delta;
+      }
+    }
+  }
+  function buildCellCommitValueSteps(history2, originalValue, finalValue, fallbackRestoreCaretOffset) {
+    const snapshots = history2?.undoStack ?? [];
+    const steps = [];
+    let currentValue = originalValue;
+    for (let index = 1; index < snapshots.length; index++) {
+      const snapshot = snapshots[index];
+      if (snapshot.value === currentValue) {
+        continue;
+      }
+      steps.push({
+        value: snapshot.value,
+        restoreCaretOffset: snapshots[index - 1]?.caretOffset ?? 0
+      });
+      currentValue = snapshot.value;
+    }
+    if (finalValue !== currentValue) {
+      steps.push({
+        value: finalValue,
+        restoreCaretOffset: snapshots[snapshots.length - 1]?.caretOffset ?? fallbackRestoreCaretOffset
+      });
+    }
+    return steps;
+  }
+  function buildCellSourceCommitSteps(sourceRow, columnCount, column, valueSteps) {
+    let currentEdit = null;
+    return valueSteps.map((step) => {
+      const formattedEdit = formatTableCellSourceEdit(
+        sourceRow,
+        columnCount,
+        column,
+        step.value
+      );
+      const change = currentEdit ? {
+        from: currentEdit.from,
+        to: currentEdit.from + currentEdit.insert.length,
+        text: formattedEdit.insert
+      } : {
+        from: formattedEdit.from,
+        to: formattedEdit.to,
+        text: formattedEdit.insert
+      };
+      currentEdit = {
+        from: change.from,
+        to: change.from + change.text.length,
+        insert: change.text
+      };
+      return {
+        change,
+        restoreCaretOffset: step.restoreCaretOffset
+      };
+    });
+  }
+  function dispatchSelection(view2, selectionAnchor) {
+    if (selectionAnchor === void 0) {
+      return;
+    }
+    view2.dispatch({
+      selection: EditorSelection.cursor(selectionAnchor, 1),
+      scrollIntoView: true
+    });
+  }
+  function getEndOfLineAfterTable(view2, table2) {
+    return view2.state.doc.lineAt(positionAfterTable(view2.state.doc, table2)).to;
+  }
+  function mapPositionThroughCellEdit(position, edit) {
+    if (position <= edit.from) {
+      return position;
+    }
+    if (position <= edit.to) {
+      return edit.from + edit.insert.length;
+    }
+    return position + edit.insert.length - (edit.to - edit.from);
+  }
+  function resolveRelativeCell(cell2, delta) {
+    const cells = Array.from(
+      cell2.closest(".mlrt-table")?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
+    );
+    const index = cells.indexOf(cell2);
+    const next2 = cells[index + delta] ?? cell2;
+    return {
+      rowKind: next2.dataset.rowKind ?? "body",
+      rowIndex: next2.dataset.rowIndex ?? "0",
+      column: next2.dataset.column ?? "0"
+    };
+  }
+  function resolveVerticalCell(cell2, rowDelta) {
+    const column = cell2.dataset.column ?? "0";
+    const columnCells = Array.from(
+      cell2.closest(".mlrt-table")?.querySelectorAll(
+        `${TABLE_CELL_SELECTOR}[data-column="${column}"]`
+      ) ?? []
+    );
+    const index = columnCells.indexOf(cell2);
+    const next2 = columnCells[index + rowDelta];
+    if (!next2) {
+      return rowDelta < 0 ? "before-table" : "after-table";
+    }
+    return {
+      rowKind: next2.dataset.rowKind ?? "body",
+      rowIndex: next2.dataset.rowIndex ?? "0",
+      column: next2.dataset.column ?? "0"
+    };
+  }
+  function focusCellAfterRender(tableFrom, target) {
+    setTimeout(() => {
+      const cell2 = queryCell2(tableFrom, target);
+      if (cell2) {
+        focusCellAtEnd(cell2);
+      }
+    }, 0);
+  }
+  function focusCellAfterRenderAtOffset(tableFrom, target, caretOffset) {
+    setTimeout(() => {
+      const cell2 = queryCell2(tableFrom, target);
+      if (cell2) {
+        cell2.focus();
+        setCellCaretOffset(cell2, caretOffset);
+      }
+    }, 0);
+  }
+  function queryCell2(tableFrom, target) {
+    const selector = [
+      `${TABLE_CELL_SELECTOR}[data-table-from="${tableFrom}"]`,
+      `[data-row-kind="${target.rowKind}"]`,
+      `[data-row-index="${target.rowIndex}"]`,
+      `[data-column="${target.column}"]`
+    ].join("");
+    return document.querySelector(selector);
+  }
+  function ensureCellEditHistory(cell2) {
+    const key = getCellHistoryKey(cell2);
+    const existing = cellEditHistories.get(key);
+    if (existing) {
+      return existing;
+    }
+    if (cellEditHistories.size >= MAX_TRACKED_CELL_HISTORIES) {
+      const oldestKey = cellEditHistories.keys().next().value;
+      if (oldestKey !== void 0) {
+        cellEditHistories.delete(oldestKey);
+      }
+    }
+    const history2 = {
+      undoStack: [],
+      redoStack: [],
+      lastValue: readCellDisplayValue(cell2)
+    };
+    cellEditHistories.set(key, history2);
+    return history2;
+  }
+  function getCellEditHistory(cell2) {
+    return cellEditHistories.get(getCellHistoryKey(cell2));
+  }
+  function getCellHistoryKey(cell2) {
+    return [
+      cell2.dataset.tableFrom ?? "",
+      cell2.dataset.rowKind ?? "",
+      cell2.dataset.rowIndex ?? "",
+      cell2.dataset.column ?? ""
+    ].join(":");
+  }
+  function recordCellEditHistory(cell2) {
+    const history2 = ensureCellEditHistory(cell2);
+    const snapshot = captureCellEditSnapshot(cell2);
+    const previousSnapshot = history2.undoStack[history2.undoStack.length - 1];
+    if (previousSnapshot && previousSnapshot.value === snapshot.value && previousSnapshot.caretOffset === snapshot.caretOffset) {
+      return;
+    }
+    history2.undoStack.push(snapshot);
+    history2.redoStack = [];
+    history2.lastValue = snapshot.value;
+  }
+  function syncCellEditHistory(cell2) {
+    ensureCellEditHistory(cell2).lastValue = readCellDisplayValue(cell2);
+  }
+  function restoreCellEditHistory(cell2, direction) {
+    const history2 = ensureCellEditHistory(cell2);
+    const sourceStack = direction === "undo" ? history2.undoStack : history2.redoStack;
+    const targetStack = direction === "undo" ? history2.redoStack : history2.undoStack;
+    const snapshot = sourceStack.pop();
+    if (!snapshot) {
+      return false;
+    }
+    targetStack.push(captureCellEditSnapshot(cell2));
+    applyCellEditSnapshot(cell2, snapshot);
+    history2.lastValue = snapshot.value;
+    return true;
+  }
+  function computeBeforeInputSnapshot(cell2, event) {
+    const selection = getCellSelectionOffsets(cell2);
+    if (!selection) {
+      return null;
+    }
+    const value = readCellDisplayValue(cell2);
+    const from = Math.min(selection.anchor, selection.head);
+    const to = Math.max(selection.anchor, selection.head);
+    if (event.inputType === "insertText") {
+      const insert2 = event.data ?? "";
+      return replaceCellTextRange(value, from, to, insert2);
+    }
+    if (event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop" || event.inputType === "insertReplacementText") {
+      const insert2 = event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
+      return replaceCellTextRange(
+        value,
+        from,
+        to,
+        insert2.replace(/\r\n?/g, "\n")
+      );
+    }
+    if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
+      return replaceCellTextRange(value, from, to, "\n");
+    }
+    if (event.inputType === "deleteContentBackward" || event.inputType === "deleteByCut") {
+      if (from !== to) {
+        return replaceCellTextRange(value, from, to, "");
+      }
+      if (from === 0) {
+        return { value, caretOffset: 0 };
+      }
+      return replaceCellTextRange(value, from - 1, to, "");
+    }
+    if (event.inputType === "deleteContentForward") {
+      if (from !== to) {
+        return replaceCellTextRange(value, from, to, "");
+      }
+      if (to >= value.length) {
+        return { value, caretOffset: value.length };
+      }
+      return replaceCellTextRange(value, from, to + 1, "");
+    }
+    return null;
+  }
+  function computeCellTextInsertionSnapshot(cell2, insert2) {
+    const selection = getCellSelectionOffsets(cell2);
+    if (!selection) {
+      return null;
+    }
+    const value = readCellDisplayValue(cell2);
+    return replaceCellTextRange(
+      value,
+      Math.min(selection.anchor, selection.head),
+      Math.max(selection.anchor, selection.head),
+      insert2
+    );
+  }
+  function replaceCellTextRange(value, from, to, insert2) {
+    return {
+      value: `${value.slice(0, from)}${insert2}${value.slice(to)}`,
+      caretOffset: from + insert2.length
+    };
+  }
+  function applyCellEditSnapshotChange(view2, table2, cell2, snapshot, scheduleTableLayout) {
+    recordCellEditHistory(cell2);
+    applyCellEditSnapshot(cell2, snapshot);
+    syncCellEditHistory(cell2);
+    applyLiveCellEdit(view2, table2, cell2);
+    scheduleTableLayout();
+  }
+  function captureCellEditSnapshot(cell2) {
+    return {
+      value: readCellDisplayValue(cell2),
+      caretOffset: getCellCaretOffset(cell2)
+    };
+  }
+  function applyCellEditSnapshot(cell2, snapshot) {
+    setCellPlainText(cell2, snapshot.value);
+    setCellCaretOffset(cell2, snapshot.caretOffset);
+  }
+  function getCellEditHistoryDirection(event) {
+    const key = event.key.toLowerCase();
+    const primaryModifier = event.metaKey || event.ctrlKey;
+    if (!primaryModifier || event.altKey) {
+      return null;
+    }
+    if (key === "z") {
+      return event.shiftKey ? "redo" : "undo";
+    }
+    if (key === "y" && !event.shiftKey) {
+      return "redo";
+    }
+    return null;
+  }
+  function isPlainKey(event) {
+    return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+  }
+  function isUnmodifiedVerticalArrow(event) {
+    return (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey(event);
+  }
+
+  // src/editor/table/tableLayout.ts
+  var chWidthCache = /* @__PURE__ */ new WeakMap();
+  var cssLengthCache = /* @__PURE__ */ new WeakMap();
+  function appendColumnSizing(tableElement, table2, columnSizing) {
+    const colgroup = document.createElement("colgroup");
+    const lineNumberCol = document.createElement("col");
+    lineNumberCol.className = "mlrt-table-source-line-col";
+    colgroup.append(lineNumberCol);
+    for (let column = 0; column < table2.columnCount; column++) {
+      const col = document.createElement("col");
+      col.className = "mlrt-table-sized-col";
+      col.style.width = `${columnSizing.columns[column].widthCh.toFixed(4)}ch`;
+      colgroup.append(col);
+    }
+    tableElement.append(colgroup);
+  }
+  function applyColumnSizing(wrapper, columnSizing) {
+    wrapper.style.setProperty(
+      "--mlrt-table-data-width",
+      `${columnSizing.dataWidthCh.toFixed(4)}ch`
+    );
+    wrapper.querySelectorAll(".mlrt-table-sized-col").forEach((col, column) => {
+      col.style.width = `${(columnSizing.columns[column]?.widthCh ?? 1).toFixed(
+        4
+      )}ch`;
+    });
+  }
+  function applyCurrentColumnSizing(wrapper, table2) {
+    applyColumnSizing(
+      wrapper,
+      measureTableColumnSizing(
+        table2,
+        measureAvailableDataWidthCh(wrapper),
+        readActiveCellSizingOverride(wrapper)
+      )
+    );
+  }
+  function bindTableLayout(wrapper, tableScroll, tableElement, scrollbar, scrollbarThumb, table2) {
+    const syncScrollbar = () => syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb);
+    let pendingAnimationFrame = 0;
+    const syncLayout = () => {
+      pendingAnimationFrame = 0;
+      applyCurrentColumnSizing(wrapper, getTableWidgetTable(wrapper) ?? table2);
+      const tableHeight = tableElement.getBoundingClientRect().height;
+      syncScrollbar();
+      const scrollbarHeight = scrollbar.hidden ? 0 : scrollbar.getBoundingClientRect().height;
+      wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
+      syncTableSelectionOverlay(wrapper);
+    };
+    const scheduleLayout = () => {
+      if (pendingAnimationFrame !== 0) {
+        return;
+      }
+      pendingAnimationFrame = requestElementAnimationFrame(wrapper, syncLayout);
+    };
+    const ResizeObserverCtor = wrapper.ownerDocument.defaultView?.ResizeObserver;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleLayout) : void 0;
+    resizeObserver?.observe(tableElement);
+    resizeObserver?.observe(tableScroll);
+    tableScroll.addEventListener("scroll", syncScrollbar);
+    scheduleLayout();
+    setTableWidgetCleanup(wrapper, () => {
+      if (pendingAnimationFrame !== 0) {
+        cancelElementAnimationFrame(wrapper, pendingAnimationFrame);
+        pendingAnimationFrame = 0;
+      }
+      resizeObserver?.disconnect();
+      tableScroll.removeEventListener("scroll", syncScrollbar);
+    });
+    return scheduleLayout;
+  }
+  function measureAvailableDataWidthCh(wrapper) {
+    const scroller = wrapper.closest(".cm-scroller");
+    if (!scroller) {
+      return void 0;
+    }
+    const styles = getComputedStyle(scroller);
+    const gutterWidth = resolveCssLengthPx(
+      scroller,
+      styles.getPropertyValue("--mlrt-live-gutter-width")
+    );
+    const rightPadding = resolveCssLengthPx(
+      scroller,
+      styles.getPropertyValue("--mlrt-editor-right-padding")
+    );
+    const chWidth = measureChWidth(wrapper);
+    const columnCount = getTableWidgetTable(wrapper)?.columnCount ?? 1;
+    const borderAllowancePx = columnCount + 2;
+    const availablePx = Math.max(
+      0,
+      scroller.clientWidth - gutterWidth - rightPadding - borderAllowancePx
+    );
+    return chWidth > 0 ? availablePx / chWidth : void 0;
+  }
+  function syncTableScrollbar(tableScroll, scrollbar, scrollbarThumb) {
+    const maxScrollLeft = Math.max(
+      0,
+      tableScroll.scrollWidth - tableScroll.clientWidth
+    );
+    const hasOverflow = maxScrollLeft > 1;
+    scrollbar.hidden = !hasOverflow;
+    if (!hasOverflow) {
+      if (tableScroll.scrollLeft !== 0) {
+        tableScroll.scrollLeft = 0;
+      }
+      scrollbarThumb.style.width = "0px";
+      scrollbarThumb.style.transform = "translateX(0px)";
+      return;
+    }
+    const trackWidth = Math.max(0, scrollbar.clientWidth);
+    const thumbWidth = Math.max(
+      24,
+      tableScroll.clientWidth / tableScroll.scrollWidth * trackWidth
+    );
+    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
+    const thumbLeft = maxScrollLeft > 0 ? tableScroll.scrollLeft / maxScrollLeft * maxThumbLeft : 0;
+    scrollbarThumb.style.width = `${thumbWidth}px`;
+    scrollbarThumb.style.transform = `translateX(${thumbLeft}px)`;
+  }
+  function measureChWidth(element) {
+    const styles = getComputedStyle(element);
+    const cacheKey = [
+      styles.fontFamily,
+      styles.fontSize,
+      styles.fontWeight,
+      styles.fontStretch,
+      styles.fontStyle,
+      styles.letterSpacing,
+      styles.fontFeatureSettings,
+      styles.fontVariationSettings
+    ].join("|");
+    const cached = chWidthCache.get(element);
+    if (cached?.key === cacheKey) {
+      return cached.width;
+    }
+    const probe = element.ownerDocument.createElement("span");
+    probe.textContent = "0";
+    probe.style.position = "absolute";
+    probe.style.left = "-10000px";
+    probe.style.top = "0";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.whiteSpace = "pre";
+    probe.style.fontFamily = styles.fontFamily;
+    probe.style.fontSize = styles.fontSize;
+    probe.style.fontWeight = styles.fontWeight;
+    probe.style.fontStretch = styles.fontStretch;
+    probe.style.fontStyle = styles.fontStyle;
+    probe.style.letterSpacing = styles.letterSpacing;
+    probe.style.fontFeatureSettings = styles.fontFeatureSettings;
+    probe.style.fontVariationSettings = styles.fontVariationSettings;
+    const host = element.ownerDocument.body ?? element.ownerDocument.documentElement;
+    host.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    chWidthCache.set(element, { key: cacheKey, width });
+    return width;
+  }
+  function resolveCssLengthPx(element, value) {
+    const direct = Number.parseFloat(value);
+    if (Number.isFinite(direct) && value.trim().endsWith("px")) {
+      return direct;
+    }
+    const cachedLengths = cssLengthCache.get(element);
+    const cached = cachedLengths?.get(value);
+    if (cached !== void 0) {
+      return cached;
+    }
+    const probe = element.ownerDocument.createElement("span");
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.width = value.trim() || "0px";
+    element.append(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    const resolved = Number.isFinite(width) ? width : 0;
+    if (cachedLengths) {
+      cachedLengths.set(value, resolved);
+    } else {
+      cssLengthCache.set(element, /* @__PURE__ */ new Map([[value, resolved]]));
+    }
+    return resolved;
+  }
+
+  // src/shared/tableStructureEdits.ts
+  var EMPTY_DATA_CELL_RAW = "  ";
+  var EMPTY_DELIMITER_CELL_RAW = " --- ";
+  function insertTableColumnEdit(table2, columnIndex) {
+    if (!Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex > table2.columnCount) {
+      return null;
+    }
+    return replaceTableLines(table2, (rawCells, emptyCellRaw) => {
+      const next2 = [...rawCells];
+      next2.splice(columnIndex, 0, emptyCellRaw);
+      return next2;
+    });
+  }
+  function deleteTableColumnEdit(table2, columnIndex) {
+    if (table2.columnCount <= 1 || !Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex >= table2.columnCount) {
+      return null;
+    }
+    return replaceTableLines(table2, (rawCells) => {
+      const next2 = [...rawCells];
+      next2.splice(columnIndex, 1);
+      return next2;
+    });
+  }
+  function insertTableRowEdit(table2, bodyIndex) {
+    if (!Number.isInteger(bodyIndex) || bodyIndex < 0 || bodyIndex > table2.body.length) {
+      return null;
+    }
+    const previousRow = bodyIndex === 0 ? table2.delimiter : table2.body[bodyIndex - 1];
+    const rowText = formatMarkdownRow(
+      Array.from({ length: table2.columnCount }, () => "")
+    );
+    return {
+      from: previousRow.to,
+      to: previousRow.to,
+      insert: `${getTableLineSeparator(table2)}${rowText}`
+    };
+  }
+  function deleteTableRowEdit(table2, bodyIndex) {
+    if (!Number.isInteger(bodyIndex) || bodyIndex < 0) {
+      return null;
+    }
+    const row = table2.body[bodyIndex];
+    if (!row) {
+      return null;
+    }
+    const previousRow = bodyIndex === 0 ? table2.delimiter : table2.body[bodyIndex - 1];
+    return { from: previousRow.to, to: row.to, insert: "" };
+  }
+  function replaceTableLines(table2, mutateRawCells) {
+    const lines = [table2.header, table2.delimiter, ...table2.body].map((row) => {
+      const emptyCellRaw = row === table2.delimiter ? EMPTY_DELIMITER_CELL_RAW : EMPTY_DATA_CELL_RAW;
+      return `|${mutateRawCells(paddedRawCells(row, table2.columnCount, emptyCellRaw), emptyCellRaw).join("|")}|`;
+    });
+    return {
+      from: table2.from,
+      to: table2.to,
+      insert: lines.join(getTableLineSeparator(table2))
+    };
+  }
+  function paddedRawCells(row, columnCount, emptyCellRaw) {
+    return Array.from(
+      { length: columnCount },
+      (_, column) => row.cells[column]?.raw ?? emptyCellRaw
+    );
+  }
+  function getTableLineSeparator(table2) {
+    return table2.delimiter.from - table2.header.to === 2 ? "\r\n" : "\n";
+  }
+
+  // src/editor/table/tableStructureControls.ts
+  var CONTROLS_OPEN_CLASS = "mlrt-table-controls-open";
+  var INDICATOR_ACTIVE_CLASS = "mlrt-table-indicator-active";
+  var HAIRLINE_THICKNESS = 3;
+  var DOT_THICKNESS = 13;
+  var EDGE_GROW_ZONE = 22;
+  var EDGE_APPROACH_ZONE = 26;
+  var MIN_INDICATOR_LENGTH = 12;
+  var lastPointerPosition = null;
+  function bindTableStructureControls(options) {
+    const { wrapper, view: view2, tableScroll, tableElement, table: table2 } = options;
+    const doc2 = wrapper.ownerDocument;
+    const layer2 = doc2.createElement("div");
+    layer2.className = "mlrt-table-controls-layer";
+    layer2.contentEditable = "false";
+    let menu = null;
+    let menuAnchor = null;
+    let pendingFrame = 0;
+    let indicatorColumn = null;
+    let indicatorRow = null;
+    let minRowIndicatorLengthPx = 0;
+    const currentTable = () => {
+      const widgetTable = getTableWidgetTable(wrapper) ?? table2;
+      return getParsedTables(view2.state.doc).find(
+        (candidate) => candidate.from === widgetTable.from
+      ) ?? widgetTable;
+    };
+    const applyStructureEdit = (makeEdit, makeFocusTarget) => {
+      const current = currentTable();
+      const edit = makeEdit(current);
+      closeMenu();
+      if (!edit) {
+        return;
+      }
+      const focusTarget = makeFocusTarget(current);
+      view2.dispatch({
+        changes: { from: edit.from, to: edit.to, insert: edit.insert },
+        annotations: [allowTableSourceChange.of(true)],
+        userEvent: "input"
+      });
+      if (focusTarget) {
+        focusCellAfterStructureEdit(doc2, current.from, focusTarget);
+      } else {
+        view2.focus();
+      }
+    };
+    const closeMenu = () => {
+      if (!menu) {
+        return;
+      }
+      menu.remove();
+      menu = null;
+      menuAnchor?.classList.remove(INDICATOR_ACTIVE_CLASS);
+      menuAnchor = null;
+      wrapper.classList.remove(CONTROLS_OPEN_CLASS);
+      doc2.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      doc2.removeEventListener("keydown", onDocumentKeyDown, true);
+      scheduleUpdate();
+    };
+    const onDocumentPointerDown = (event) => {
+      if (menu && event.target instanceof Node && !menu.contains(event.target) && event.target !== menuAnchor && !(menuAnchor?.contains(event.target) ?? false)) {
+        closeMenu();
+      }
+    };
+    const onDocumentKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeMenu();
+      }
+    };
+    const openMenu = (anchor, entries2) => {
+      closeMenu();
+      menu = doc2.createElement("div");
+      menu.className = "mlrt-table-structure-menu";
+      menu.setAttribute("role", "menu");
+      for (const entry of entries2) {
+        const item = doc2.createElement("button");
+        item.type = "button";
+        item.className = "mlrt-table-structure-menu-item";
+        item.setAttribute("role", "menuitem");
+        item.dataset.action = entry.action;
+        item.disabled = entry.disabled === true;
+        const label = doc2.createElement("span");
+        label.className = "mlrt-table-structure-menu-label";
+        label.textContent = entry.label;
+        item.append(createStructureMenuIcon(doc2, entry.icon), label);
+        item.addEventListener("mousedown", preventFocusSteal);
+        item.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          entry.apply();
+        });
+        menu.append(item);
+      }
+      menuAnchor = anchor;
+      anchor.classList.add(INDICATOR_ACTIVE_CLASS);
+      wrapper.classList.add(CONTROLS_OPEN_CLASS);
+      wrapper.append(menu);
+      positionMenu(anchor);
+      doc2.addEventListener("pointerdown", onDocumentPointerDown, true);
+      doc2.addEventListener("keydown", onDocumentKeyDown, true);
+    };
+    const positionMenu = (anchor) => {
+      if (!menu) {
+        return;
+      }
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuWidth = menu.offsetWidth;
+      const isColumnAnchor = anchor.classList.contains(
+        "mlrt-table-col-indicator"
+      );
+      let left;
+      let top2;
+      if (isColumnAnchor) {
+        left = anchorRect.left - wrapperRect.left;
+        top2 = anchorRect.bottom - wrapperRect.top + 3;
+      } else {
+        left = anchorRect.right - wrapperRect.left + 3;
+        top2 = anchorRect.top - wrapperRect.top;
+      }
+      const maxLeft = wrapperRect.width - menuWidth - 2;
+      menu.style.left = `${Math.max(Math.min(left, maxLeft), -DOT_THICKNESS)}px`;
+      menu.style.top = `${top2}px`;
+    };
+    const openColumnMenu = (anchor, column) => {
+      const canDelete = currentTable().columnCount > 1;
+      openMenu(anchor, [
+        {
+          icon: "select",
+          label: "Select column",
+          action: "select-column",
+          apply: () => {
+            const current = currentTable();
+            closeMenu();
+            selectTableColumn(
+              wrapper,
+              current.from,
+              column,
+              current.body.length + 1
+            );
+          }
+        },
+        {
+          icon: "insert-column-left",
+          label: "Insert column left",
+          action: "insert-column-left",
+          apply: () => applyStructureEdit(
+            (current) => insertTableColumnEdit(current, column),
+            () => ({ rowKind: "header", rowIndex: 0, column })
+          )
+        },
+        {
+          icon: "insert-column-right",
+          label: "Insert column right",
+          action: "insert-column-right",
+          apply: () => applyStructureEdit(
+            (current) => insertTableColumnEdit(current, column + 1),
+            () => ({ rowKind: "header", rowIndex: 0, column: column + 1 })
+          )
+        },
+        {
+          icon: "delete",
+          label: "Delete column",
+          action: "delete-column",
+          disabled: !canDelete,
+          apply: () => applyStructureEdit(
+            (current) => deleteTableColumnEdit(current, column),
+            (current) => ({
+              rowKind: "header",
+              rowIndex: 0,
+              column: Math.max(0, Math.min(column, current.columnCount - 2))
+            })
+          )
+        }
+      ]);
+    };
+    const openRowMenu = (anchor, rowKind, rowIndex) => {
+      if (rowKind === "header") {
+        openMenu(anchor, [
+          {
+            icon: "select",
+            label: "Select row",
+            action: "select-row",
+            apply: () => {
+              const current = currentTable();
+              closeMenu();
+              selectTableRow(wrapper, current.from, 0, current.columnCount);
+            }
+          },
+          {
+            icon: "insert-row-below",
+            label: "Insert row below",
+            action: "insert-row-below",
+            apply: () => applyStructureEdit(
+              (current) => insertTableRowEdit(current, 0),
+              () => ({ rowKind: "body", rowIndex: 0, column: 0 })
+            )
+          }
+        ]);
+        return;
+      }
+      openMenu(anchor, [
+        {
+          icon: "select",
+          label: "Select row",
+          action: "select-row",
+          apply: () => {
+            const current = currentTable();
+            closeMenu();
+            selectTableRow(
+              wrapper,
+              current.from,
+              rowIndex + 1,
+              current.columnCount
+            );
+          }
+        },
+        {
+          icon: "insert-row-above",
+          label: "Insert row above",
+          action: "insert-row-above",
+          apply: () => applyStructureEdit(
+            (current) => insertTableRowEdit(current, rowIndex),
+            () => ({ rowKind: "body", rowIndex, column: 0 })
+          )
+        },
+        {
+          icon: "insert-row-below",
+          label: "Insert row below",
+          action: "insert-row-below",
+          apply: () => applyStructureEdit(
+            (current) => insertTableRowEdit(current, rowIndex + 1),
+            () => ({ rowKind: "body", rowIndex: rowIndex + 1, column: 0 })
+          )
+        },
+        {
+          icon: "delete",
+          label: "Delete row",
+          action: "delete-row",
+          apply: () => applyStructureEdit(
+            (current) => deleteTableRowEdit(current, rowIndex),
+            (current) => current.body.length > 1 ? {
+              rowKind: "body",
+              rowIndex: Math.min(rowIndex, current.body.length - 2),
+              column: 0
+            } : null
+          )
+        }
+      ]);
+    };
+    const columnIndicator = createIndicatorButton(
+      doc2,
+      "mlrt-table-col-indicator"
+    );
+    columnIndicator.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (indicatorColumn === null) {
+        return;
+      }
+      if (menuAnchor === columnIndicator) {
+        closeMenu();
+        return;
+      }
+      openColumnMenu(columnIndicator, indicatorColumn);
+    });
+    layer2.append(columnIndicator);
+    const rowIndicator = createIndicatorButton(doc2, "mlrt-table-row-indicator");
+    rowIndicator.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!indicatorRow) {
+        return;
+      }
+      if (menuAnchor === rowIndicator) {
+        closeMenu();
+        return;
+      }
+      openRowMenu(rowIndicator, indicatorRow.rowKind, indicatorRow.rowIndex);
+    });
+    layer2.append(rowIndicator);
+    const focusColumnIndicator = doc2.createElement("div");
+    focusColumnIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-col-indicator";
+    focusColumnIndicator.hidden = true;
+    layer2.append(focusColumnIndicator);
+    const focusRowIndicator = doc2.createElement("div");
+    focusRowIndicator.className = "mlrt-table-focus-indicator mlrt-table-focus-row-indicator";
+    focusRowIndicator.hidden = true;
+    layer2.append(focusRowIndicator);
+    const minColumnIndicatorLengthPx = () => Math.max(
+      MIN_INDICATOR_LENGTH,
+      MIN_COLUMN_WIDTH_CH * measureChWidth(tableElement)
+    );
+    const minRowIndicatorLengthPxFor = (cell2) => {
+      if (minRowIndicatorLengthPx > 0) {
+        return minRowIndicatorLengthPx;
+      }
+      if (!cell2) {
+        return 16;
+      }
+      const styles = getComputedStyle(cell2);
+      const lineHeight = Number.parseFloat(styles.lineHeight);
+      const fontSize = Number.parseFloat(styles.fontSize);
+      minRowIndicatorLengthPx = Math.max(
+        MIN_INDICATOR_LENGTH,
+        Number.isFinite(lineHeight) ? lineHeight : Number.isFinite(fontSize) ? fontSize * 1.4 : 16
+      );
+      return minRowIndicatorLengthPx;
+    };
+    const positionColumnIndicator = (element, state, cellRect, wrapperRect, tableRect) => {
+      const visibleLeft = Math.max(cellRect.left, wrapperRect.left);
+      const visibleRight = Math.min(cellRect.right, wrapperRect.right);
+      const visibleWidth = visibleRight - visibleLeft;
+      if (visibleWidth < MIN_INDICATOR_LENGTH) {
+        element.hidden = true;
+        return false;
+      }
+      const width = Math.max(
+        MIN_INDICATOR_LENGTH,
+        Math.min(minColumnIndicatorLengthPx(), visibleWidth - 4)
+      );
+      const left = (visibleLeft + visibleRight) / 2 - width / 2 - wrapperRect.left;
+      const tableTop = tableRect.top - wrapperRect.top;
+      element.hidden = false;
+      element.style.left = `${left}px`;
+      element.style.width = `${width}px`;
+      if (state === "dots") {
+        element.dataset.state = "dots";
+        element.style.top = `${tableTop - (DOT_THICKNESS - 1)}px`;
+        element.style.height = `${DOT_THICKNESS}px`;
+      } else {
+        if (state) {
+          element.dataset.state = "line";
+        }
+        element.style.top = `${tableTop - 1}px`;
+        element.style.height = `${HAIRLINE_THICKNESS}px`;
+      }
+      return true;
+    };
+    const positionRowIndicator = (element, state, rowRect, wrapperRect, referenceCell) => {
+      const height = Math.max(
+        MIN_INDICATOR_LENGTH,
+        Math.min(minRowIndicatorLengthPxFor(referenceCell), rowRect.height - 4)
+      );
+      const top2 = rowRect.top + (rowRect.height - height) / 2 - wrapperRect.top;
+      element.hidden = false;
+      element.style.top = `${top2}px`;
+      element.style.height = `${height}px`;
+      if (state === "dots") {
+        element.dataset.state = "dots";
+        element.style.left = `${-(DOT_THICKNESS - 1)}px`;
+        element.style.width = `${DOT_THICKNESS}px`;
+      } else {
+        if (state) {
+          element.dataset.state = "line";
+        }
+        element.style.left = `-1px`;
+        element.style.width = `${HAIRLINE_THICKNESS}px`;
+      }
+      return true;
+    };
+    const update = () => {
+      pendingFrame = 0;
+      if (menu) {
+        return;
+      }
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const tableRect = tableElement.getBoundingClientRect();
+      if (wrapperRect.width <= 0 || tableRect.height <= 0) {
+        columnIndicator.hidden = true;
+        rowIndicator.hidden = true;
+        focusColumnIndicator.hidden = true;
+        focusRowIndicator.hidden = true;
+        return;
+      }
+      const dataLeftX = wrapperRect.left;
+      const dataRightX = Math.min(tableRect.right, wrapperRect.right);
+      const rows = collectRenderedRows(tableElement);
+      const headerCells = Array.from(
+        tableElement.querySelectorAll(
+          `thead ${TABLE_CELL_SELECTOR}`
+        )
+      );
+      const pointer = lastPointerPosition;
+      let mouseColumn = null;
+      let mouseColumnState = "line";
+      let mouseRow = null;
+      let mouseRowState = "line";
+      if (pointer) {
+        const { x, y } = pointer;
+        if (y >= tableRect.top - EDGE_APPROACH_ZONE && y <= tableRect.bottom && x >= dataLeftX && x <= dataRightX) {
+          mouseColumn = findColumnAt(headerCells, x);
+          mouseColumnState = y <= tableRect.top + EDGE_GROW_ZONE ? "dots" : "line";
+        }
+        if (x >= dataLeftX - EDGE_APPROACH_ZONE && x <= dataRightX && y >= tableRect.top && y <= tableRect.bottom) {
+          mouseRow = findRowAt(rows, y);
+          mouseRowState = x <= dataLeftX + EDGE_GROW_ZONE ? "dots" : "line";
+        }
+      }
+      const activeCell = findFocusedCell(doc2, wrapper);
+      let focusColumn = null;
+      let focusRow = null;
+      if (activeCell) {
+        const column = Number(activeCell.dataset.column ?? "");
+        focusColumn = Number.isInteger(column) && column >= 0 && column < headerCells.length ? column : null;
+        focusRow = rows.find(
+          (row) => row.rowKind === activeCell.dataset.rowKind && row.rowIndex === Number(activeCell.dataset.rowIndex ?? "")
+        ) ?? null;
+      }
+      indicatorColumn = mouseColumn;
+      if (mouseColumn !== null && headerCells[mouseColumn]) {
+        const shown = positionColumnIndicator(
+          columnIndicator,
+          mouseColumnState,
+          headerCells[mouseColumn].getBoundingClientRect(),
+          wrapperRect,
+          tableRect
+        );
+        if (!shown) {
+          indicatorColumn = null;
+        }
+        columnIndicator.setAttribute(
+          "aria-label",
+          `Column ${mouseColumn + 1} actions`
+        );
+      } else {
+        columnIndicator.hidden = true;
+      }
+      indicatorRow = mouseRow;
+      if (mouseRow) {
+        positionRowIndicator(
+          rowIndicator,
+          mouseRowState,
+          mouseRow.element.getBoundingClientRect(),
+          wrapperRect,
+          mouseRow.element.querySelector(TABLE_CELL_SELECTOR)
+        );
+        rowIndicator.setAttribute(
+          "aria-label",
+          mouseRow.rowKind === "header" ? "Header row actions" : `Row ${mouseRow.rowIndex + 1} actions`
+        );
+      } else {
+        rowIndicator.hidden = true;
+      }
+      if (focusColumn !== null && focusColumn !== mouseColumn) {
+        positionColumnIndicator(
+          focusColumnIndicator,
+          null,
+          headerCells[focusColumn].getBoundingClientRect(),
+          wrapperRect,
+          tableRect
+        );
+      } else {
+        focusColumnIndicator.hidden = true;
+      }
+      if (focusRow && !(mouseRow && mouseRow.rowKind === focusRow.rowKind && mouseRow.rowIndex === focusRow.rowIndex)) {
+        positionRowIndicator(
+          focusRowIndicator,
+          null,
+          focusRow.element.getBoundingClientRect(),
+          wrapperRect,
+          focusRow.element.querySelector(TABLE_CELL_SELECTOR)
+        );
+      } else {
+        focusRowIndicator.hidden = true;
+      }
+    };
+    const scheduleUpdate = () => {
+      if (pendingFrame !== 0) {
+        return;
+      }
+      const raf = doc2.defaultView?.requestAnimationFrame;
+      if (!raf) {
+        update();
+        return;
+      }
+      pendingFrame = raf(() => update());
+    };
+    const onScrollerMouseMove = (event) => {
+      lastPointerPosition = { x: event.clientX, y: event.clientY };
+      scheduleUpdate();
+    };
+    const onScrollerMouseLeave = () => {
+      lastPointerPosition = null;
+      scheduleUpdate();
+    };
+    const scroller = view2.scrollDOM;
+    scroller.addEventListener("mousemove", onScrollerMouseMove);
+    scroller.addEventListener("mouseleave", onScrollerMouseLeave);
+    wrapper.addEventListener("focusin", scheduleUpdate);
+    wrapper.addEventListener("focusout", scheduleUpdate);
+    tableScroll.addEventListener("scroll", scheduleUpdate);
+    const ResizeObserverCtor = doc2.defaultView?.ResizeObserver;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleUpdate) : void 0;
+    resizeObserver?.observe(tableElement);
+    resizeObserver?.observe(tableScroll);
+    wrapper.append(layer2);
+    scheduleUpdate();
+    return () => {
+      closeMenu();
+      if (pendingFrame !== 0) {
+        doc2.defaultView?.cancelAnimationFrame(pendingFrame);
+        pendingFrame = 0;
+      }
+      scroller.removeEventListener("mousemove", onScrollerMouseMove);
+      scroller.removeEventListener("mouseleave", onScrollerMouseLeave);
+      wrapper.removeEventListener("focusin", scheduleUpdate);
+      wrapper.removeEventListener("focusout", scheduleUpdate);
+      tableScroll.removeEventListener("scroll", scheduleUpdate);
+      resizeObserver?.disconnect();
+      layer2.remove();
+    };
+  }
+  function createIndicatorButton(doc2, className) {
+    const button = doc2.createElement("button");
+    button.type = "button";
+    button.tabIndex = -1;
+    button.className = className;
+    button.dataset.state = "line";
+    button.hidden = true;
+    button.addEventListener("mousedown", preventFocusSteal);
+    const dots = doc2.createElement("span");
+    dots.className = "mlrt-table-indicator-dots";
+    dots.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < 3; index++) {
+      const dot2 = doc2.createElement("span");
+      dot2.className = "mlrt-table-indicator-dot";
+      dots.append(dot2);
+    }
+    button.append(dots);
+    return button;
+  }
+  function preventFocusSteal(event) {
+    event.preventDefault();
+  }
+  function createStructureMenuIcon(doc2, icon) {
+    const svg2 = doc2.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg2.classList.add("mlrt-table-structure-menu-icon");
+    svg2.setAttribute("viewBox", "0 0 16 16");
+    svg2.setAttribute("width", "16");
+    svg2.setAttribute("height", "16");
+    svg2.setAttribute("aria-hidden", "true");
+    svg2.setAttribute("focusable", "false");
+    const appendPath = (d) => {
+      const path = doc2.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      svg2.append(path);
+    };
+    switch (icon) {
+      case "select":
+        appendPath("M3 3h10v10H3V3Zm1 1v8h8V4H4Zm2 2h4v4H6V6Z");
+        break;
+      case "insert-column-left":
+        appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
+        appendPath("M2 4h1v8H2V4Zm4 3h2V5h1v2h2v1H9v2H8V8H6V7Z");
+        break;
+      case "insert-column-right":
+        appendPath("M4 2h8v12H4V2Zm1 1v10h6V3H5Z");
+        appendPath("M13 4h1v8h-1V4ZM6 7h2V5h1v2h2v1H9v2H8V8H6V7Z");
+        break;
+      case "insert-row-above":
+        appendPath("M2 4h12v8H2V4Zm1 1v6h10V5H3Z");
+        appendPath("M4 2h8v1H4V2Zm3 4h2V4h1v2h2v1h-2v2H9V7H7V6Z");
+        break;
+      case "insert-row-below":
+        appendPath("M2 4h12v8H2V4Zm1 1v6h10V5H3Z");
+        appendPath("M4 13h8v1H4v-1Zm3-6h2V5h1v2h2v1h-2v2H9V8H7V7Z");
+        break;
+      case "delete":
+        appendPath("M6 2h4l1 1h3v1H2V3h3l1-1Zm-2 3h8l-.5 9h-7L4 5Zm1.1 1 .39 7h5.02l.39-7H5.1Z");
+        break;
+    }
+    return svg2;
+  }
+  function findColumnAt(headerCells, x) {
+    for (let column = 0; column < headerCells.length; column++) {
+      const rect = headerCells[column].getBoundingClientRect();
+      if (x <= rect.right) {
+        return x >= rect.left - 1 ? column : null;
+      }
+    }
+    return null;
+  }
+  function findRowAt(rows, y) {
+    for (const row of rows) {
+      const rect = row.element.getBoundingClientRect();
+      if (y <= rect.bottom) {
+        return y >= rect.top - 1 ? row : null;
+      }
+    }
+    return null;
+  }
+  function findFocusedCell(doc2, wrapper) {
+    const active = doc2.activeElement;
+    if (active instanceof HTMLElement && wrapper.contains(active) && active.classList.contains("mlrt-table-cell")) {
+      return active;
+    }
+    return null;
+  }
+  function collectRenderedRows(tableElement) {
+    const rows = [];
+    const headerRow = tableElement.querySelector(
+      "thead tr"
+    );
+    if (headerRow) {
+      rows.push({ element: headerRow, rowKind: "header", rowIndex: 0 });
+    }
+    tableElement.querySelectorAll("tbody tr").forEach((element, rowIndex) => {
+      rows.push({ element, rowKind: "body", rowIndex });
+    });
+    return rows;
+  }
+  function focusCellAfterStructureEdit(doc2, tableFrom, target) {
+    setTimeout(() => {
+      const cell2 = doc2.querySelector(
+        [
+          `${TABLE_CELL_SELECTOR}[data-table-from="${tableFrom}"]`,
+          `[data-row-kind="${target.rowKind}"]`,
+          `[data-row-index="${target.rowIndex}"]`,
+          `[data-column="${target.column}"]`
+        ].join("")
+      );
+      if (cell2) {
+        focusCellAtEnd(cell2);
+      }
+    }, 0);
+  }
+
   // src/editor/table/tableClipboard.ts
   var HTML_METADATA_SELECTOR = 'meta[name="mlrt-clipboard"]';
   var CLIPBOARD_MENU_CLASS = "mlrt-clipboard-menu";
@@ -35291,16 +38066,20 @@
     codeBlockStyle: "fenced"
   });
   richCellTurndown.use(gfm);
-  var pendingCuts = /* @__PURE__ */ new WeakMap();
   var requestedCopyModes = /* @__PURE__ */ new WeakMap();
   var armedPasteModes = /* @__PURE__ */ new WeakMap();
+  var clipboardOperationVersions = /* @__PURE__ */ new WeakMap();
   function bindTableClipboard(wrapper, view2, initialTable) {
     let contextMenu = null;
     const doc2 = wrapper.ownerDocument;
     const currentTable = () => getTableWidgetTable(wrapper) ?? initialTable;
     const onCopy = (event) => {
       const selection = getTableRangeSelection(doc2);
-      if (!selection || selection.wrapper !== wrapper) {
+      const nativeCell = findCell(event.target) ?? findCell(doc2.activeElement);
+      const hasNativeSelection = Boolean(
+        nativeCell && wrapper.contains(nativeCell) && hasNativeCellSelection(nativeCell)
+      );
+      if (selection?.wrapper !== wrapper && !hasNativeSelection) {
         return;
       }
       const representations = representationsForCurrentSelection(
@@ -35312,9 +38091,13 @@
       if (!representations || !event.clipboardData) {
         return;
       }
+      beginClipboardOperation(doc2);
       event.preventDefault();
       writeDataTransfer(event.clipboardData, representations);
-      announce(doc2, "Copied selection.");
+      clearPendingClipboardCut(doc2);
+      setPendingCutToken(doc2, void 0);
+      view2.dom.classList.remove("mlrt-document-cut-pending");
+      announce2(doc2, "Copied selection.");
     };
     const onCut = (event) => {
       const selection = getTableRangeSelection(doc2);
@@ -35322,29 +38105,33 @@
         return;
       }
       const table2 = currentTable();
-      const token = createToken();
+      const token = createToken2();
       const rectangle = selectionRectangle(selection);
       const payload = tableRectanglePayload(
         table2,
         rectangle,
-        readDocumentUri(doc2),
+        readDocumentToken2(doc2),
         token
       );
       const representations = representationsForGrid(
         payload,
         readDefaultCopyMode(doc2)
       );
+      beginClipboardOperation(doc2);
       event.preventDefault();
       writeDataTransfer(event.clipboardData, representations);
-      pendingCuts.set(doc2, {
+      view2.dom.classList.remove("mlrt-document-cut-pending");
+      setPendingClipboardCut(doc2, {
+        kind: "table",
         token,
-        sourceDocument: readDocumentUri(doc2),
+        sourceDocument: readDocumentToken2(doc2),
         tableFrom: table2.from,
         rectangle,
         sourceTableText: view2.state.doc.sliceString(table2.from, table2.to)
       });
       setPendingCutToken(doc2, token);
-      announce(
+      markPendingCutSource(wrapper, rectangle);
+      announce2(
         doc2,
         "Move pending. Paste in this document to move; external paste copies."
       );
@@ -35361,6 +38148,7 @@
       const mode = armedPasteModes.get(doc2) ?? readDefaultPasteMode(doc2);
       armedPasteModes.delete(doc2);
       const data2 = readDataTransfer(event.clipboardData);
+      beginClipboardOperation(doc2);
       const handled = pasteClipboardData(
         wrapper,
         view2,
@@ -35382,10 +38170,21 @@
       event.preventDefault();
       const table2 = currentTable();
       dispatchTableEdit(view2, buildGridClearEdit(table2, selectionRectangle(selection)));
-      pendingCuts.delete(doc2);
+      clearPendingClipboardCut(doc2);
       setPendingCutToken(doc2, void 0);
+      view2.dom.classList.remove("mlrt-document-cut-pending");
       restoreSelectionAfterEdit(doc2, table2.from, selection.anchor, selection.head);
-      announce(doc2, "Cleared selected cells.");
+      announce2(doc2, "Cleared selected cells.");
+    };
+    const onCancelCut = (event) => {
+      const selection = getTableRangeSelection(doc2);
+      if (!selection || selection.wrapper !== wrapper) {
+        return;
+      }
+      event.preventDefault();
+      clearPendingClipboardCut(doc2);
+      setPendingCutToken(doc2, void 0);
+      announce2(doc2, "Pending move cancelled.");
     };
     const onKeyDown = (event) => {
       const selection = getTableRangeSelection(doc2);
@@ -35404,43 +38203,91 @@
       if (key === "c") {
         void copyThroughMenu(doc2, currentTable(), readDefaultCopyMode(doc2));
       } else {
-        void cutThroughMenu(doc2, view2, currentTable());
+        void cutThroughMenu(wrapper, view2);
       }
     };
     const onContextMenu = (event) => {
-      const cell2 = findCell(event.target);
+      const currentSelection = getTableRangeSelection(doc2);
+      const cell2 = findCell(event.target) ?? (currentSelection?.wrapper === wrapper ? cellFromAddress(wrapper, currentSelection.head) : null);
       if (!cell2 || !wrapper.contains(cell2)) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      ensureContextCellSelection(
-        wrapper,
-        Number(wrapper.dataset.srcFrom ?? currentTable().from),
-        cell2
-      );
+      const nativeCellSelection = hasNativeCellSelection(cell2);
+      const nativeRange = nativeCellSelection ? doc2.defaultView?.getSelection()?.getRangeAt(0).cloneRange() ?? null : null;
+      const restoreNativeCellSelection = () => {
+        if (!nativeRange || !cell2.isConnected) {
+          return;
+        }
+        cell2.focus({ preventScroll: true });
+        const nativeSelection = doc2.defaultView?.getSelection();
+        nativeSelection?.removeAllRanges();
+        nativeSelection?.addRange(nativeRange);
+      };
+      if (!nativeCellSelection) {
+        ensureContextCellSelection(
+          wrapper,
+          Number(wrapper.dataset.srcFrom ?? currentTable().from),
+          cell2
+        );
+      }
       closeContextMenu();
       contextMenu = createClipboardMenu(doc2, {
         defaultCopyMode: readDefaultCopyMode(doc2),
         defaultPasteMode: readDefaultPasteMode(doc2),
-        onCut: () => void cutThroughMenu(doc2, view2, currentTable()),
-        onCopy: (mode) => void copyThroughMenu(doc2, currentTable(), mode),
-        onPaste: (mode) => void pasteThroughMenu(wrapper, view2, currentTable(), mode),
-        onSettings: () => view2.dom.dispatchEvent(
-          new CustomEvent("mlrt:open-clipboard-settings", { bubbles: true })
-        )
+        cutLabel: nativeCellSelection ? "Cut selected text" : "Cut / Move within document",
+        includePaste: !nativeCellSelection,
+        onCut: () => {
+          if (nativeCellSelection) {
+            restoreNativeCellSelection();
+            if (!executeClipboardCommand(doc2, "cut")) {
+              announce2(doc2, "Cut failed. Use Cmd/Ctrl+X.");
+            }
+          } else {
+            wrapper.focus({ preventScroll: true });
+            void cutThroughMenu(wrapper, view2);
+          }
+        },
+        onCopy: (mode) => {
+          if (nativeCellSelection) {
+            restoreNativeCellSelection();
+          } else {
+            wrapper.focus({ preventScroll: true });
+          }
+          void copyThroughMenu(doc2, currentTable(), mode);
+        },
+        onPaste: (mode) => {
+          wrapper.focus({ preventScroll: true });
+          void pasteThroughMenu(wrapper, view2, mode);
+        },
+        onSettings: () => {
+          wrapper.focus({ preventScroll: true });
+          view2.dom.dispatchEvent(
+            new CustomEvent("mlrt:open-clipboard-settings", { bubbles: true })
+          );
+        }
       });
       wrapper.classList.add("mlrt-clipboard-menu-open");
       contextMenu.addEventListener("click", () => setTimeout(closeContextMenu, 0), {
-        once: true
+        once: true,
+        capture: true
       });
       contextMenu.addEventListener("keydown", (menuEvent) => {
-        if (menuEvent.key === "Escape") {
-          closeContextMenu();
+        if (menuEvent.key === "Escape" || menuEvent.key === "Tab") {
+          menuEvent.preventDefault();
+          menuEvent.stopPropagation();
+          closeContextMenu(true);
         }
       });
-      wrapper.append(contextMenu);
-      positionContextMenu(contextMenu, wrapper, event.clientX, event.clientY);
+      doc2.body.append(contextMenu);
+      const cellRect = cell2.getBoundingClientRect();
+      positionContextMenu(
+        contextMenu,
+        doc2,
+        event.clientX || cellRect.left,
+        event.clientY || cellRect.bottom
+      );
       contextMenu.querySelector("button")?.focus();
       doc2.addEventListener("pointerdown", onDocumentPointerDown, true);
     };
@@ -35449,18 +38296,23 @@
         closeContextMenu();
       }
     };
-    const closeContextMenu = () => {
+    const closeContextMenu = (restoreFocus = false) => {
       contextMenu?.remove();
       contextMenu = null;
       wrapper.classList.remove("mlrt-clipboard-menu-open");
       doc2.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      if (restoreFocus && wrapper.isConnected) {
+        wrapper.focus({ preventScroll: true });
+      }
     };
     doc2.addEventListener("copy", onCopy, true);
     doc2.addEventListener("cut", onCut, true);
     doc2.addEventListener("paste", onPaste, true);
     wrapper.addEventListener("keydown", onKeyDown);
     wrapper.addEventListener(TABLE_SELECTION_CLEAR_EVENT, onClear);
+    wrapper.addEventListener(TABLE_CUT_CANCEL_EVENT, onCancelCut);
     wrapper.addEventListener("contextmenu", onContextMenu);
+    restorePendingCutSource(wrapper, currentTable());
     return () => {
       closeContextMenu();
       doc2.removeEventListener("copy", onCopy, true);
@@ -35468,17 +38320,18 @@
       doc2.removeEventListener("paste", onPaste, true);
       wrapper.removeEventListener("keydown", onKeyDown);
       wrapper.removeEventListener(TABLE_SELECTION_CLEAR_EVENT, onClear);
+      wrapper.removeEventListener(TABLE_CUT_CANCEL_EVENT, onCancelCut);
       wrapper.removeEventListener("contextmenu", onContextMenu);
     };
   }
   function representationsForCurrentSelection(doc2, table2, mode) {
     const selection = getTableRangeSelection(doc2);
-    if (selection) {
+    if (selection?.tableFrom === table2.from) {
       return representationsForGrid(
         tableRectanglePayload(
           table2,
           selectionRectangle(selection),
-          readDocumentUri(doc2)
+          readDocumentToken2(doc2)
         ),
         mode
       );
@@ -35488,23 +38341,42 @@
       return null;
     }
     const plain = nativeSelection.toString().replace(/\u00a0/g, " ");
-    return mode === "markdown" ? { plain, markdown: plain } : { plain, html: `<span>${escapeHtml3(plain).replace(/\n/g, "<br>")}</span>` };
+    if (mode === "markdown") {
+      return { plain, markdown: plain };
+    }
+    if (mode === "plain") {
+      return { plain };
+    }
+    return {
+      plain,
+      html: `<span>${escapeHtml3(plain).replace(/\n/g, "<br>")}</span>`
+    };
   }
   function representationsForGrid(payload, mode) {
     const rows = payload.rows.map((row) => row.map((cell2) => cell2.text));
+    const cutPayload = payload.cutToken ? { privatePayload: JSON.stringify(payload) } : {};
     if (mode === "markdown") {
       const markdown2 = payload.exactMarkdown ?? gridToMarkdown(payload.rows, payload.alignments);
-      return { plain: markdown2, markdown: markdown2 };
+      return {
+        plain: markdown2,
+        markdown: markdown2,
+        ...cutPayload,
+        ...payload.cutToken ? { html: metadataTextCarrierHtml2(payload, markdown2) } : {}
+      };
     }
     const plain = serializeDelimitedGrid(rows, "	");
     if (mode === "plain") {
-      return { plain };
+      return {
+        plain,
+        ...cutPayload,
+        ...payload.cutToken ? { html: metadataTextCarrierHtml2(payload, plain) } : {}
+      };
     }
     const privatePayload = JSON.stringify(payload);
     const embedded = encodePayloadForHtml(privatePayload);
     const richCells = mode === "rich" ? payload.rows.map(
       (row) => row.map(
-        (cell2) => excelSafeRichInline(purify.sanitize(
+        (cell2) => excelSafeRichInline2(purify.sanitize(
           richCellRenderer.renderInline(cell2.markdown?.trim() ?? cell2.text),
           {
             ALLOWED_TAGS: [
@@ -35540,7 +38412,7 @@
       privatePayload
     };
   }
-  function excelSafeRichInline(html3) {
+  function excelSafeRichInline2(html3) {
     const parsed = new DOMParser().parseFromString(html3, "text/html");
     const replaceWithSpan = (selector, style) => {
       parsed.body.querySelectorAll(selector).forEach((element) => {
@@ -35559,104 +38431,258 @@
     );
     return parsed.body.innerHTML;
   }
+  function metadataTextCarrierHtml2(payload, text3) {
+    const encoded = encodePayloadForHtml(JSON.stringify(payload));
+    return `<meta name="mlrt-clipboard" content="${escapeHtml3(encoded)}"><pre style="white-space:pre-wrap">${escapeHtml3(text3)}</pre>`;
+  }
   function pasteClipboardData(wrapper, view2, table2, data2, mode, eventTarget) {
     const doc2 = wrapper.ownerDocument;
     const selection = getTableRangeSelection(doc2);
-    const activeCell = findCell(eventTarget) ?? findCell(doc2.activeElement);
-    const privatePayload = mode === "plain" || mode === "markdown" ? null : parsePrivatePayload(data2);
-    const parsed = clipboardRows(data2, mode, privatePayload);
+    const candidateActiveCell = findCell(eventTarget) ?? findCell(doc2.activeElement);
+    const activeCell = candidateActiveCell && wrapper.contains(candidateActiveCell) ? candidateActiveCell : null;
+    const pendingClipboardCut = getPendingClipboardCut(doc2);
+    const pendingTableCut = pendingClipboardCut?.kind === "table" ? pendingClipboardCut : null;
+    const pendingDocumentCut = pendingClipboardCut?.kind === "document" ? pendingClipboardCut : null;
+    const pendingCompositeCut = pendingClipboardCut?.kind === "composite" ? pendingClipboardCut : null;
+    const availablePrivatePayload = parsePrivatePayload(data2);
+    const movePayload = pendingTableCut && availablePrivatePayload?.kind === "grid" && availablePrivatePayload.cutToken === pendingTableCut.token && availablePrivatePayload.sourceDocument === pendingTableCut.sourceDocument && pendingTableCut.sourceDocument === readDocumentToken2(doc2) ? availablePrivatePayload : null;
+    const documentMovePayload = pendingDocumentCut && availablePrivatePayload?.kind === "document" && availablePrivatePayload.cutToken === pendingDocumentCut.token && availablePrivatePayload.sourceDocument === pendingDocumentCut.sourceDocument && availablePrivatePayload.markdown === pendingDocumentCut.markdown && pendingDocumentCut.sourceDocument === readDocumentToken2(doc2) ? availablePrivatePayload : null;
+    const compositeMovePayload = pendingCompositeCut && availablePrivatePayload?.kind === "document" && availablePrivatePayload.cutToken === pendingCompositeCut.token && availablePrivatePayload.sourceDocument === pendingCompositeCut.sourceDocument && availablePrivatePayload.markdown === pendingCompositeCut.markdown && pendingCompositeCut.sourceDocument === readDocumentToken2(doc2) ? availablePrivatePayload : null;
+    const movingDocumentPayload = documentMovePayload ?? compositeMovePayload;
+    const interpretationPayload = movePayload ?? (mode === "auto" ? availablePrivatePayload : null);
+    const parsed = movingDocumentPayload ? rowsForDocumentMove(movingDocumentPayload.markdown) : clipboardRows(data2, mode, interpretationPayload);
     if (!parsed) {
       if (selection?.wrapper === wrapper) {
-        announce(doc2, "Clipboard does not contain pasteable table data.");
+        announce2(doc2, "Clipboard does not contain pasteable table data.");
         return true;
       }
       return false;
     }
-    const clearlyTabular = Boolean(privatePayload?.kind === "grid") || Boolean(data2.html && htmlContainsTable(data2.html)) || Boolean(data2.plain?.includes("	"));
-    if (!selection && activeCell && !clearlyTabular) {
+    const clearlyTabular = Boolean(interpretationPayload?.kind === "grid") || Boolean(data2.html && htmlContainsTable(data2.html)) || Boolean(data2.plain?.includes("	")) || Boolean(data2.csv) || clipboardContainsMarkdownTable(data2, mode);
+    if (!selection && activeCell && !clearlyTabular && !movingDocumentPayload) {
       return false;
     }
     const destination = selection?.wrapper === wrapper ? selectionRectangle(selection) : activeCell ? singleCellRectangle(addressFromCell(activeCell)) : null;
     if (!destination) {
       return false;
     }
+    const isTableMove = Boolean(movePayload && pendingTableCut);
+    const isDocumentMove = Boolean(documentMovePayload && pendingDocumentCut);
+    const isCompositeMove = Boolean(compositeMovePayload && pendingCompositeCut);
+    const isSameDocumentMove = isTableMove || isDocumentMove || isCompositeMove;
+    if (isSameDocumentMove && !moveDestinationMatchesSource(destination, parsed)) {
+      announce2(
+        doc2,
+        "Move rejected: select one destination cell or a range matching the cut range."
+      );
+      return true;
+    }
     const resolvedRows = resolveGridPasteRows(parsed, destination);
     if (!resolvedRows) {
-      announce(
+      announce2(
         doc2,
         "Paste rejected: the copied range must match or tile the selected range."
       );
       return true;
     }
-    const pendingCut = pendingCuts.get(doc2);
-    const isSameDocumentMove = Boolean(
-      pendingCut && privatePayload?.cutToken === pendingCut.token && privatePayload.sourceDocument === readDocumentUri(doc2)
-    );
-    if (isSameDocumentMove && pendingCut && pendingCut.tableFrom === table2.from && rectanglesOverlap(
-      pendingCut.rectangle,
+    if (isSameDocumentMove && isTableMove && pendingTableCut && pendingTableCut.tableFrom === table2.from && rectanglesOverlap(
+      pendingTableCut.rectangle,
       pasteOutputRectangle(destination, resolvedRows)
     )) {
-      announce(doc2, "Move rejected: source and destination ranges overlap.");
+      announce2(doc2, "Move rejected: source and destination ranges overlap.");
       return true;
     }
     const targetPlan = {
       rows: resolvedRows,
-      sourceAlignments: privatePayload?.kind === "grid" ? privatePayload.alignments : void 0,
+      sourceAlignments: movingDocumentPayload ? alignmentsForDocumentMove(movingDocumentPayload.markdown) : interpretationPayload?.kind === "grid" ? interpretationPayload.alignments : void 0,
       destination: {
         ...destination,
         bottom: destination.top + resolvedRows.length - 1,
         right: destination.left + resolvedRows[0].length - 1
       }
     };
-    if (isSameDocumentMove && pendingCut) {
-      if (!dispatchMove(view2, table2, targetPlan, pendingCut)) {
-        announce(doc2, "Move cancelled because the source changed.");
-        pendingCuts.delete(doc2);
+    let destinationTableFrom = table2.from;
+    if (isTableMove && pendingTableCut) {
+      const movedTableFrom = dispatchMove(
+        view2,
+        table2,
+        targetPlan,
+        pendingTableCut
+      );
+      if (movedTableFrom === null) {
+        announce2(doc2, "Move cancelled because the source changed.");
+        clearPendingClipboardCut(doc2);
         setPendingCutToken(doc2, void 0);
         return true;
       }
+      destinationTableFrom = movedTableFrom;
+    } else if (isDocumentMove && pendingDocumentCut) {
+      if (view2.state.doc.sliceString(
+        pendingDocumentCut.from,
+        pendingDocumentCut.to
+      ) !== pendingDocumentCut.markdown) {
+        announce2(doc2, "Move cancelled because the cut source changed.");
+        clearPendingClipboardCut(doc2);
+        view2.dom.classList.remove("mlrt-document-cut-pending");
+        return true;
+      }
+      if (rangesOverlap2(
+        { from: pendingDocumentCut.from, to: pendingDocumentCut.to },
+        { from: table2.from, to: table2.to }
+      )) {
+        announce2(doc2, "Move rejected: choose a table outside the cut source.");
+        return true;
+      }
+      const movedTableFrom = dispatchDocumentMoveToTable(
+        view2,
+        table2,
+        targetPlan,
+        pendingDocumentCut
+      );
+      if (movedTableFrom === null) {
+        announce2(doc2, "Move cancelled because the source changed or overlaps the destination.");
+        clearPendingClipboardCut(doc2);
+        view2.dom.classList.remove("mlrt-document-cut-pending");
+        return true;
+      }
+      destinationTableFrom = movedTableFrom;
+    } else if (isCompositeMove && pendingCompositeCut) {
+      if (view2.state.doc.toString() !== pendingCompositeCut.sourceDocumentText) {
+        announce2(doc2, "Move cancelled because the cut source changed.");
+        clearPendingClipboardCut(doc2);
+        view2.dom.classList.remove("mlrt-document-cut-pending");
+        return true;
+      }
+      if (pendingCompositeCut.changes.some(
+        (change) => rangesOverlap2(change, { from: table2.from, to: table2.to })
+      )) {
+        announce2(doc2, "Move rejected: choose a table outside the cut source.");
+        return true;
+      }
+      const movedTableFrom = dispatchCompositeMoveToTable(
+        view2,
+        table2,
+        targetPlan,
+        pendingCompositeCut
+      );
+      if (movedTableFrom === null) {
+        announce2(
+          doc2,
+          "Move cancelled because the source changed or overlaps the destination."
+        );
+        clearPendingClipboardCut(doc2);
+        view2.dom.classList.remove("mlrt-document-cut-pending");
+        return true;
+      }
+      destinationTableFrom = movedTableFrom;
     } else {
       dispatchTableEdit(view2, buildGridPasteEdit(table2, targetPlan));
     }
-    pendingCuts.delete(doc2);
+    clearPendingClipboardCut(doc2);
+    view2.dom.classList.remove("mlrt-document-cut-pending");
     setPendingCutToken(doc2, void 0);
     const anchor = { row: targetPlan.destination.top, column: targetPlan.destination.left };
     const head = { row: targetPlan.destination.bottom, column: targetPlan.destination.right };
-    restoreSelectionAfterEdit(doc2, table2.from, anchor, head);
-    announce(doc2, isSameDocumentMove ? "Moved cells." : "Pasted cells.");
+    restoreSelectionAfterEdit(doc2, destinationTableFrom, anchor, head);
+    announce2(doc2, isSameDocumentMove ? "Moved cells." : "Pasted cells.");
     return true;
   }
   function dispatchMove(view2, destinationTable, targetPlan, pendingCut) {
     const tables2 = getParsedTables(view2.state.doc);
     const sourceTable = tables2.find((candidate) => candidate.from === pendingCut.tableFrom);
-    if (!sourceTable || view2.state.doc.sliceString(sourceTable.from, sourceTable.to) !== pendingCut.sourceTableText) {
-      return false;
+    const sourcePayload = sourceTable ? tableRectanglePayload(
+      sourceTable,
+      pendingCut.rectangle,
+      pendingCut.sourceDocument
+    ) : null;
+    if (!sourceTable || !sourcePayload || view2.state.doc.sliceString(sourceTable.from, sourceTable.to) !== pendingCut.sourceTableText || !sameGridText(sourcePayload.rows, targetPlan.rows)) {
+      return null;
     }
+    const safeTargetPlan = {
+      ...targetPlan,
+      rows: sourcePayload.rows,
+      sourceAlignments: sourcePayload.alignments
+    };
     if (sourceTable.from === destinationTable.from) {
       const cleared = buildGridClearEdit(sourceTable, pendingCut.rectangle);
       const clearedTable = parseMarkdownTables(cleared.insert)[0];
       if (!clearedTable) {
-        return false;
+        return null;
       }
-      const pasted = buildGridPasteEdit(clearedTable, targetPlan);
+      const pasted = buildGridPasteEdit(clearedTable, safeTargetPlan);
       dispatchTableEdit(view2, {
         from: sourceTable.from,
         to: sourceTable.to,
         insert: pasted.insert
       });
-      return true;
+      return sourceTable.from;
     }
     const sourceEdit = buildGridClearEdit(sourceTable, pendingCut.rectangle);
-    const destinationEdit = buildGridPasteEdit(destinationTable, targetPlan);
+    const destinationEdit = buildGridPasteEdit(destinationTable, safeTargetPlan);
+    const changeSpecs = [sourceEdit, destinationEdit].sort((left, right) => left.from - right.from).map((edit) => ({ from: edit.from, to: edit.to, insert: edit.insert }));
+    const changes = view2.state.changes(changeSpecs);
+    const destinationTableFrom = changes.mapPos(destinationTable.from, -1);
     view2.dispatch({
-      changes: [sourceEdit, destinationEdit].sort((left, right) => left.from - right.from).map((edit) => ({ from: edit.from, to: edit.to, insert: edit.insert })),
+      changes,
       annotations: [
         allowTableSourceChange.of(true),
         Transaction.addToHistory.of(true)
       ],
       userEvent: "input.paste"
     });
-    return true;
+    return destinationTableFrom;
+  }
+  function dispatchDocumentMoveToTable(view2, destinationTable, targetPlan, pendingCut) {
+    if (view2.state.doc.sliceString(pendingCut.from, pendingCut.to) !== pendingCut.markdown || rangesOverlap2(
+      { from: pendingCut.from, to: pendingCut.to },
+      { from: destinationTable.from, to: destinationTable.to }
+    )) {
+      return null;
+    }
+    const destinationEdit = buildGridPasteEdit(destinationTable, targetPlan);
+    const changeSpecs = [
+      { from: pendingCut.from, to: pendingCut.to, insert: "" },
+      destinationEdit
+    ].sort((left, right) => left.from - right.from).map((edit) => ({ from: edit.from, to: edit.to, insert: edit.insert }));
+    const changes = view2.state.changes(changeSpecs);
+    const destinationTableFrom = changes.mapPos(destinationTable.from, -1);
+    view2.dispatch({
+      changes,
+      annotations: [
+        allowTableSourceChange.of(true),
+        Transaction.addToHistory.of(true)
+      ],
+      userEvent: "input.paste"
+    });
+    return destinationTableFrom;
+  }
+  function dispatchCompositeMoveToTable(view2, destinationTable, targetPlan, pendingCut) {
+    if (view2.state.doc.toString() !== pendingCut.sourceDocumentText || !sameGridText(rowsForDocumentMove(pendingCut.markdown), targetPlan.rows) || pendingCut.changes.some(
+      (change) => rangesOverlap2(change, {
+        from: destinationTable.from,
+        to: destinationTable.to
+      })
+    )) {
+      return null;
+    }
+    const destinationEdit = buildGridPasteEdit(destinationTable, targetPlan);
+    const changeSpecs = [...pendingCut.changes, destinationEdit].map((edit) => ({ from: edit.from, to: edit.to, insert: edit.insert })).sort((left, right) => left.from - right.from || left.to - right.to);
+    for (let index = 1; index < changeSpecs.length; index++) {
+      if (changeSpecs[index - 1].to > changeSpecs[index].from) {
+        return null;
+      }
+    }
+    const changes = view2.state.changes(changeSpecs);
+    const destinationTableFrom = changes.mapPos(destinationTable.from, -1);
+    view2.dispatch({
+      changes,
+      annotations: [
+        allowTableSourceChange.of(true),
+        Transaction.addToHistory.of(true)
+      ],
+      userEvent: "input.paste"
+    });
+    return destinationTableFrom;
   }
   function dispatchTableEdit(view2, edit) {
     view2.dispatch({
@@ -35672,11 +38698,14 @@
     if (payload?.kind === "grid") {
       return payload.rows;
     }
-    if (mode !== "plain" && mode !== "markdown" && data2.html) {
+    if ((mode === "auto" || mode === "rich") && data2.html) {
       const htmlRows = rowsFromHtmlTable(data2.html, mode === "rich");
       if (htmlRows) {
         return htmlRows;
       }
+    }
+    if (mode === "plain") {
+      return data2.plain === void 0 ? null : stringsToCells(parseDelimitedGrid(data2.plain, "	"));
     }
     const markdown2 = mode === "markdown" ? data2.markdown ?? data2.plain : data2.markdown;
     if (markdown2) {
@@ -35690,18 +38719,42 @@
         );
       }
     }
+    if (mode === "markdown") {
+      return markdown2 === void 0 ? null : stringsToCells(parseDelimitedGrid(markdown2, "	"));
+    }
     if (data2.csv && !data2.plain?.includes("	")) {
       return stringsToCells(parseDelimitedGrid(data2.csv, ","));
     }
     if (data2.plain !== void 0) {
-      return stringsToCells(
-        parseDelimitedGrid(data2.plain, data2.plain.includes("	") ? "	" : "	")
-      );
+      return stringsToCells(parseDelimitedGrid(data2.plain, "	"));
     }
     if (payload?.kind === "document") {
       return [[{ text: payload.markdown }]];
     }
     return null;
+  }
+  function rowsForDocumentMove(markdown2) {
+    const table2 = exactDocumentMoveTable(markdown2);
+    if (!table2) {
+      return [[{ text: markdown2 }]];
+    }
+    return [table2.header, ...table2.body].map(
+      (row) => Array.from({ length: table2.columnCount }, (_, column) => ({
+        text: markdownCellToDisplayText(row.cells[column]?.raw ?? ""),
+        markdown: row.cells[column]?.raw
+      }))
+    );
+  }
+  function alignmentsForDocumentMove(markdown2) {
+    return exactDocumentMoveTable(markdown2)?.alignments;
+  }
+  function exactDocumentMoveTable(markdown2) {
+    const tables2 = parseMarkdownTables(markdown2);
+    if (tables2.length !== 1) {
+      return null;
+    }
+    const table2 = tables2[0];
+    return markdown2.slice(0, table2.from).trim().length === 0 && markdown2.slice(table2.to).trim().length === 0 ? table2 : null;
   }
   function rowsFromHtmlTable(html3, preserveFormatting) {
     const sanitized = purify.sanitize(html3, {
@@ -35796,76 +38849,147 @@
   }
   function readDataTransfer(transfer) {
     return {
-      privatePayload: transfer.getData(MLRT_CLIPBOARD_MIME) || void 0,
-      html: transfer.getData("text/html") || void 0,
-      markdown: transfer.getData("text/markdown") || void 0,
-      csv: transfer.getData("text/csv") || void 0,
-      plain: transfer.getData("text/plain")
+      privatePayload: readDataTransferType(transfer, MLRT_CLIPBOARD_MIME),
+      html: readDataTransferType(transfer, "text/html"),
+      markdown: readDataTransferType(transfer, "text/markdown"),
+      csv: readDataTransferType(transfer, "text/csv"),
+      plain: readDataTransferType(transfer, "text/plain", true)
     };
+  }
+  function readDataTransferType(transfer, type, preserveEmpty = false) {
+    const available = Array.from(transfer.types).some(
+      (candidate) => candidate.toLowerCase() === type.toLowerCase()
+    );
+    if (!available) {
+      return void 0;
+    }
+    const value = transfer.getData(type);
+    return preserveEmpty || value.length > 0 ? value : void 0;
   }
   async function copyThroughMenu(doc2, table2, mode) {
     const representations = representationsForCurrentSelection(doc2, table2, mode);
     if (!representations) {
-      announce(doc2, "Nothing selected to copy.");
+      announce2(doc2, "Nothing selected to copy.");
       return;
     }
+    requestedCopyModes.set(doc2, mode);
+    if (executeClipboardCommand(doc2, "copy")) {
+      return;
+    }
+    requestedCopyModes.delete(doc2);
+    const operationVersion = beginClipboardOperation(doc2);
     try {
       await writeAsyncClipboard(representations);
-      announce(doc2, `Copied as ${COPY_MODE_LABELS[mode]}.`);
+      if (!isCurrentClipboardOperation(doc2, operationVersion)) {
+        return;
+      }
+      clearPendingClipboardCut(doc2);
+      setPendingCutToken(doc2, void 0);
+      doc2.querySelector(".cm-editor")?.classList.remove(
+        "mlrt-document-cut-pending"
+      );
+      announce2(doc2, `Copied as ${COPY_MODE_LABELS[mode]}.`);
     } catch {
-      requestedCopyModes.set(doc2, mode);
-      if (!executeClipboardCommand(doc2, "copy")) {
-        announce(doc2, "Copy failed. Use Cmd/Ctrl+C.");
+      if (isCurrentClipboardOperation(doc2, operationVersion)) {
+        announce2(doc2, "Copy failed. Use Cmd/Ctrl+C.");
       }
     }
   }
-  async function cutThroughMenu(doc2, view2, table2) {
+  async function cutThroughMenu(wrapper, view2) {
+    const doc2 = wrapper.ownerDocument;
     const selection = getTableRangeSelection(doc2);
-    if (!selection) {
-      announce(doc2, "Nothing selected to move.");
+    const table2 = getTableWidgetTable(wrapper);
+    if (!selection || selection.wrapper !== wrapper || !table2) {
+      announce2(doc2, "Nothing selected to move.");
       return;
     }
-    const token = createToken();
+    const token = createToken2();
     const rectangle = selectionRectangle(selection);
+    const sourceTableText = view2.state.doc.sliceString(table2.from, table2.to);
+    const sourceDocument = readDocumentToken2(doc2);
     const representations = representationsForGrid(
       tableRectanglePayload(
         table2,
         rectangle,
-        readDocumentUri(doc2),
+        sourceDocument,
         token
       ),
       readDefaultCopyMode(doc2)
     );
+    if (executeClipboardCommand(doc2, "cut")) {
+      return;
+    }
+    if (!representations.html) {
+      representations.html = representationsForGrid(
+        tableRectanglePayload(table2, rectangle, sourceDocument, token),
+        "smart"
+      ).html;
+    }
+    const operationVersion = beginClipboardOperation(doc2);
     try {
       await writeAsyncClipboard(representations);
     } catch {
-      requestedCopyModes.set(doc2, readDefaultCopyMode(doc2));
-      announce(doc2, "Move could not access the clipboard. Use Cmd/Ctrl+X.");
+      if (isCurrentClipboardOperation(doc2, operationVersion)) {
+        announce2(doc2, "Move could not access the clipboard. Use Cmd/Ctrl+X.");
+      }
       return;
     }
-    pendingCuts.set(doc2, {
+    if (!isCurrentClipboardOperation(doc2, operationVersion)) {
+      return;
+    }
+    const currentSelection = getTableRangeSelection(doc2);
+    const currentTable = getTableWidgetTable(wrapper);
+    if (!wrapper.isConnected || !currentTable || !sameSelection(currentSelection, wrapper, selection) || view2.state.doc.sliceString(currentTable.from, currentTable.to) !== sourceTableText) {
+      announce2(doc2, "Copied, but move was cancelled because the source changed.");
+      return;
+    }
+    view2.dom.classList.remove("mlrt-document-cut-pending");
+    setPendingClipboardCut(doc2, {
+      kind: "table",
       token,
-      sourceDocument: readDocumentUri(doc2),
-      tableFrom: table2.from,
+      sourceDocument,
+      tableFrom: currentTable.from,
       rectangle,
-      sourceTableText: view2.state.doc.sliceString(table2.from, table2.to)
+      sourceTableText
     });
     setPendingCutToken(doc2, token);
-    announce(
+    markPendingCutSource(wrapper, rectangle);
+    announce2(
       doc2,
       "Move pending. Paste in this document to move; external paste copies."
     );
   }
-  async function pasteThroughMenu(wrapper, view2, table2, mode) {
+  async function pasteThroughMenu(wrapper, view2, mode) {
+    const doc2 = wrapper.ownerDocument;
+    const selection = getTableRangeSelection(doc2);
+    const table2 = getTableWidgetTable(wrapper);
+    if (!selection || selection.wrapper !== wrapper || !table2) {
+      announce2(doc2, "Select a destination range before pasting.");
+      return;
+    }
+    const tableText = view2.state.doc.sliceString(table2.from, table2.to);
+    const operationVersion = beginClipboardOperation(doc2);
     try {
       const data2 = await readAsyncClipboard();
-      if (!pasteClipboardData(wrapper, view2, table2, data2, mode, wrapper)) {
-        announce(wrapper.ownerDocument, "Clipboard does not contain pasteable data.");
+      if (!isCurrentClipboardOperation(doc2, operationVersion)) {
+        return;
+      }
+      const currentSelection = getTableRangeSelection(doc2);
+      const currentTable = getTableWidgetTable(wrapper);
+      if (!wrapper.isConnected || !currentTable || !sameSelection(currentSelection, wrapper, selection) || view2.state.doc.sliceString(currentTable.from, currentTable.to) !== tableText) {
+        announce2(doc2, "Paste cancelled because the destination changed.");
+        return;
+      }
+      if (!pasteClipboardData(wrapper, view2, currentTable, data2, mode, wrapper)) {
+        announce2(doc2, "Clipboard does not contain pasteable data.");
       }
     } catch {
-      armedPasteModes.set(wrapper.ownerDocument, mode);
-      announce(
-        wrapper.ownerDocument,
+      if (!isCurrentClipboardOperation(doc2, operationVersion)) {
+        return;
+      }
+      armedPasteModes.set(doc2, mode);
+      announce2(
+        doc2,
         `Paste as ${PASTE_MODE_LABELS[mode]} armed \u2014 press Cmd/Ctrl+V.`
       );
     }
@@ -35917,6 +39041,7 @@
     const menu = doc2.createElement("div");
     menu.className = CLIPBOARD_MENU_CLASS;
     menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Table clipboard actions");
     const add2 = (label, action, callback) => {
       const button = doc2.createElement("button");
       button.type = "button";
@@ -35939,7 +39064,7 @@
       element.setAttribute("role", "separator");
       menu.append(element);
     };
-    add2("Cut / Move within document", "cut", actions.onCut);
+    add2(actions.cutLabel, "cut", actions.onCut);
     add2(
       `Copy (${COPY_MODE_LABELS[actions.defaultCopyMode]})`,
       "copy-default",
@@ -35948,25 +39073,40 @@
     Object.keys(COPY_MODE_LABELS).forEach(
       (mode) => add2(`Copy ${COPY_MODE_LABELS[mode]}`, `copy-${mode}`, () => actions.onCopy(mode))
     );
-    separator();
-    add2(
-      `Paste (${PASTE_MODE_LABELS[actions.defaultPasteMode]})`,
-      "paste-default",
-      () => actions.onPaste(actions.defaultPasteMode)
-    );
-    Object.keys(PASTE_MODE_LABELS).forEach(
-      (mode) => add2(`Paste ${PASTE_MODE_LABELS[mode]}`, `paste-${mode}`, () => actions.onPaste(mode))
-    );
+    if (actions.includePaste) {
+      separator();
+      add2(
+        `Paste (${PASTE_MODE_LABELS[actions.defaultPasteMode]})`,
+        "paste-default",
+        () => actions.onPaste(actions.defaultPasteMode)
+      );
+      Object.keys(PASTE_MODE_LABELS).forEach(
+        (mode) => add2(`Paste ${PASTE_MODE_LABELS[mode]}`, `paste-${mode}`, () => actions.onPaste(mode))
+      );
+    }
     separator();
     add2("Clipboard Settings\u2026", "settings", actions.onSettings);
+    const items = Array.from(
+      menu.querySelectorAll("button")
+    );
+    items.forEach((item, index) => {
+      item.tabIndex = index === 0 ? 0 : -1;
+    });
     return menu;
   }
   function navigateMenu(event, menu) {
     const items = Array.from(menu.querySelectorAll("button"));
     const index = items.indexOf(event.currentTarget);
     if (event.key === "Escape") {
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      menu.remove();
+      const target2 = event.key === "Home" ? items[0] : items[items.length - 1];
+      items.forEach((item) => {
+        item.tabIndex = item === target2 ? 0 : -1;
+      });
+      target2?.focus();
       return;
     }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
@@ -35974,18 +39114,23 @@
     }
     event.preventDefault();
     const delta = event.key === "ArrowDown" ? 1 : -1;
-    items[(index + delta + items.length) % items.length]?.focus();
+    const target = items[(index + delta + items.length) % items.length];
+    items.forEach((item) => {
+      item.tabIndex = item === target ? 0 : -1;
+    });
+    target?.focus();
   }
-  function positionContextMenu(menu, wrapper, clientX, clientY) {
-    const wrapperRect = wrapper.getBoundingClientRect();
+  function positionContextMenu(menu, doc2, clientX, clientY) {
+    const viewport = doc2.documentElement.getBoundingClientRect();
+    const padding = 4;
     const left = Math.min(
-      Math.max(0, clientX - wrapperRect.left),
-      Math.max(0, wrapperRect.width - menu.offsetWidth)
+      Math.max(padding, clientX),
+      Math.max(padding, viewport.width - menu.offsetWidth - padding)
     );
-    const top2 = Math.min(
-      Math.max(0, clientY - wrapperRect.top),
-      Math.max(0, wrapperRect.height - menu.offsetHeight)
-    );
+    const below = clientY;
+    const above = clientY - menu.offsetHeight;
+    const top2 = below + menu.offsetHeight <= viewport.height - padding ? below : Math.max(padding, above);
+    menu.style.position = "fixed";
     menu.style.left = `${left}px`;
     menu.style.top = `${top2}px`;
   }
@@ -36002,7 +39147,7 @@
       setTableRangeSelection(wrapper, previousTableFrom, anchor, head, true);
     }, 0);
   }
-  function announce(doc2, message) {
+  function announce2(doc2, message) {
     let status = doc2.querySelector(".mlrt-clipboard-status");
     if (!status) {
       status = doc2.createElement("div");
@@ -36032,8 +39177,16 @@
     const value = doc2.documentElement.dataset.mlrtDefaultPasteMode;
     return value === "rich" || value === "plain" || value === "markdown" ? value : "auto";
   }
-  function readDocumentUri(doc2) {
-    return doc2.documentElement.dataset.mlrtDocumentUri ?? "";
+  function readDocumentToken2(doc2) {
+    return doc2.documentElement.dataset.mlrtDocumentToken ?? "";
+  }
+  function beginClipboardOperation(doc2) {
+    const version = (clipboardOperationVersions.get(doc2) ?? 0) + 1;
+    clipboardOperationVersions.set(doc2, version);
+    return version;
+  }
+  function isCurrentClipboardOperation(doc2, version) {
+    return clipboardOperationVersions.get(doc2) === version;
   }
   function executeClipboardCommand(doc2, command) {
     try {
@@ -36059,10 +39212,75 @@
   function rectanglesOverlap(left, right) {
     return !(left.right < right.left || right.right < left.left || left.bottom < right.top || right.bottom < left.top);
   }
+  function rangesOverlap2(left, right) {
+    return left.from < right.to && right.from < left.to;
+  }
+  function moveDestinationMatchesSource(destination, rows) {
+    const destinationHeight = destination.bottom - destination.top + 1;
+    const destinationWidth = destination.right - destination.left + 1;
+    return destinationHeight === 1 && destinationWidth === 1 || destinationHeight === rows.length && destinationWidth === (rows[0]?.length ?? 0);
+  }
+  function clipboardContainsMarkdownTable(data2, mode) {
+    if (mode === "plain") {
+      return false;
+    }
+    const markdown2 = mode === "markdown" ? data2.markdown ?? data2.plain : data2.markdown;
+    return Boolean(markdown2 && parseMarkdownTables(markdown2).length > 0);
+  }
+  function sameSelection(current, wrapper, expected) {
+    return Boolean(
+      current?.wrapper === wrapper && current.anchor.row === expected.anchor.row && current.anchor.column === expected.anchor.column && current.head.row === expected.head.row && current.head.column === expected.head.column
+    );
+  }
+  function hasNativeCellSelection(cell2) {
+    const selection = cell2.ownerDocument.defaultView?.getSelection();
+    return Boolean(
+      selection && !selection.isCollapsed && cell2.contains(selection.anchorNode) && cell2.contains(selection.focusNode)
+    );
+  }
+  function sameGridText(left, right) {
+    return left.length === right.length && left.every(
+      (row, rowIndex) => row.length === right[rowIndex]?.length && row.every(
+        (cell2, column) => cell2.text === right[rowIndex]?.[column]?.text
+      )
+    );
+  }
+  function restorePendingCutSource(wrapper, table2) {
+    const pending = getPendingClipboardCut(wrapper.ownerDocument);
+    if (pending?.kind === "table" && pending.tableFrom === table2.from) {
+      markPendingCutSource(wrapper, pending.rectangle);
+    }
+  }
+  function markPendingCutSource(wrapper, rectangle) {
+    wrapper.classList.add("mlrt-table-cut-source-pending");
+    wrapper.querySelectorAll(TABLE_CELL_SELECTOR).forEach((cell2) => {
+      const address = addressFromCell(cell2);
+      const selected = Boolean(
+        address && address.row >= rectangle.top && address.row <= rectangle.bottom && address.column >= rectangle.left && address.column <= rectangle.right
+      );
+      cell2.classList.toggle("mlrt-table-cut-source", selected);
+      cell2.classList.toggle(
+        "mlrt-table-cut-source-top",
+        selected && address?.row === rectangle.top
+      );
+      cell2.classList.toggle(
+        "mlrt-table-cut-source-right",
+        selected && address?.column === rectangle.right
+      );
+      cell2.classList.toggle(
+        "mlrt-table-cut-source-bottom",
+        selected && address?.row === rectangle.bottom
+      );
+      cell2.classList.toggle(
+        "mlrt-table-cut-source-left",
+        selected && address?.column === rectangle.left
+      );
+    });
+  }
   function htmlContainsTable(html3) {
     return /<table[\s>]/i.test(html3);
   }
-  function createToken() {
+  function createToken2() {
     return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
   function encodePayloadForHtml(value) {
@@ -36237,6 +39455,7 @@
       patchTableRowDOM(dom, table2, row, "body", rowIndex);
     });
     applyCurrentColumnSizing(dom, table2);
+    syncTableSelectionOverlay(dom);
   }
   function patchTableRowDOM(dom, table2, sourceRow, rowKind, rowIndex) {
     const lineCell = dom.querySelector(
@@ -36367,6 +39586,7 @@
   }();
 
   // src/editor/liveEditorExtensions.ts
+  var lineWrappingCompartment = new Compartment();
   function createLiveEditorExtensions(options) {
     return [
       // CodeMirror owns the undo history so ⌘Z coalesces typing into
@@ -36376,6 +39596,9 @@
       history(),
       createEditorTheme(),
       createTableBoundaryArrowNavigation(),
+      createDocumentSelectionInputHandler(),
+      drawSelection(),
+      createDocumentSelectionDecorations(),
       highlightActiveLine(),
       highlightActiveLineGutter(),
       lineNumbers(),
@@ -36386,7 +39609,9 @@
         tableCellSelector: TABLE_CELL_SELECTOR
       }),
       markdown(),
-      ...options.lineWrapping ? [EditorView.lineWrapping] : [],
+      lineWrappingCompartment.of(
+        options.lineWrapping ? EditorView.lineWrapping : []
+      ),
       createTableDecorations()
     ];
   }
@@ -36394,961 +39619,6 @@
   // src/shared/documentChangeMapping.ts
   function normalizeDocumentText(text3) {
     return text3.replace(/\r\n?/g, "\n");
-  }
-
-  // src/editor/documentClipboard.ts
-  var markdownRenderer = new lib_default({
-    html: false,
-    linkify: false,
-    breaks: false
-  });
-  var richMarkdownRenderer = new lib_default({
-    html: true,
-    linkify: false,
-    breaks: true
-  });
-  var turndown = new TurndownService({
-    bulletListMarker: "-",
-    codeBlockStyle: "fenced",
-    emDelimiter: "*",
-    strongDelimiter: "**"
-  });
-  turndown.use(gfm);
-  var pendingDocumentCut = null;
-  var armedDocumentPasteMode = null;
-  var requestedDocumentCopyMode = null;
-  function installDocumentClipboard(root2, view2) {
-    const doc2 = root2.ownerDocument;
-    let mixedDragAnchor = null;
-    let mixedDragRange = null;
-    let mixedDragActive = false;
-    const onCopy = (event) => {
-      if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target)) {
-        return;
-      }
-      const range = atomicDocumentSelection(view2);
-      if (!range || !event.clipboardData) {
-        return;
-      }
-      const mode = requestedDocumentCopyMode ?? readCopyMode(doc2);
-      requestedDocumentCopyMode = null;
-      event.preventDefault();
-      writeDocumentTransfer(
-        event.clipboardData,
-        documentRepresentations(view2, range.from, range.to, mode)
-      );
-      announce2(doc2, "Copied document selection.");
-    };
-    const onCut = (event) => {
-      if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target)) {
-        return;
-      }
-      const range = atomicDocumentSelection(view2);
-      if (!range || !event.clipboardData) {
-        return;
-      }
-      const token = createToken2();
-      const markdown2 = view2.state.doc.sliceString(range.from, range.to);
-      const payload = {
-        version: MLRT_CLIPBOARD_VERSION,
-        kind: "document",
-        sourceDocument: readDocumentUri2(doc2),
-        markdown: markdown2,
-        cutToken: token
-      };
-      event.preventDefault();
-      writeDocumentTransfer(
-        event.clipboardData,
-        documentRepresentations(
-          view2,
-          range.from,
-          range.to,
-          readCopyMode(doc2),
-          payload
-        )
-      );
-      pendingDocumentCut = {
-        token,
-        sourceDocument: readDocumentUri2(doc2),
-        from: range.from,
-        to: range.to,
-        markdown: markdown2
-      };
-      view2.dom.classList.add("mlrt-document-cut-pending");
-      announce2(
-        doc2,
-        "Move pending. Paste in this document to move; external paste copies."
-      );
-    };
-    const onPaste = (event) => {
-      if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target) || !event.clipboardData) {
-        return;
-      }
-      const mode = armedDocumentPasteMode ?? readPasteMode(doc2);
-      armedDocumentPasteMode = null;
-      const markdown2 = documentPasteMarkdown(readTransfer(event.clipboardData), mode);
-      if (markdown2 === null) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      applyDocumentPaste(view2, markdown2, readTransfer(event.clipboardData));
-      announce2(doc2, "Pasted document content.");
-    };
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && pendingDocumentCut) {
-        pendingDocumentCut = null;
-        view2.dom.classList.remove("mlrt-document-cut-pending");
-        announce2(doc2, "Pending move cancelled.");
-        return;
-      }
-      if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        const selected = view2.state.selection.main;
-        const range = atomicDocumentSelection(view2);
-        const touchesTable = !selected.empty && getParsedTables(view2.state.doc).some(
-          (table2) => selected.from < table2.to && selected.to > table2.from
-        );
-        if (range && touchesTable) {
-          event.preventDefault();
-          event.stopPropagation();
-          view2.dispatch({
-            changes: { from: range.from, to: range.to, insert: "" },
-            selection: EditorSelection.cursor(range.from, 1),
-            annotations: [
-              allowTableSourceChange.of(true),
-              Transaction.addToHistory.of(true)
-            ],
-            userEvent: "delete.selection"
-          });
-        }
-      }
-    };
-    const onContextMenu = (event) => {
-      if (!root2.contains(event.target)) {
-        return;
-      }
-      const range = atomicDocumentSelection(view2);
-      if (!range) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      showDocumentMenu(doc2, view2, event.clientX, event.clientY);
-    };
-    const shouldPreserveContextSelection = (event) => {
-      const range = view2.state.selection.main;
-      if (range.empty) {
-        return false;
-      }
-      const cell2 = findCell(event.target);
-      if (cell2?.classList.contains("mlrt-document-range-selected")) {
-        return true;
-      }
-      const position = view2.posAtCoords({ x: event.clientX, y: event.clientY });
-      return position !== null && position >= range.from && position <= range.to;
-    };
-    const onRootPointerDown = (event) => {
-      if (event.button === 2) {
-        if (shouldPreserveContextSelection(event)) {
-          event.preventDefault();
-        }
-        return;
-      }
-      if (event.button !== 0 || findCell(event.target) || event.target instanceof Element && Boolean(event.target.closest(".mlrt-table-widget"))) {
-        return;
-      }
-      const anchor = view2.posAtCoords({ x: event.clientX, y: event.clientY });
-      if (anchor === null) {
-        return;
-      }
-      mixedDragAnchor = anchor;
-      mixedDragRange = null;
-      mixedDragActive = false;
-      doc2.addEventListener("pointermove", onMixedPointerMove, true);
-      doc2.addEventListener("pointerup", onMixedPointerUp, true);
-      doc2.addEventListener("pointercancel", onMixedPointerUp, true);
-      doc2.addEventListener("mousemove", onMixedMouseMove, true);
-      doc2.addEventListener("mouseup", onMixedMouseUp, true);
-      doc2.addEventListener("click", onMixedClick, true);
-      doc2.addEventListener("selectionchange", onMixedSelectionChange);
-    };
-    const onRootMouseDown = (event) => {
-      if (event.button === 2 && shouldPreserveContextSelection(event)) {
-        event.preventDefault();
-      }
-    };
-    const onNativeSelectionChange = () => {
-      if (view2.state.selection.main.empty || !doc2.querySelector(".mlrt-document-range-selected")) {
-        return;
-      }
-      const nativeSelection = doc2.defaultView?.getSelection();
-      if (nativeSelection && !nativeSelection.isCollapsed) {
-        nativeSelection.removeAllRanges();
-      }
-    };
-    const updateMixedDrag = (event) => {
-      if (mixedDragAnchor === null || (event.buttons & 1) === 0) {
-        return;
-      }
-      const target = doc2.elementFromPoint(event.clientX, event.clientY);
-      const cell2 = findCell(target);
-      if (!cell2) {
-        return;
-      }
-      const tableFrom = Number(cell2.dataset.tableFrom ?? "NaN");
-      if (!Number.isFinite(tableFrom)) {
-        return;
-      }
-      const table2 = getParsedTables(view2.state.doc).find(
-        (candidate) => candidate.from === tableFrom
-      );
-      if (!table2) {
-        return;
-      }
-      const span = renderedCellSourceSpan(cell2, table2);
-      if (!span) {
-        return;
-      }
-      const movingForward = mixedDragAnchor <= table2.from;
-      mixedDragRange = {
-        anchor: mixedDragAnchor,
-        head: movingForward ? span.to : span.from
-      };
-      mixedDragActive = true;
-      event.preventDefault();
-      event.stopPropagation();
-      doc2.defaultView?.getSelection()?.removeAllRanges();
-      view2.dispatch({
-        selection: EditorSelection.range(
-          mixedDragRange.anchor,
-          mixedDragRange.head
-        ),
-        scrollIntoView: true
-      });
-    };
-    const onMixedPointerMove = (event) => {
-      updateMixedDrag(event);
-    };
-    const onMixedMouseMove = (event) => {
-      updateMixedDrag(event);
-      if (mixedDragActive) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    const restoreMixedDrag = () => {
-      if (!mixedDragRange) {
-        return;
-      }
-      doc2.defaultView?.getSelection()?.removeAllRanges();
-      view2.dispatch({
-        selection: EditorSelection.range(
-          mixedDragRange.anchor,
-          mixedDragRange.head
-        )
-      });
-    };
-    const onMixedPointerUp = () => {
-      queueMicrotask(restoreMixedDrag);
-      setTimeout(removeMixedDragListeners, 0);
-    };
-    const onMixedMouseUp = (event) => {
-      if (mixedDragActive) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      queueMicrotask(restoreMixedDrag);
-    };
-    const onMixedClick = (event) => {
-      if (!mixedDragActive) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-    };
-    const onMixedSelectionChange = () => {
-      if (!mixedDragActive) {
-        return;
-      }
-      const nativeSelection = doc2.defaultView?.getSelection();
-      if (nativeSelection && !nativeSelection.isCollapsed) {
-        nativeSelection.removeAllRanges();
-      }
-    };
-    const removeMixedDragListeners = () => {
-      const finalRange = mixedDragRange;
-      doc2.removeEventListener("pointermove", onMixedPointerMove, true);
-      doc2.removeEventListener("pointerup", onMixedPointerUp, true);
-      doc2.removeEventListener("pointercancel", onMixedPointerUp, true);
-      doc2.removeEventListener("mousemove", onMixedMouseMove, true);
-      doc2.removeEventListener("mouseup", onMixedMouseUp, true);
-      doc2.removeEventListener("click", onMixedClick, true);
-      doc2.removeEventListener("selectionchange", onMixedSelectionChange);
-      doc2.defaultView?.getSelection()?.removeAllRanges();
-      mixedDragAnchor = null;
-      mixedDragRange = null;
-      mixedDragActive = false;
-      if (finalRange) {
-        view2.dispatch({
-          selection: EditorSelection.range(finalRange.anchor, finalRange.head)
-        });
-      }
-    };
-    doc2.addEventListener("copy", onCopy, true);
-    doc2.addEventListener("cut", onCut, true);
-    doc2.addEventListener("paste", onPaste, true);
-    doc2.addEventListener("keydown", onKeyDown);
-    root2.addEventListener("contextmenu", onContextMenu, true);
-    root2.addEventListener("pointerdown", onRootPointerDown, true);
-    root2.addEventListener("mousedown", onRootMouseDown, true);
-    doc2.addEventListener("selectionchange", onNativeSelectionChange);
-    return () => {
-      removeMixedDragListeners();
-      doc2.removeEventListener("copy", onCopy, true);
-      doc2.removeEventListener("cut", onCut, true);
-      doc2.removeEventListener("paste", onPaste, true);
-      doc2.removeEventListener("keydown", onKeyDown);
-      root2.removeEventListener("contextmenu", onContextMenu, true);
-      root2.removeEventListener("pointerdown", onRootPointerDown, true);
-      root2.removeEventListener("mousedown", onRootMouseDown, true);
-      doc2.removeEventListener("selectionchange", onNativeSelectionChange);
-    };
-  }
-  function syncDocumentRangeSelection(view2) {
-    const range = view2.state.selection.main;
-    if (!range.empty && getTableRangeSelection(view2.dom.ownerDocument)) {
-      clearTableRangeSelection(view2.dom.ownerDocument);
-    }
-    const tables2 = getParsedTables(view2.state.doc);
-    view2.dom.ownerDocument.querySelectorAll(".mlrt-table-widget").forEach((wrapper) => {
-      const from = Number(wrapper.dataset.srcFrom ?? "-1");
-      const table2 = tables2.find((candidate) => candidate.from === from);
-      const cells = Array.from(
-        wrapper.querySelectorAll(".mlrt-table-cell")
-      );
-      const selectedAddresses = /* @__PURE__ */ new Set();
-      if (table2 && !range.empty) {
-        cells.forEach((cell2) => {
-          const span = renderedCellSourceSpan(cell2, table2);
-          if (span && range.from < span.to && range.to > span.from) {
-            selectedAddresses.add(renderedCellAddressKey(cell2));
-          }
-        });
-      }
-      cells.forEach((cell2) => {
-        const row = renderedCellRow(cell2);
-        const column = Number(cell2.dataset.column ?? "0");
-        const selected = selectedAddresses.has(renderedCellAddressKey(cell2));
-        cell2.classList.toggle("mlrt-document-range-selected", selected);
-        cell2.classList.toggle(
-          "mlrt-table-selection-top",
-          selected && !selectedAddresses.has(`${row - 1}:${column}`)
-        );
-        cell2.classList.toggle(
-          "mlrt-table-selection-bottom",
-          selected && !selectedAddresses.has(`${row + 1}:${column}`)
-        );
-        cell2.classList.toggle(
-          "mlrt-table-selection-left",
-          selected && !selectedAddresses.has(`${row}:${column - 1}`)
-        );
-        cell2.classList.toggle(
-          "mlrt-table-selection-right",
-          selected && !selectedAddresses.has(`${row}:${column + 1}`)
-        );
-      });
-      syncTableSelectionOutline(wrapper);
-    });
-  }
-  function renderedCellRow(cell2) {
-    return cell2.dataset.rowKind === "header" ? 0 : Number(cell2.dataset.rowIndex ?? "0") + 1;
-  }
-  function renderedCellAddressKey(cell2) {
-    return `${renderedCellRow(cell2)}:${Number(cell2.dataset.column ?? "0")}`;
-  }
-  function renderedCellSourceSpan(cell2, table2) {
-    const directFrom = Number(cell2.dataset.sourceFrom ?? "NaN");
-    const directTo = Number(cell2.dataset.sourceTo ?? "NaN");
-    if (Number.isFinite(directFrom) && Number.isFinite(directTo)) {
-      return { from: directFrom, to: Math.max(directFrom + 1, directTo) };
-    }
-    const row = cell2.dataset.rowKind === "header" ? table2.header : table2.body[Number(cell2.dataset.rowIndex ?? "0")];
-    if (!row) {
-      return null;
-    }
-    return { from: row.from, to: Math.max(row.from + 1, row.to) };
-  }
-  function documentRepresentations(view2, from, to, mode, suppliedPayload) {
-    const markdown2 = view2.state.doc.sliceString(from, to);
-    if (mode === "markdown") {
-      return { plain: markdown2, markdown: markdown2 };
-    }
-    const worksheet = buildClipboardWorksheet(markdown2, mode === "rich");
-    const plain = worksheet.plain;
-    if (mode === "plain") {
-      return { plain };
-    }
-    const rendered = worksheet.html;
-    const sanitized = purify.sanitize(rendered, {
-      FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
-      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
-    });
-    const payload = suppliedPayload ?? {
-      version: MLRT_CLIPBOARD_VERSION,
-      kind: "document",
-      sourceDocument: readDocumentUri2(view2.dom.ownerDocument),
-      markdown: markdown2
-    };
-    const privatePayload = JSON.stringify(payload);
-    const metadata = `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute2(
-      encodePayload(privatePayload)
-    )}">`;
-    return { plain, html: `${metadata}${sanitized}`, privatePayload };
-  }
-  function buildClipboardWorksheet(markdown2, rich) {
-    const tables2 = parseMarkdownTables(markdown2);
-    const rows = [];
-    let cursor = 0;
-    for (const table2 of tables2) {
-      rows.push(...proseWorksheetRows(markdown2.slice(cursor, table2.from)));
-      rows.push({
-        cells: tableRowDisplayValues(table2.header.cells.map((cell2) => cell2.raw)),
-        ...rich ? { richCells: tableRowRichValues(table2.header.cells.map((cell2) => cell2.raw)) } : {},
-        kind: "table-header",
-        alignments: table2.alignments
-      });
-      for (const row of table2.body) {
-        rows.push({
-          cells: tableRowDisplayValues(Array.from(
-            { length: table2.columnCount },
-            (_, column) => row.cells[column]?.raw ?? ""
-          )),
-          ...rich ? { richCells: tableRowRichValues(Array.from(
-            { length: table2.columnCount },
-            (_, column) => row.cells[column]?.raw ?? ""
-          )) } : {},
-          kind: "table-body",
-          alignments: table2.alignments
-        });
-      }
-      cursor = table2.to;
-    }
-    rows.push(...proseWorksheetRows(markdown2.slice(cursor)));
-    if (rows.length === 0) {
-      rows.push({ cells: [""], kind: "prose" });
-    }
-    const width = Math.max(1, ...rows.map((row) => row.cells.length));
-    const plain = serializeDelimitedGrid(
-      rows.map((row) => row.cells),
-      "	"
-    );
-    const htmlRows = rows.map((row) => {
-      const cells = Array.from({ length: width }, (_, column) => {
-        const value = row.cells[column] ?? "";
-        const isTable = row.kind !== "prose";
-        const alignment = row.alignments?.[column] ?? "left";
-        const tag = row.kind === "table-header" ? "th" : "td";
-        const style = isTable ? `border:1px solid #000000;padding:2px 6px;text-align:${alignment};vertical-align:top;white-space:pre-wrap` : "border:none;padding:2px 6px;text-align:left;vertical-align:top;white-space:pre-wrap";
-        const content2 = row.richCells?.[column] ?? escapeWorksheetText(value);
-        return `<${tag} style="${style}">${content2}</${tag}>`;
-      }).join("");
-      return `<tr data-mlrt-row-kind="${row.kind}">${cells}</tr>`;
-    }).join("");
-    return {
-      plain,
-      html: `<table data-mlrt-clipboard-layout="worksheet" style="border-collapse:collapse;border-spacing:0"><tbody>${htmlRows}</tbody></table>`
-    };
-  }
-  function proseWorksheetRows(markdown2) {
-    if (markdown2.trim().length === 0) {
-      return [];
-    }
-    const rendered = purify.sanitize(markdownRenderer.render(markdown2), {
-      FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
-      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
-    });
-    const parsed = new DOMParser().parseFromString(rendered, "text/html");
-    const values2 = [];
-    for (const child of Array.from(parsed.body.children)) {
-      if (child.tagName === "UL" || child.tagName === "OL") {
-        appendListValues(child, values2, 0);
-        continue;
-      }
-      visibleElementText(child).split("\n").map((value) => value.trimEnd()).filter((value) => value.length > 0).forEach((value) => values2.push(value));
-    }
-    return values2.map((value) => ({ cells: [value], kind: "prose" }));
-  }
-  function appendListValues(list2, values2, depth) {
-    const ordered = list2.tagName === "OL";
-    let index = Number(list2.getAttribute("start") ?? "1");
-    for (const item of Array.from(list2.children)) {
-      if (item.tagName !== "LI") {
-        continue;
-      }
-      const clone2 = item.cloneNode(true);
-      clone2.querySelectorAll(":scope > ul, :scope > ol").forEach((nested) => nested.remove());
-      const prefix = ordered ? `${index}. ` : "\u2022 ";
-      values2.push(`${"  ".repeat(depth)}${prefix}${visibleElementText(clone2).trim()}`);
-      for (const nested of Array.from(item.children)) {
-        if (nested.tagName === "UL" || nested.tagName === "OL") {
-          appendListValues(nested, values2, depth + 1);
-        }
-      }
-      index++;
-    }
-  }
-  function tableRowDisplayValues(rawCells) {
-    return rawCells.map((raw) => {
-      const displayed = markdownCellToDisplayText(raw).trim();
-      const rendered = markdownRenderer.renderInline(displayed);
-      const parsed = new DOMParser().parseFromString(rendered, "text/html");
-      return visibleElementText(parsed.body).trim();
-    });
-  }
-  function tableRowRichValues(rawCells) {
-    return rawCells.map((raw) => {
-      const sanitized = purify.sanitize(
-        richMarkdownRenderer.renderInline(
-          markdownCellToDisplayText(raw).trim()
-        ),
-        {
-          ALLOWED_TAGS: [
-            "a",
-            "b",
-            "strong",
-            "i",
-            "em",
-            "u",
-            "s",
-            "del",
-            "code",
-            "br",
-            "sub",
-            "sup"
-          ],
-          ALLOWED_ATTR: ["href", "title"],
-          ALLOW_UNKNOWN_PROTOCOLS: false
-        }
-      );
-      return excelSafeRichInline2(sanitized);
-    });
-  }
-  function excelSafeRichInline2(html3) {
-    const parsed = new DOMParser().parseFromString(html3, "text/html");
-    const replaceWithSpan = (selector, style) => {
-      parsed.body.querySelectorAll(selector).forEach((element) => {
-        const span = parsed.createElement("span");
-        span.setAttribute("style", style);
-        span.append(...Array.from(element.childNodes));
-        element.replaceWith(span);
-      });
-    };
-    replaceWithSpan("strong, b", "font-weight:700");
-    replaceWithSpan("em, i", "font-style:italic");
-    replaceWithSpan("code", "font-family:monospace");
-    replaceWithSpan("s, del", "text-decoration:line-through");
-    parsed.body.querySelectorAll("br").forEach(
-      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
-    );
-    return parsed.body.innerHTML;
-  }
-  function visibleElementText(element) {
-    const clone2 = element.cloneNode(true);
-    clone2.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
-    return (clone2.textContent ?? "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
-  }
-  function escapeWorksheetText(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\n/g, "<br>");
-  }
-  function writeDocumentTransfer(transfer, representations) {
-    transfer.setData("text/plain", representations.plain);
-    if (representations.html) {
-      transfer.setData("text/html", representations.html);
-    }
-    if (representations.markdown) {
-      transfer.setData("text/markdown", representations.markdown);
-    }
-    if (representations.privatePayload) {
-      transfer.setData(MLRT_CLIPBOARD_MIME, representations.privatePayload);
-    }
-  }
-  function readTransfer(transfer) {
-    return {
-      privatePayload: transfer.getData(MLRT_CLIPBOARD_MIME) || void 0,
-      html: transfer.getData("text/html") || void 0,
-      markdown: transfer.getData("text/markdown") || void 0,
-      plain: transfer.getData("text/plain")
-    };
-  }
-  function documentPasteMarkdown(data2, mode) {
-    if (mode !== "plain" && mode !== "markdown") {
-      const privatePayload = readPrivateDocumentPayload(data2);
-      if (privatePayload) {
-        return privatePayload.markdown;
-      }
-    }
-    if (mode === "markdown") {
-      return normalizeText(data2.markdown ?? data2.plain ?? "");
-    }
-    if (mode !== "plain" && data2.html) {
-      return htmlToReadableMarkdown(data2.html);
-    }
-    if (data2.markdown && mode !== "plain") {
-      return normalizeText(data2.markdown);
-    }
-    return data2.plain === void 0 ? null : normalizeText(data2.plain);
-  }
-  function htmlToReadableMarkdown(html3) {
-    const classStyles = officeClassStyles(html3);
-    const sanitized = purify.sanitize(html3, {
-      FORBID_TAGS: [
-        "script",
-        "style",
-        "meta",
-        "link",
-        "object",
-        "embed",
-        "iframe",
-        "form",
-        "input"
-      ],
-      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
-    });
-    const parsed = new DOMParser().parseFromString(sanitized, "text/html");
-    const replacements = /* @__PURE__ */ new Map();
-    Array.from(parsed.querySelectorAll("table")).forEach((table2, index) => {
-      const token = `MLRTTABLETOKEN${index}X`;
-      replacements.set(token, htmlTableToReadableMarkdown(table2, classStyles));
-      table2.replaceWith(parsed.createTextNode(token));
-    });
-    let markdown2 = turndown.turndown(parsed.body.innerHTML);
-    replacements.forEach((replacement, token) => {
-      markdown2 = markdown2.replace(token, `
-
-${replacement}
-
-`);
-    });
-    return normalizeText(markdown2).replace(/\n{3,}/g, "\n\n").trimEnd();
-  }
-  function htmlTableToReadableMarkdown(table2, classStyles) {
-    const rows = [];
-    Array.from(table2.rows).forEach((row, rowIndex) => {
-      rows[rowIndex] ??= [];
-      let column = 0;
-      Array.from(row.cells).forEach((cell2) => {
-        while (rows[rowIndex][column] !== void 0) {
-          column++;
-        }
-        const markdown2 = htmlCellToMarkdown(cell2);
-        const bordered = cellHasVisibleBorder(cell2, classStyles);
-        const rowSpan = Math.max(1, cell2.rowSpan || 1);
-        const columnSpan = Math.max(1, cell2.colSpan || 1);
-        for (let rowOffset = 0; rowOffset < rowSpan; rowOffset++) {
-          rows[rowIndex + rowOffset] ??= [];
-          for (let columnOffset = 0; columnOffset < columnSpan; columnOffset++) {
-            rows[rowIndex + rowOffset][column + columnOffset] = {
-              markdown: rowOffset === 0 && columnOffset === 0 ? markdown2 : "",
-              bordered
-            };
-          }
-        }
-        column += columnSpan;
-      });
-    });
-    if (rows.length === 0) {
-      return "";
-    }
-    const width = Math.max(...rows.map((row) => row.length));
-    const normalized = rows.map(
-      (row) => Array.from(
-        { length: width },
-        (_, column) => row[column] ?? {
-          markdown: "",
-          bordered: false
-        }
-      )
-    );
-    const borderedRows = normalized.map(
-      (row) => row.some((cell2) => cell2.bordered)
-    );
-    const hasBorderedRows = borderedRows.some(Boolean);
-    const hasUnborderedRows = borderedRows.some((bordered) => !bordered);
-    if (!hasBorderedRows || !hasUnborderedRows) {
-      return importedRowsToMarkdownTable(normalized);
-    }
-    const blocks = [];
-    let index = 0;
-    while (index < normalized.length) {
-      if (borderedRows[index]) {
-        const start = index;
-        while (index < normalized.length && borderedRows[index]) {
-          index++;
-        }
-        blocks.push(importedRowsToMarkdownTable(normalized.slice(start, index)));
-        continue;
-      }
-      const prose = importedRowToProse(normalized[index]);
-      if (prose.length > 0) {
-        blocks.push(prose);
-      }
-      index++;
-    }
-    return blocks.join("\n\n");
-  }
-  function importedRowsToMarkdownTable(rows) {
-    const width = Math.max(1, ...rows.map((row) => row.length));
-    const sourceRows = rows.length > 0 ? rows : [[]];
-    const renderRow = (row) => `| ${Array.from(
-      { length: width },
-      (_, column) => markdownForTableCell(row[column]?.markdown ?? "")
-    ).join(" | ")} |`;
-    return [
-      renderRow(sourceRows[0]),
-      `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
-      ...sourceRows.slice(1).map(renderRow)
-    ].join("\n");
-  }
-  function importedRowToProse(row) {
-    const populated = row.map((cell2, column) => ({ column, value: cell2.markdown.trim() })).filter(({ value }) => value.length > 0);
-    if (populated.length === 0) {
-      return "";
-    }
-    if (populated.length === 1) {
-      return populated[0].value.replace(/^(\s*)[•·]\s+/, "$1- ");
-    }
-    return Array.from(
-      { length: populated[populated.length - 1].column + 1 },
-      (_, column) => row[column]?.markdown.trim() ?? ""
-    ).join("	");
-  }
-  function htmlCellToMarkdown(cell2) {
-    const clone2 = cell2.cloneNode(true);
-    clone2.querySelectorAll(
-      [
-        "[hidden]",
-        '[style*="display:none"]',
-        '[style*="display: none"]',
-        '[style*="visibility:hidden"]',
-        '[style*="visibility: hidden"]',
-        '[style*="mso-hide"]'
-      ].join(",")
-    ).forEach((element) => element.remove());
-    clone2.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
-    return normalizeText(turndown.turndown(clone2.innerHTML)).replace(/\n{2,}/g, "\n").trim();
-  }
-  function markdownForTableCell(value) {
-    return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
-  }
-  function officeClassStyles(html3) {
-    const styles = /* @__PURE__ */ new Map();
-    const styleBlocks = Array.from(html3.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi));
-    for (const styleBlock of styleBlocks) {
-      const css2 = styleBlock[1];
-      for (const rule of css2.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-        const declaration2 = rule[2];
-        for (const classMatch of rule[1].matchAll(/\.([a-zA-Z_][\w-]*)/g)) {
-          const className = classMatch[1];
-          styles.set(
-            className,
-            `${styles.get(className) ?? ""};${declaration2}`
-          );
-        }
-      }
-    }
-    return styles;
-  }
-  function cellHasVisibleBorder(cell2, classStyles) {
-    const css2 = [
-      cell2.getAttribute("style") ?? "",
-      ...Array.from(cell2.classList).map((className) => classStyles.get(className) ?? "")
-    ].join(";");
-    return /(?:^|;)\s*border(?:-(?:top|right|bottom|left))?\s*:\s*(?!(?:none|0(?:px|pt)?)(?:\s|;|$))[^;]+/i.test(css2);
-  }
-  function applyDocumentPaste(view2, markdown2, data2) {
-    const range = atomicDocumentSelection(view2) ?? view2.state.selection.main;
-    const payload = readPrivateDocumentPayload(data2);
-    const pending = pendingDocumentCut;
-    const completesMove = Boolean(
-      pending && payload?.cutToken === pending.token && payload.sourceDocument === readDocumentUri2(view2.dom.ownerDocument)
-    );
-    if (completesMove && pending) {
-      if (view2.state.doc.sliceString(pending.from, pending.to) !== pending.markdown || rangesOverlap(
-        { from: pending.from, to: pending.to },
-        { from: range.from, to: range.to }
-      ) || range.empty && range.from > pending.from && range.from < pending.to) {
-        announce2(view2.dom.ownerDocument, "Move cancelled because source and destination overlap or changed.");
-        pendingDocumentCut = null;
-        view2.dom.classList.remove("mlrt-document-cut-pending");
-        return;
-      }
-      const changes = [
-        { from: pending.from, to: pending.to, insert: "" },
-        { from: range.from, to: range.to, insert: markdown2 }
-      ].sort((left, right) => left.from - right.from);
-      view2.dispatch({
-        changes,
-        annotations: [
-          allowTableSourceChange.of(true),
-          Transaction.addToHistory.of(true)
-        ],
-        userEvent: "input.paste"
-      });
-    } else {
-      view2.dispatch({
-        changes: { from: range.from, to: range.to, insert: markdown2 },
-        selection: EditorSelection.cursor(range.from + markdown2.length, 1),
-        annotations: [
-          allowTableSourceChange.of(true),
-          Transaction.addToHistory.of(true)
-        ],
-        userEvent: "input.paste"
-      });
-    }
-    pendingDocumentCut = null;
-    view2.dom.classList.remove("mlrt-document-cut-pending");
-  }
-  function readPrivateDocumentPayload(data2) {
-    const direct = data2.privatePayload ? parseClipboardPayload(data2.privatePayload) : null;
-    if (direct?.kind === "document") {
-      return direct;
-    }
-    if (!data2.html) {
-      return null;
-    }
-    const parsed = new DOMParser().parseFromString(data2.html, "text/html");
-    const encoded = parsed.querySelector(
-      'meta[name="mlrt-clipboard"]'
-    )?.content;
-    if (!encoded) {
-      return null;
-    }
-    const text3 = decodePayload(encoded);
-    const payload = text3 ? parseClipboardPayload(text3) : null;
-    return payload?.kind === "document" ? payload : null;
-  }
-  function atomicDocumentSelection(view2) {
-    const selection = view2.state.selection.main;
-    if (selection.empty) {
-      return null;
-    }
-    let from = selection.from;
-    let to = selection.to;
-    for (const table2 of getParsedTables(view2.state.doc)) {
-      if (from < table2.to && to > table2.from) {
-        from = Math.min(from, table2.from);
-        to = Math.max(to, table2.to);
-      }
-    }
-    return { from, to, empty: false };
-  }
-  function showDocumentMenu(doc2, view2, clientX, clientY) {
-    doc2.querySelector(".mlrt-document-clipboard-menu")?.remove();
-    const menu = doc2.createElement("div");
-    menu.className = "mlrt-clipboard-menu mlrt-document-clipboard-menu";
-    menu.setAttribute("role", "menu");
-    const add2 = (label, callback) => {
-      const item = doc2.createElement("button");
-      item.type = "button";
-      item.className = "mlrt-clipboard-menu-item";
-      item.textContent = label;
-      item.addEventListener("click", () => {
-        menu.remove();
-        callback();
-      });
-      menu.append(item);
-    };
-    add2("Cut / Move within document", () => doc2.execCommand("cut"));
-    ["smart", "rich", "plain", "markdown"].forEach(
-      (mode) => add2(`Copy ${capitalize(mode)}`, () => {
-        requestedDocumentCopyMode = mode;
-        doc2.execCommand("copy");
-      })
-    );
-    ["auto", "rich", "plain", "markdown"].forEach(
-      (mode) => add2(`Paste ${capitalize(mode)}`, () => {
-        armedDocumentPasteMode = mode;
-        announce2(doc2, `Paste ${capitalize(mode)} armed \u2014 press Cmd/Ctrl+V.`);
-      })
-    );
-    add2(
-      "Clipboard Settings\u2026",
-      () => view2.dom.dispatchEvent(
-        new CustomEvent("mlrt:open-clipboard-settings", { bubbles: true })
-      )
-    );
-    doc2.body.append(menu);
-    menu.style.position = "fixed";
-    menu.style.left = `${Math.min(clientX, innerWidth - menu.offsetWidth - 4)}px`;
-    menu.style.top = `${Math.min(clientY, innerHeight - menu.offsetHeight - 4)}px`;
-    menu.querySelector("button")?.focus();
-    const close = (event) => {
-      if (event.target instanceof Node && !menu.contains(event.target)) {
-        menu.remove();
-        doc2.removeEventListener("pointerdown", close, true);
-      }
-    };
-    doc2.addEventListener("pointerdown", close, true);
-  }
-  function announce2(doc2, message) {
-    let status = doc2.querySelector(".mlrt-clipboard-status");
-    if (!status) {
-      status = doc2.createElement("div");
-      status.className = "mlrt-clipboard-status";
-      status.setAttribute("role", "status");
-      status.setAttribute("aria-live", "polite");
-      doc2.body.append(status);
-    }
-    status.textContent = message;
-    status.dataset.visible = "true";
-    setTimeout(() => {
-      if (status?.textContent === message) {
-        delete status.dataset.visible;
-      }
-    }, 2400);
-  }
-  function readCopyMode(doc2) {
-    const value = doc2.documentElement.dataset.mlrtDefaultCopyMode;
-    return value === "rich" || value === "plain" || value === "markdown" ? value : "smart";
-  }
-  function readPasteMode(doc2) {
-    const value = doc2.documentElement.dataset.mlrtDefaultPasteMode;
-    return value === "rich" || value === "plain" || value === "markdown" ? value : "auto";
-  }
-  function readDocumentUri2(doc2) {
-    return doc2.documentElement.dataset.mlrtDocumentUri ?? "";
-  }
-  function normalizeText(value) {
-    return value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
-  }
-  function rangesOverlap(left, right) {
-    return left.from < right.to && right.from < left.to;
-  }
-  function createToken2() {
-    return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
-  function encodePayload(value) {
-    const bytes = new TextEncoder().encode(value);
-    let binary = "";
-    bytes.forEach((byte) => {
-      binary += String.fromCharCode(byte);
-    });
-    return btoa(binary);
-  }
-  function decodePayload(value) {
-    try {
-      return new TextDecoder().decode(
-        Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
-      );
-    } catch {
-      return null;
-    }
-  }
-  function escapeHtmlAttribute2(value) {
-    return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-  function capitalize(value) {
-    return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
   }
 
   // src/webview/liveEditor.ts
@@ -37364,6 +39634,11 @@ ${replacement}
   var lastTableCellCommit = null;
   var nextWebviewChangeId = 1;
   var hostDocumentApplyToken = 0;
+  var editorCompositionActive = false;
+  var pendingEditorComposition = null;
+  var editorCompositionFlushTimer = null;
+  var deferredHostDocumentDuringEditorComposition = null;
+  var pendingEditorCommandsAfterComposition = [];
   var editorOptions = readEditorOptions();
   var pendingWebviewEchoes = [];
   var pendingHostUndoFocusStack = [];
@@ -37383,8 +39658,24 @@ ${replacement}
         extensions: [
           ...editorExtensions,
           EditorView.updateListener.of((update) => {
+            if (update.docChanged && getPendingClipboardCut(update.view.dom.ownerDocument)) {
+              clearPendingClipboardCut(update.view.dom.ownerDocument);
+              setPendingCutToken(update.view.dom.ownerDocument, void 0);
+              update.view.dom.classList.remove("mlrt-document-cut-pending");
+            }
+            const projectionAuthoredSelection = update.transactions.some(
+              (transaction) => transaction.annotation(documentSelectionProjectionTransaction) === true
+            );
+            if (update.docChanged || update.selectionSet && !projectionAuthoredSelection) {
+              clearDocumentSelectionProjection(update.view.dom.ownerDocument);
+            }
+            if (update.selectionSet || update.focusChanged || update.docChanged || update.viewportChanged) {
+              syncDocumentRangeSelection(
+                update.view,
+                update.viewportChanged && !update.selectionSet && !update.focusChanged && !update.docChanged
+              );
+            }
             if (update.selectionSet || update.focusChanged || update.docChanged) {
-              syncDocumentRangeSelection(update.view);
               recordDebug("editor-update", {
                 docChanged: update.docChanged,
                 focusChanged: update.focusChanged,
@@ -37394,33 +39685,14 @@ ${replacement}
               });
             }
             if (update.docChanged && !applyingFromHost) {
-              const commitSequence = getTableCellCommitSequence(update);
-              if (commitSequence) {
-                pushTableCellCommitUndoFocus(
-                  update.startState.doc.toString(),
-                  commitSequence
-                );
-              } else {
-                pushPendingHostUndoFocus({
-                  beforeText: update.startState.doc.toString(),
-                  restore: lastTableCellCommit ? { kind: "tableCell", detail: lastTableCellCommit } : {
-                    kind: "editor",
-                    anchor: update.startState.selection.main.head
-                  }
-                });
-              }
-              lastTableCellCommit = null;
-              postDocumentChanges(
-                update.changes,
-                update.state.doc.toString(),
-                commitSequence
-              );
+              publishEditorDocumentUpdate(update);
             }
           })
         ]
       })
     });
     window.__MLRT_EDITOR_VIEW__ = view;
+    installEditorCompositionBatching(view);
     applyClipboardOptions(editorOptions);
     updateStatus(initialDocument, "embedded");
     installEditorCommandBridge(app);
@@ -37436,13 +39708,18 @@ ${replacement}
   }
   window.addEventListener("message", (event) => {
     const message = event.data;
+    if (isHostSetEditorOptionsMessage(message)) {
+      updateEditorOptions(message.editorOptions);
+      return;
+    }
     if (!isHostSetDocumentMessage(message)) {
       return;
     }
     hostRevision = message.revision;
     debugEnabled = message.debug;
-    editorOptions = normalizeEditorOptions(message.editorOptions);
-    applyClipboardOptions(editorOptions);
+    if (isEditorOptions(message.editorOptions)) {
+      updateEditorOptions(message.editorOptions);
+    }
     if (message.source === "webviewAck") {
       if (typeof message.ackId === "number") {
         acknowledgeWebviewEcho(
@@ -37458,16 +39735,20 @@ ${replacement}
       }
       return;
     }
-    setEditorDocument(message.text, `host revision ${message.revision}`);
+    const source = `host revision ${message.revision}`;
+    if (reconcileEditorCompositionWithHostDocument(message.text, source)) {
+      return;
+    }
+    setEditorDocument(message.text, source);
   });
   vscode.postMessage({ type: "ready" });
-  function setEditorDocument(text3, source) {
+  function setEditorDocument(text3, source, restorePendingUndoFocus = true) {
     const currentText = view.state.doc.toString();
     updateStatus(text3, source);
     if (text3 === currentText) {
       return;
     }
-    const undoFocus = popPendingHostUndoFocus(text3);
+    const undoFocus = restorePendingUndoFocus ? popPendingHostUndoFocus(text3) : null;
     const hostChange = computeMinimalTextChange(currentText, text3);
     markHostDocumentApplyInProgress();
     const returnFocusToEditor = undoFocus?.restore.kind === "editor";
@@ -37569,6 +39850,20 @@ ${replacement}
     );
   }
   function dispatchUndoRedo(command) {
+    if (editorCompositionActive || view.compositionStarted) {
+      pendingEditorCommandsAfterComposition.push(command);
+      recordDebug("defer-editor-command-for-composition", {
+        command,
+        editorCompositionActive,
+        codeMirrorCompositionStarted: view.compositionStarted,
+        pendingCommandCount: pendingEditorCommandsAfterComposition.length
+      });
+      scheduleEditorCompositionFlush();
+      return;
+    }
+    cancelEditorCompositionFlush();
+    flushEditorComposition();
+    flushPendingEditorCommandsAfterComposition();
     postEditorCommand(command);
   }
   function getUndoRedoCommand(event) {
@@ -37707,38 +40002,296 @@ ${replacement}
   }
   function readEditorOptions() {
     const options = window.__MLRT_EDITOR_OPTIONS__;
+    const defaults = {
+      lineWrapping: true,
+      clipboardDocumentToken: createClipboardDocumentToken(),
+      defaultCopyMode: "smart",
+      defaultPasteMode: "auto"
+    };
     if (!options || typeof options !== "object") {
-      return {
-        lineWrapping: true,
-        documentUri: "",
-        defaultCopyMode: "smart",
-        defaultPasteMode: "auto"
-      };
+      return defaults;
     }
     const optionRecord = options;
-    return normalizeEditorOptions({
-      lineWrapping: typeof optionRecord.lineWrapping === "boolean" ? optionRecord.lineWrapping : true,
-      documentUri: typeof optionRecord.documentUri === "string" ? optionRecord.documentUri : "",
-      defaultCopyMode: optionRecord.defaultCopyMode,
-      defaultPasteMode: optionRecord.defaultPasteMode
-    });
+    return normalizeEditorOptions(
+      {
+        lineWrapping: typeof optionRecord.lineWrapping === "boolean" ? optionRecord.lineWrapping : true,
+        clipboardDocumentToken: optionRecord.clipboardDocumentToken,
+        defaultCopyMode: optionRecord.defaultCopyMode,
+        defaultPasteMode: optionRecord.defaultPasteMode
+      },
+      defaults
+    );
   }
-  function normalizeEditorOptions(value) {
+  function normalizeEditorOptions(value, fallback) {
     const record = value && typeof value === "object" ? value : {};
     const defaultCopyMode = record.defaultCopyMode;
     const defaultPasteMode = record.defaultPasteMode;
     return {
-      lineWrapping: typeof record.lineWrapping === "boolean" ? record.lineWrapping : true,
-      documentUri: typeof record.documentUri === "string" ? record.documentUri : "",
-      defaultCopyMode: defaultCopyMode === "rich" || defaultCopyMode === "plain" || defaultCopyMode === "markdown" ? defaultCopyMode : "smart",
-      defaultPasteMode: defaultPasteMode === "rich" || defaultPasteMode === "plain" || defaultPasteMode === "markdown" ? defaultPasteMode : "auto"
+      lineWrapping: typeof record.lineWrapping === "boolean" ? record.lineWrapping : fallback.lineWrapping,
+      clipboardDocumentToken: typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 ? record.clipboardDocumentToken : fallback.clipboardDocumentToken,
+      defaultCopyMode: defaultCopyMode === "smart" || defaultCopyMode === "rich" || defaultCopyMode === "plain" || defaultCopyMode === "markdown" ? defaultCopyMode : fallback.defaultCopyMode,
+      defaultPasteMode: defaultPasteMode === "auto" || defaultPasteMode === "rich" || defaultPasteMode === "plain" || defaultPasteMode === "markdown" ? defaultPasteMode : fallback.defaultPasteMode
     };
   }
   function applyClipboardOptions(options) {
     const root2 = document.documentElement;
-    root2.dataset.mlrtDocumentUri = options.documentUri;
+    root2.dataset.mlrtDocumentToken = options.clipboardDocumentToken;
     root2.dataset.mlrtDefaultCopyMode = options.defaultCopyMode;
     root2.dataset.mlrtDefaultPasteMode = options.defaultPasteMode;
+  }
+  function updateEditorOptions(value) {
+    const nextOptions = normalizeEditorOptions(value, editorOptions);
+    const lineWrappingChanged = nextOptions.lineWrapping !== editorOptions.lineWrapping;
+    editorOptions = nextOptions;
+    applyClipboardOptions(editorOptions);
+    if (lineWrappingChanged) {
+      view.dispatch({
+        effects: lineWrappingCompartment.reconfigure(
+          editorOptions.lineWrapping ? EditorView.lineWrapping : []
+        )
+      });
+    }
+  }
+  function createClipboardDocumentToken() {
+    return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  function installEditorCompositionBatching(editorView) {
+    const belongsToSourceEditor = (event) => event.target instanceof Node && !findCell(event.target) && editorView.contentDOM.contains(event.target);
+    editorView.contentDOM.addEventListener(
+      "compositionstart",
+      (event) => {
+        if (!belongsToSourceEditor(event)) {
+          return;
+        }
+        editorCompositionActive = true;
+        cancelEditorCompositionFlush();
+      },
+      true
+    );
+    editorView.contentDOM.addEventListener(
+      "compositionend",
+      (event) => {
+        if (!belongsToSourceEditor(event)) {
+          return;
+        }
+        editorCompositionActive = false;
+        scheduleEditorCompositionFlush();
+      },
+      true
+    );
+  }
+  function publishEditorDocumentUpdate(update) {
+    if (deferredHostDocumentDuringEditorComposition) {
+      lastTableCellCommit = null;
+      recordDebug("discard-editor-update-after-host-composition-conflict", {
+        editorCompositionActive,
+        codeMirrorCompositionStarted: update.view.compositionStarted,
+        documentLength: update.state.doc.length
+      });
+      if (!editorCompositionActive && !update.view.compositionStarted) {
+        scheduleEditorCompositionFlush();
+      }
+      return;
+    }
+    const commitSequence = getTableCellCommitSequence(update);
+    const shouldBatchComposition = !commitSequence && (editorCompositionActive || update.view.compositionStarted || pendingEditorComposition !== null);
+    if (shouldBatchComposition) {
+      if (pendingEditorComposition) {
+        pendingEditorComposition.changes = pendingEditorComposition.changes.compose(update.changes);
+      } else {
+        pendingEditorComposition = {
+          changes: update.changes,
+          beforeText: update.startState.doc.toString(),
+          beforeAnchor: update.startState.selection.main.head
+        };
+      }
+      lastTableCellCommit = null;
+      if (!editorCompositionActive && !update.view.compositionStarted) {
+        scheduleEditorCompositionFlush();
+      }
+      return;
+    }
+    if (commitSequence) {
+      pushTableCellCommitUndoFocus(
+        update.startState.doc.toString(),
+        commitSequence
+      );
+    } else {
+      pushPendingHostUndoFocus({
+        beforeText: update.startState.doc.toString(),
+        restore: lastTableCellCommit ? { kind: "tableCell", detail: lastTableCellCommit } : {
+          kind: "editor",
+          anchor: update.startState.selection.main.head
+        }
+      });
+    }
+    lastTableCellCommit = null;
+    postDocumentChanges(
+      update.changes,
+      update.state.doc.toString(),
+      commitSequence
+    );
+  }
+  function scheduleEditorCompositionFlush() {
+    cancelEditorCompositionFlush();
+    editorCompositionFlushTimer = window.setTimeout(() => {
+      editorCompositionFlushTimer = null;
+      if (editorCompositionActive || view.compositionStarted) {
+        scheduleEditorCompositionFlush();
+        return;
+      }
+      flushEditorComposition();
+      flushPendingEditorCommandsAfterComposition();
+    }, 10);
+  }
+  function cancelEditorCompositionFlush() {
+    if (editorCompositionFlushTimer === null) {
+      return;
+    }
+    window.clearTimeout(editorCompositionFlushTimer);
+    editorCompositionFlushTimer = null;
+  }
+  function flushEditorComposition() {
+    const deferredHostDocument = deferredHostDocumentDuringEditorComposition;
+    if (deferredHostDocument) {
+      deferredHostDocumentDuringEditorComposition = null;
+      pendingEditorComposition = null;
+      recordDebug("reapply-host-document-after-canceled-composition", {
+        source: deferredHostDocument.source,
+        documentLength: deferredHostDocument.text.length
+      });
+      setEditorDocument(
+        deferredHostDocument.text,
+        `${deferredHostDocument.source} after canceled composition`,
+        false
+      );
+      return;
+    }
+    const composition = pendingEditorComposition;
+    pendingEditorComposition = null;
+    if (!composition) {
+      return;
+    }
+    const finalText = view.state.doc.toString();
+    const changes = validateOrRebuildEditorCompositionChanges(
+      composition,
+      finalText
+    );
+    if (changes.empty) {
+      return;
+    }
+    pushPendingHostUndoFocus({
+      beforeText: composition.beforeText,
+      restore: {
+        kind: "editor",
+        anchor: composition.beforeAnchor
+      }
+    });
+    postDocumentChanges(changes, finalText);
+  }
+  function flushPendingEditorCommandsAfterComposition() {
+    if (pendingEditorCommandsAfterComposition.length === 0) {
+      return;
+    }
+    const commands = pendingEditorCommandsAfterComposition.splice(0);
+    for (const command of commands) {
+      postEditorCommand(command);
+    }
+  }
+  function validateOrRebuildEditorCompositionChanges(composition, finalText) {
+    let composedText = null;
+    try {
+      const baseDocument = EditorState.create({
+        doc: composition.beforeText
+      }).doc;
+      composedText = composition.changes.apply(baseDocument).toString();
+    } catch (error2) {
+      recordDebug("invalid-editor-composition-changes", {
+        error: String(error2),
+        beforeTextLength: composition.beforeText.length,
+        finalTextLength: finalText.length
+      });
+    }
+    if (composedText === finalText) {
+      return composition.changes;
+    }
+    const replacement = computeMinimalTextChange(
+      composition.beforeText,
+      finalText
+    );
+    recordDebug("rebuild-editor-composition-changes", {
+      beforeTextLength: composition.beforeText.length,
+      composedTextLength: composedText?.length,
+      finalTextLength: finalText.length,
+      replacementFrom: replacement.from,
+      replacementTo: replacement.to,
+      replacementInsertLength: replacement.insert.length
+    });
+    return ChangeSet.of(replacement, composition.beforeText.length);
+  }
+  function reconcileEditorCompositionWithHostDocument(text3, source) {
+    const composition = pendingEditorComposition;
+    const compositionInProgress = editorCompositionActive || view.compositionStarted;
+    const currentText = view.state.doc.toString();
+    if (!composition && !compositionInProgress && !deferredHostDocumentDuringEditorComposition) {
+      return false;
+    }
+    if (!deferredHostDocumentDuringEditorComposition && composition && text3 === composition.beforeText) {
+      updateStatus(currentText, `${source} confirmed composition base`);
+      recordDebug("host-confirmed-editor-composition-base", {
+        source,
+        editorCompositionActive,
+        codeMirrorCompositionStarted: view.compositionStarted,
+        beforeTextLength: composition.beforeText.length,
+        currentTextLength: currentText.length
+      });
+      return true;
+    }
+    if (!deferredHostDocumentDuringEditorComposition && composition && text3 === currentText) {
+      cancelEditorCompositionFlush();
+      pendingEditorComposition = null;
+      pushPendingHostUndoFocus({
+        beforeText: composition.beforeText,
+        restore: {
+          kind: "editor",
+          anchor: composition.beforeAnchor
+        }
+      });
+      updateStatus(text3, `${source} settled composition`);
+      recordDebug("host-settled-editor-composition", {
+        source,
+        editorCompositionActive,
+        codeMirrorCompositionStarted: view.compositionStarted,
+        documentLength: text3.length
+      });
+      if (!compositionInProgress) {
+        flushPendingEditorCommandsAfterComposition();
+      }
+      return true;
+    }
+    if (!deferredHostDocumentDuringEditorComposition && !composition && text3 === currentText) {
+      return false;
+    }
+    cancelEditorCompositionFlush();
+    pendingEditorComposition = null;
+    lastTableCellCommit = null;
+    deferredHostDocumentDuringEditorComposition = compositionInProgress ? { text: text3, source } : null;
+    recordDebug("cancel-editor-composition-for-host-document", {
+      source,
+      editorCompositionActive,
+      codeMirrorCompositionStarted: view.compositionStarted,
+      beforeTextLength: composition?.beforeText.length,
+      currentTextLength: currentText.length,
+      hostTextLength: text3.length,
+      deferredReplay: compositionInProgress
+    });
+    if (compositionInProgress) {
+      scheduleEditorCompositionFlush();
+    } else {
+      setEditorDocument(text3, source);
+      flushPendingEditorCommandsAfterComposition();
+    }
+    return true;
   }
   function postDocumentChanges(changes, text3, commitSequence) {
     const documentChanges = [];
@@ -37923,6 +40476,20 @@ ${String(error2)}`;
   }
   function isHostSetDocumentMessage(message) {
     return Boolean(message) && typeof message === "object" && message.type === "setDocument" && typeof message.text === "string" && typeof message.revision === "number";
+  }
+  function isHostSetEditorOptionsMessage(message) {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
+    const record = message;
+    return record.type === "setEditorOptions" && isEditorOptions(record.editorOptions);
+  }
+  function isEditorOptions(value) {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    const record = value;
+    return typeof record.lineWrapping === "boolean" && typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 && (record.defaultCopyMode === "smart" || record.defaultCopyMode === "rich" || record.defaultCopyMode === "plain" || record.defaultCopyMode === "markdown") && (record.defaultPasteMode === "auto" || record.defaultPasteMode === "rich" || record.defaultPasteMode === "plain" || record.defaultPasteMode === "markdown");
   }
   function isTableCellCommitDetail(detail) {
     if (!detail || typeof detail !== "object") {

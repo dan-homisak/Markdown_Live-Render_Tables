@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import {
   mapNormalizedDocumentChangesToHost,
@@ -72,6 +73,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     const scriptText = this.readMediaText("liveEditor.js");
     const styleText = this.readMediaText("liveEditor.css");
     const documentKey = document.uri.toString();
+    const clipboardDocumentToken = randomUUID();
 
     this.panelsByDocument.set(documentKey, webviewPanel);
     if (webviewPanel.active) {
@@ -101,10 +103,23 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         text,
         revision: documentRevision,
         debug: isDebugEnabled(),
-        editorOptions: getEditorOptions(document.uri),
+        editorOptions: getEditorOptions(
+          document.uri,
+          clipboardDocumentToken,
+        ),
         source,
         ackId,
       } satisfies HostSetDocumentMessage);
+    };
+
+    const postEditorOptions = (): void => {
+      void webview.postMessage({
+        type: "setEditorOptions",
+        editorOptions: getEditorOptions(
+          document.uri,
+          clipboardDocumentToken,
+        ),
+      } satisfies HostSetEditorOptionsMessage);
     };
 
     const applyFromWebview = (message: ChangeMessage): void => {
@@ -172,7 +187,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
             document.uri,
           )
         ) {
-          postDocument();
+          postEditorOptions();
         }
       }),
       webviewPanel.onDidChangeViewState((event) => {
@@ -237,6 +252,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       styleText,
       normalizeDocumentText(document.getText()),
       document.uri,
+      clipboardDocumentToken,
     );
 
     webviewPanel.onDidDispose(() => {
@@ -450,6 +466,11 @@ interface HostSetDocumentMessage {
   editorOptions: ReturnType<typeof getEditorOptions>;
 }
 
+interface HostSetEditorOptionsMessage {
+  type: "setEditorOptions";
+  editorOptions: ReturnType<typeof getEditorOptions>;
+}
+
 interface OpenClipboardSettingsMessage {
   type: "openClipboardSettings";
 }
@@ -554,6 +575,7 @@ function getEditorHtml(
   styleText: string,
   initialText: string,
   documentUri: vscode.Uri,
+  clipboardDocumentToken: string,
 ): string {
   const nonce = getNonce();
   const initialDocumentScript = JSON.stringify(initialText).replace(
@@ -561,7 +583,9 @@ function getEditorHtml(
     "<\\/script",
   );
   const editorMetricsCss = getEditorMetricsCss(documentUri);
-  const editorOptionsScript = JSON.stringify(getEditorOptions(documentUri));
+  const editorOptionsScript = JSON.stringify(
+    getEditorOptions(documentUri, clipboardDocumentToken),
+  );
   const inlineScript = scriptText.replace(/<\/script/gi, "<\\/script");
   return `<!DOCTYPE html>
 <html lang="en">
@@ -660,9 +684,12 @@ function getEditorMetricsCss(documentUri: vscode.Uri): string {
  * for markdown files (VS Code defaults markdown to "on"), so the webview
  * matches what the stock editor would do for the same document.
  */
-function getEditorOptions(documentUri: vscode.Uri): {
+function getEditorOptions(
+  documentUri: vscode.Uri,
+  clipboardDocumentToken: string,
+): {
   lineWrapping: boolean;
-  documentUri: string;
+  clipboardDocumentToken: string;
   defaultCopyMode: "smart" | "rich" | "plain" | "markdown";
   defaultPasteMode: "auto" | "rich" | "plain" | "markdown";
 } {
@@ -677,7 +704,7 @@ function getEditorOptions(documentUri: vscode.Uri): {
   );
   return {
     lineWrapping: wordWrap !== "off",
-    documentUri: documentUri.toString(),
+    clipboardDocumentToken,
     defaultCopyMode: readEnumSetting(
       extensionConfig.get<string>(DEFAULT_COPY_MODE_SETTING, "smart"),
       ["smart", "rich", "plain", "markdown"] as const,

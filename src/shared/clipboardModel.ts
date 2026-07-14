@@ -460,7 +460,11 @@ function sourceCellForMarkdown(cell: ClipboardCell | undefined): string {
 }
 
 function isSafeRawCellSource(raw: string, text: string): boolean {
-  return !raw.includes("|") && markdownCellToDisplayText(raw) === text;
+  return (
+    !/[\r\n]/.test(raw) &&
+    !raw.includes("|") &&
+    markdownCellToDisplayText(raw) === text
+  );
 }
 
 function alignmentDelimiter(alignment: CellAlignment): string {

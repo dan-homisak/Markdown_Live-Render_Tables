@@ -5,7 +5,10 @@ import {
   Transaction,
 } from "@codemirror/state";
 import { EditorView, ViewUpdate } from "@codemirror/view";
-import { createLiveEditorExtensions } from "../editor/liveEditorExtensions";
+import {
+  createLiveEditorExtensions,
+  lineWrappingCompartment,
+} from "../editor/liveEditorExtensions";
 import {
   tableCellCommitSequenceAnnotation,
   TableCellCommitRestore,
@@ -27,6 +30,15 @@ import {
   installDocumentClipboard,
   syncDocumentRangeSelection,
 } from "../editor/documentClipboard";
+import {
+  clearDocumentSelectionProjection,
+  documentSelectionProjectionTransaction,
+} from "../editor/documentSelectionState";
+import {
+  clearPendingClipboardCut,
+  getPendingClipboardCut,
+} from "../editor/clipboardCutState";
+import { setPendingCutToken } from "../editor/table/tableRangeSelection";
 
 declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
@@ -49,6 +61,11 @@ interface HostSetDocumentMessage {
   debug: boolean;
   source?: "host" | "webviewAck";
   ackId?: number;
+  editorOptions?: unknown;
+}
+
+interface HostSetEditorOptionsMessage {
+  type: "setEditorOptions";
   editorOptions: EditorOptions;
 }
 
@@ -76,6 +93,17 @@ interface PendingHostUndoFocus {
   restore: HostUndoRestoreTarget;
 }
 
+interface PendingEditorComposition {
+  changes: ChangeSet;
+  beforeText: string;
+  beforeAnchor: number;
+}
+
+interface DeferredHostDocumentDuringEditorComposition {
+  text: string;
+  source: string;
+}
+
 type HostUndoRestoreTarget =
   | {
       kind: "editor";
@@ -88,7 +116,7 @@ type HostUndoRestoreTarget =
 
 interface EditorOptions {
   lineWrapping: boolean;
-  documentUri: string;
+  clipboardDocumentToken: string;
   defaultCopyMode: ClipboardCopyMode;
   defaultPasteMode: ClipboardPasteMode;
 }
@@ -107,6 +135,14 @@ let view: EditorView;
 let lastTableCellCommit: TableCellCommitDetail | null = null;
 let nextWebviewChangeId = 1;
 let hostDocumentApplyToken = 0;
+let editorCompositionActive = false;
+let pendingEditorComposition: PendingEditorComposition | null = null;
+let editorCompositionFlushTimer: number | null = null;
+let deferredHostDocumentDuringEditorComposition:
+  | DeferredHostDocumentDuringEditorComposition
+  | null = null;
+const pendingEditorCommandsAfterComposition: EditorCommandMessage["command"][] =
+  [];
 let editorOptions = readEditorOptions();
 const pendingWebviewEchoes: { id: number; text: string }[] = [];
 const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
@@ -127,8 +163,40 @@ try {
       extensions: [
         ...editorExtensions,
         EditorView.updateListener.of((update) => {
+          if (
+            update.docChanged &&
+            getPendingClipboardCut(update.view.dom.ownerDocument)
+          ) {
+            clearPendingClipboardCut(update.view.dom.ownerDocument);
+            setPendingCutToken(update.view.dom.ownerDocument, undefined);
+            update.view.dom.classList.remove("mlrt-document-cut-pending");
+          }
+          const projectionAuthoredSelection = update.transactions.some(
+            (transaction) =>
+              transaction.annotation(documentSelectionProjectionTransaction) ===
+              true,
+          );
+          if (
+            update.docChanged ||
+            (update.selectionSet && !projectionAuthoredSelection)
+          ) {
+            clearDocumentSelectionProjection(update.view.dom.ownerDocument);
+          }
+          if (
+            update.selectionSet ||
+            update.focusChanged ||
+            update.docChanged ||
+            update.viewportChanged
+          ) {
+            syncDocumentRangeSelection(
+              update.view,
+              update.viewportChanged &&
+                !update.selectionSet &&
+                !update.focusChanged &&
+                !update.docChanged,
+            );
+          }
           if (update.selectionSet || update.focusChanged || update.docChanged) {
-            syncDocumentRangeSelection(update.view);
             recordDebug("editor-update", {
               docChanged: update.docChanged,
               focusChanged: update.focusChanged,
@@ -138,35 +206,14 @@ try {
             });
           }
           if (update.docChanged && !applyingFromHost) {
-            const commitSequence = getTableCellCommitSequence(update);
-            if (commitSequence) {
-              pushTableCellCommitUndoFocus(
-                update.startState.doc.toString(),
-                commitSequence,
-              );
-            } else {
-              pushPendingHostUndoFocus({
-                beforeText: update.startState.doc.toString(),
-                restore: lastTableCellCommit
-                  ? { kind: "tableCell", detail: lastTableCellCommit }
-                  : {
-                      kind: "editor",
-                      anchor: update.startState.selection.main.head,
-                    },
-              });
-            }
-            lastTableCellCommit = null;
-            postDocumentChanges(
-              update.changes,
-              update.state.doc.toString(),
-              commitSequence,
-            );
+            publishEditorDocumentUpdate(update);
           }
         }),
       ],
     }),
   });
   window.__MLRT_EDITOR_VIEW__ = view;
+  installEditorCompositionBatching(view);
   applyClipboardOptions(editorOptions);
   updateStatus(initialDocument, "embedded");
   installEditorCommandBridge(app);
@@ -183,14 +230,19 @@ try {
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
   const message = event.data;
+  if (isHostSetEditorOptionsMessage(message)) {
+    updateEditorOptions(message.editorOptions);
+    return;
+  }
   if (!isHostSetDocumentMessage(message)) {
     return;
   }
 
   hostRevision = message.revision;
   debugEnabled = message.debug;
-  editorOptions = normalizeEditorOptions(message.editorOptions);
-  applyClipboardOptions(editorOptions);
+  if (isEditorOptions(message.editorOptions)) {
+    updateEditorOptions(message.editorOptions);
+  }
   if (message.source === "webviewAck") {
     if (typeof message.ackId === "number") {
       acknowledgeWebviewEcho(
@@ -206,19 +258,29 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     }
     return;
   }
-  setEditorDocument(message.text, `host revision ${message.revision}`);
+  const source = `host revision ${message.revision}`;
+  if (reconcileEditorCompositionWithHostDocument(message.text, source)) {
+    return;
+  }
+  setEditorDocument(message.text, source);
 });
 
 vscode.postMessage({ type: "ready" });
 
-function setEditorDocument(text: string, source: string): void {
+function setEditorDocument(
+  text: string,
+  source: string,
+  restorePendingUndoFocus = true,
+): void {
   const currentText = view.state.doc.toString();
   updateStatus(text, source);
   if (text === currentText) {
     return;
   }
 
-  const undoFocus = popPendingHostUndoFocus(text);
+  const undoFocus = restorePendingUndoFocus
+    ? popPendingHostUndoFocus(text)
+    : null;
   const hostChange = computeMinimalTextChange(currentText, text);
   markHostDocumentApplyInProgress();
 
@@ -359,6 +421,29 @@ function installEditorCommandBridge(root: HTMLElement): void {
  * stack with the original apply and inverse apply as separate dirty edits.
  */
 function dispatchUndoRedo(command: EditorCommandMessage["command"]): void {
+  if (editorCompositionActive || view.compositionStarted) {
+    pendingEditorCommandsAfterComposition.push(command);
+    recordDebug("defer-editor-command-for-composition", {
+      command,
+      editorCompositionActive,
+      codeMirrorCompositionStarted: view.compositionStarted,
+      pendingCommandCount: pendingEditorCommandsAfterComposition.length,
+    });
+    scheduleEditorCompositionFlush();
+    return;
+  }
+
+  // compositionend and the following keyboard/beforeinput event are separate
+  // browser tasks. Do not let the timer leave VS Code unaware of the composed
+  // edit when an immediate undo/redo command reaches the host. Webview messages
+  // retain order, so posting the change synchronously here guarantees that the
+  // extension host applies it before executing the command.
+  cancelEditorCompositionFlush();
+  flushEditorComposition();
+  // A command may already be waiting from an earlier event that arrived while
+  // the composition was still active. Cancelling the scheduled flush above
+  // must not strand that command or let this newer command overtake it.
+  flushPendingEditorCommandsAfterComposition();
   postEditorCommand(command);
 }
 
@@ -546,31 +631,35 @@ function readInitialDocument(): string {
 
 function readEditorOptions(): EditorOptions {
   const options = window.__MLRT_EDITOR_OPTIONS__;
+  const defaults: EditorOptions = {
+    lineWrapping: true,
+    clipboardDocumentToken: createClipboardDocumentToken(),
+    defaultCopyMode: "smart",
+    defaultPasteMode: "auto",
+  };
   if (!options || typeof options !== "object") {
-    return {
-      lineWrapping: true,
-      documentUri: "",
-      defaultCopyMode: "smart",
-      defaultPasteMode: "auto",
-    };
+    return defaults;
   }
   const optionRecord = options as Record<string, unknown>;
 
-  return normalizeEditorOptions({
-    lineWrapping:
-      typeof optionRecord.lineWrapping === "boolean"
-        ? optionRecord.lineWrapping
-        : true,
-    documentUri:
-      typeof optionRecord.documentUri === "string"
-        ? optionRecord.documentUri
-        : "",
-    defaultCopyMode: optionRecord.defaultCopyMode,
-    defaultPasteMode: optionRecord.defaultPasteMode,
-  });
+  return normalizeEditorOptions(
+    {
+      lineWrapping:
+        typeof optionRecord.lineWrapping === "boolean"
+          ? optionRecord.lineWrapping
+          : true,
+      clipboardDocumentToken: optionRecord.clipboardDocumentToken,
+      defaultCopyMode: optionRecord.defaultCopyMode,
+      defaultPasteMode: optionRecord.defaultPasteMode,
+    },
+    defaults,
+  );
 }
 
-function normalizeEditorOptions(value: unknown): EditorOptions {
+function normalizeEditorOptions(
+  value: unknown,
+  fallback: EditorOptions,
+): EditorOptions {
   const record =
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
@@ -579,29 +668,384 @@ function normalizeEditorOptions(value: unknown): EditorOptions {
   const defaultPasteMode = record.defaultPasteMode;
   return {
     lineWrapping:
-      typeof record.lineWrapping === "boolean" ? record.lineWrapping : true,
-    documentUri:
-      typeof record.documentUri === "string" ? record.documentUri : "",
+      typeof record.lineWrapping === "boolean"
+        ? record.lineWrapping
+        : fallback.lineWrapping,
+    clipboardDocumentToken:
+      typeof record.clipboardDocumentToken === "string" &&
+      record.clipboardDocumentToken.length > 0
+        ? record.clipboardDocumentToken
+        : fallback.clipboardDocumentToken,
     defaultCopyMode:
+      defaultCopyMode === "smart" ||
       defaultCopyMode === "rich" ||
       defaultCopyMode === "plain" ||
       defaultCopyMode === "markdown"
         ? defaultCopyMode
-        : "smart",
+        : fallback.defaultCopyMode,
     defaultPasteMode:
+      defaultPasteMode === "auto" ||
       defaultPasteMode === "rich" ||
       defaultPasteMode === "plain" ||
       defaultPasteMode === "markdown"
         ? defaultPasteMode
-        : "auto",
+        : fallback.defaultPasteMode,
   };
 }
 
 function applyClipboardOptions(options: EditorOptions): void {
   const root = document.documentElement;
-  root.dataset.mlrtDocumentUri = options.documentUri;
+  root.dataset.mlrtDocumentToken = options.clipboardDocumentToken;
   root.dataset.mlrtDefaultCopyMode = options.defaultCopyMode;
   root.dataset.mlrtDefaultPasteMode = options.defaultPasteMode;
+}
+
+function updateEditorOptions(value: unknown): void {
+  const nextOptions = normalizeEditorOptions(value, editorOptions);
+  const lineWrappingChanged =
+    nextOptions.lineWrapping !== editorOptions.lineWrapping;
+  editorOptions = nextOptions;
+  applyClipboardOptions(editorOptions);
+  if (lineWrappingChanged) {
+    view.dispatch({
+      effects: lineWrappingCompartment.reconfigure(
+        editorOptions.lineWrapping ? EditorView.lineWrapping : [],
+      ),
+    });
+  }
+}
+
+function createClipboardDocumentToken(): string {
+  return globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Candidate updates in one IME composition are provisional. Publishing each
+ * one as a separate WorkspaceEdit makes VS Code undo only the last candidate
+ * and leaves the original mixed selection deleted. Compose those CodeMirror
+ * changes locally and send the host one final source edit on compositionend.
+ */
+function installEditorCompositionBatching(editorView: EditorView): void {
+  const belongsToSourceEditor = (event: CompositionEvent): boolean =>
+    event.target instanceof Node &&
+    !findCell(event.target) &&
+    editorView.contentDOM.contains(event.target);
+
+  editorView.contentDOM.addEventListener(
+    "compositionstart",
+    (event) => {
+      if (!belongsToSourceEditor(event)) {
+        return;
+      }
+      editorCompositionActive = true;
+      cancelEditorCompositionFlush();
+    },
+    true,
+  );
+  editorView.contentDOM.addEventListener(
+    "compositionend",
+    (event) => {
+      if (!belongsToSourceEditor(event)) {
+        return;
+      }
+      editorCompositionActive = false;
+      scheduleEditorCompositionFlush();
+    },
+    true,
+  );
+}
+
+function publishEditorDocumentUpdate(update: ViewUpdate): void {
+  if (deferredHostDocumentDuringEditorComposition) {
+    // An authoritative host update arrived while the browser still owned a
+    // source-editor composition. Chromium can emit one final candidate update
+    // after that host document has been applied. Never publish that candidate
+    // against the new host revision; the authoritative text is replayed once
+    // composition has actually ended.
+    lastTableCellCommit = null;
+    recordDebug("discard-editor-update-after-host-composition-conflict", {
+      editorCompositionActive,
+      codeMirrorCompositionStarted: update.view.compositionStarted,
+      documentLength: update.state.doc.length,
+    });
+    if (!editorCompositionActive && !update.view.compositionStarted) {
+      scheduleEditorCompositionFlush();
+    }
+    return;
+  }
+
+  const commitSequence = getTableCellCommitSequence(update);
+  const shouldBatchComposition =
+    !commitSequence &&
+    (editorCompositionActive ||
+      update.view.compositionStarted ||
+      pendingEditorComposition !== null);
+
+  if (shouldBatchComposition) {
+    if (pendingEditorComposition) {
+      pendingEditorComposition.changes =
+        pendingEditorComposition.changes.compose(update.changes);
+    } else {
+      pendingEditorComposition = {
+        changes: update.changes,
+        beforeText: update.startState.doc.toString(),
+        beforeAnchor: update.startState.selection.main.head,
+      };
+    }
+    lastTableCellCommit = null;
+    if (!editorCompositionActive && !update.view.compositionStarted) {
+      scheduleEditorCompositionFlush();
+    }
+    return;
+  }
+
+  if (commitSequence) {
+    pushTableCellCommitUndoFocus(
+      update.startState.doc.toString(),
+      commitSequence,
+    );
+  } else {
+    pushPendingHostUndoFocus({
+      beforeText: update.startState.doc.toString(),
+      restore: lastTableCellCommit
+        ? { kind: "tableCell", detail: lastTableCellCommit }
+        : {
+            kind: "editor",
+            anchor: update.startState.selection.main.head,
+          },
+    });
+  }
+  lastTableCellCommit = null;
+  postDocumentChanges(
+    update.changes,
+    update.state.doc.toString(),
+    commitSequence,
+  );
+}
+
+function scheduleEditorCompositionFlush(): void {
+  cancelEditorCompositionFlush();
+  editorCompositionFlushTimer = window.setTimeout(() => {
+    editorCompositionFlushTimer = null;
+    if (editorCompositionActive || view.compositionStarted) {
+      scheduleEditorCompositionFlush();
+      return;
+    }
+    flushEditorComposition();
+    flushPendingEditorCommandsAfterComposition();
+  }, 10);
+}
+
+function cancelEditorCompositionFlush(): void {
+  if (editorCompositionFlushTimer === null) {
+    return;
+  }
+  window.clearTimeout(editorCompositionFlushTimer);
+  editorCompositionFlushTimer = null;
+}
+
+function flushEditorComposition(): void {
+  const deferredHostDocument =
+    deferredHostDocumentDuringEditorComposition;
+  if (deferredHostDocument) {
+    deferredHostDocumentDuringEditorComposition = null;
+    pendingEditorComposition = null;
+    recordDebug("reapply-host-document-after-canceled-composition", {
+      source: deferredHostDocument.source,
+      documentLength: deferredHostDocument.text.length,
+    });
+    setEditorDocument(
+      deferredHostDocument.text,
+      `${deferredHostDocument.source} after canceled composition`,
+      false,
+    );
+    return;
+  }
+
+  const composition = pendingEditorComposition;
+  pendingEditorComposition = null;
+  if (!composition) {
+    return;
+  }
+  const finalText = view.state.doc.toString();
+  const changes = validateOrRebuildEditorCompositionChanges(
+    composition,
+    finalText,
+  );
+  if (changes.empty) {
+    return;
+  }
+  pushPendingHostUndoFocus({
+    beforeText: composition.beforeText,
+    restore: {
+      kind: "editor",
+      anchor: composition.beforeAnchor,
+    },
+  });
+  postDocumentChanges(changes, finalText);
+}
+
+function flushPendingEditorCommandsAfterComposition(): void {
+  if (pendingEditorCommandsAfterComposition.length === 0) {
+    return;
+  }
+
+  const commands = pendingEditorCommandsAfterComposition.splice(0);
+  for (const command of commands) {
+    postEditorCommand(command);
+  }
+}
+
+function validateOrRebuildEditorCompositionChanges(
+  composition: PendingEditorComposition,
+  finalText: string,
+): ChangeSet {
+  let composedText: string | null = null;
+  try {
+    const baseDocument = EditorState.create({
+      doc: composition.beforeText,
+    }).doc;
+    composedText = composition.changes.apply(baseDocument).toString();
+  } catch (error) {
+    recordDebug("invalid-editor-composition-changes", {
+      error: String(error),
+      beforeTextLength: composition.beforeText.length,
+      finalTextLength: finalText.length,
+    });
+  }
+
+  if (composedText === finalText) {
+    return composition.changes;
+  }
+
+  // This is a defensive recovery for an unexpected transaction interleaving.
+  // The before snapshot is the host's known base, so a minimal replacement
+  // from that snapshot to the final local text remains safe and preserves the
+  // single host undo step without sending stale composed coordinates.
+  const replacement = computeMinimalTextChange(
+    composition.beforeText,
+    finalText,
+  );
+  recordDebug("rebuild-editor-composition-changes", {
+    beforeTextLength: composition.beforeText.length,
+    composedTextLength: composedText?.length,
+    finalTextLength: finalText.length,
+    replacementFrom: replacement.from,
+    replacementTo: replacement.to,
+    replacementInsertLength: replacement.insert.length,
+  });
+  return ChangeSet.of(replacement, composition.beforeText.length);
+}
+
+/**
+ * Reconcile an authoritative host document with a source-editor composition.
+ * Returning true means the message was completely handled here.
+ */
+function reconcileEditorCompositionWithHostDocument(
+  text: string,
+  source: string,
+): boolean {
+  const composition = pendingEditorComposition;
+  const compositionInProgress =
+    editorCompositionActive || view.compositionStarted;
+  const currentText = view.state.doc.toString();
+
+  if (
+    !composition &&
+    !compositionInProgress &&
+    !deferredHostDocumentDuringEditorComposition
+  ) {
+    return false;
+  }
+
+  if (
+    !deferredHostDocumentDuringEditorComposition &&
+    composition &&
+    text === composition.beforeText
+  ) {
+    // The host confirms the exact document on which this ChangeSet is based.
+    // Keep the provisional candidate visible and publish it after the browser
+    // finishes composition, now using the newly received host revision.
+    updateStatus(currentText, `${source} confirmed composition base`);
+    recordDebug("host-confirmed-editor-composition-base", {
+      source,
+      editorCompositionActive,
+      codeMirrorCompositionStarted: view.compositionStarted,
+      beforeTextLength: composition.beforeText.length,
+      currentTextLength: currentText.length,
+    });
+    return true;
+  }
+
+  if (
+    !deferredHostDocumentDuringEditorComposition &&
+    composition &&
+    text === currentText
+  ) {
+    // The host already contains the final candidate. Settle the local batch
+    // without posting it a second time, while retaining the focus target for a
+    // later host-owned undo.
+    cancelEditorCompositionFlush();
+    pendingEditorComposition = null;
+    pushPendingHostUndoFocus({
+      beforeText: composition.beforeText,
+      restore: {
+        kind: "editor",
+        anchor: composition.beforeAnchor,
+      },
+    });
+    updateStatus(text, `${source} settled composition`);
+    recordDebug("host-settled-editor-composition", {
+      source,
+      editorCompositionActive,
+      codeMirrorCompositionStarted: view.compositionStarted,
+      documentLength: text.length,
+    });
+    if (!compositionInProgress) {
+      flushPendingEditorCommandsAfterComposition();
+    }
+    return true;
+  }
+
+  if (
+    !deferredHostDocumentDuringEditorComposition &&
+    !composition &&
+    text === currentText
+  ) {
+    // A no-op host message during composition does not invalidate the browser's
+    // in-progress range. Let the ordinary host path update status and return.
+    return false;
+  }
+
+  // The host moved to a different document while this batch still referenced
+  // its old base. The host is authoritative: cancel the batch immediately. Do
+  // not dispatch into CodeMirror while Chromium still owns the composition --
+  // that can strand CodeMirror in its composing state. Instead, retain the
+  // latest authoritative text, suppress trailing candidate updates, and apply
+  // the host document only after compositionend.
+  cancelEditorCompositionFlush();
+  pendingEditorComposition = null;
+  lastTableCellCommit = null;
+  deferredHostDocumentDuringEditorComposition = compositionInProgress
+    ? { text, source }
+    : null;
+  recordDebug("cancel-editor-composition-for-host-document", {
+    source,
+    editorCompositionActive,
+    codeMirrorCompositionStarted: view.compositionStarted,
+    beforeTextLength: composition?.beforeText.length,
+    currentTextLength: currentText.length,
+    hostTextLength: text.length,
+    deferredReplay: compositionInProgress,
+  });
+  if (compositionInProgress) {
+    scheduleEditorCompositionFlush();
+  } else {
+    setEditorDocument(text, source);
+    flushPendingEditorCommandsAfterComposition();
+  }
+  return true;
 }
 
 function postDocumentChanges(
@@ -829,6 +1273,38 @@ function isHostSetDocumentMessage(
     (message as Record<string, unknown>).type === "setDocument" &&
     typeof (message as Record<string, unknown>).text === "string" &&
     typeof (message as Record<string, unknown>).revision === "number"
+  );
+}
+
+function isHostSetEditorOptionsMessage(
+  message: unknown,
+): message is HostSetEditorOptionsMessage {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  const record = message as Record<string, unknown>;
+  return (
+    record.type === "setEditorOptions" && isEditorOptions(record.editorOptions)
+  );
+}
+
+function isEditorOptions(value: unknown): value is EditorOptions {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.lineWrapping === "boolean" &&
+    typeof record.clipboardDocumentToken === "string" &&
+    record.clipboardDocumentToken.length > 0 &&
+    (record.defaultCopyMode === "smart" ||
+      record.defaultCopyMode === "rich" ||
+      record.defaultCopyMode === "plain" ||
+      record.defaultCopyMode === "markdown") &&
+    (record.defaultPasteMode === "auto" ||
+      record.defaultPasteMode === "rich" ||
+      record.defaultPasteMode === "plain" ||
+      record.defaultPasteMode === "markdown")
   );
 }
 

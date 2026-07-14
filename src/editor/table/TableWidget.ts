@@ -17,6 +17,7 @@ import {
 import { bindTableStructureControls } from "./tableStructureControls";
 import { bindTableRangeSelection } from "./tableRangeSelection";
 import { bindTableClipboard } from "./tableClipboard";
+import { syncTableSelectionOverlay } from "./tableSelectionOverlay";
 import {
   getTableWidgetCleanup,
   isTablePreservedForLiveEdit,
@@ -248,6 +249,7 @@ function patchTableDOM(dom: HTMLElement, table: ParsedTable): void {
   });
 
   applyCurrentColumnSizing(dom, table);
+  syncTableSelectionOverlay(dom);
 }
 
 function patchTableRowDOM(

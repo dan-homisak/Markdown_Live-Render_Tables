@@ -1,7 +1,8 @@
 import { history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { Extension } from "@codemirror/state";
+import { Compartment, Extension } from "@codemirror/state";
 import {
+  drawSelection,
   EditorView,
   highlightActiveLine,
   highlightActiveLineGutter,
@@ -13,6 +14,8 @@ import {
 } from "../shared/tableSourceProtection";
 import { createEditorGeometrySync } from "./editorGeometrySync";
 import { createEditorTheme } from "./editorTheme";
+import { createDocumentSelectionInputHandler } from "./documentClipboard";
+import { createDocumentSelectionDecorations } from "./documentSelectionDecorations";
 import { TABLE_CELL_SELECTOR } from "./table/cellSelection";
 import { createTableBoundaryArrowNavigation } from "./tableBoundaryNavigation";
 import { createTableCellFocusClassSync } from "./tableCellFocus";
@@ -21,6 +24,8 @@ import { createTableDecorations } from "./tableDecorations";
 export interface LiveEditorOptions {
   lineWrapping: boolean;
 }
+
+export const lineWrappingCompartment = new Compartment();
 
 /**
  * Assembles the complete CodeMirror extension set for the live markdown
@@ -44,6 +49,9 @@ export function createLiveEditorExtensions(
     history(),
     createEditorTheme(),
     createTableBoundaryArrowNavigation(),
+    createDocumentSelectionInputHandler(),
+    drawSelection(),
+    createDocumentSelectionDecorations(),
     highlightActiveLine(),
     highlightActiveLineGutter(),
     lineNumbers(),
@@ -54,7 +62,9 @@ export function createLiveEditorExtensions(
       tableCellSelector: TABLE_CELL_SELECTOR,
     }),
     markdown(),
-    ...(options.lineWrapping ? [EditorView.lineWrapping] : []),
+    lineWrappingCompartment.of(
+      options.lineWrapping ? EditorView.lineWrapping : [],
+    ),
     createTableDecorations(),
   ];
 }

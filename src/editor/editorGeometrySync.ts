@@ -1,7 +1,7 @@
 import { Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { tableCellLiveEditAnnotation } from "./tableEditAnnotations";
-import { syncTableSelectionOutline } from "./table/tableRangeSelection";
+import { syncTableSelectionOverlay } from "./table/tableSelectionOverlay";
 import { TABLE_WIDGET_SELECTOR } from "./table/tableWidgetState";
 
 /**
@@ -159,7 +159,7 @@ export function createEditorGeometrySync(): Extension {
           this.selectionOutlineFrame = undefined;
           for (const widget of this.observedTableWidgets) {
             if (widget instanceof HTMLElement && widget.isConnected) {
-              syncTableSelectionOutline(widget);
+              syncTableSelectionOverlay(widget);
             }
           }
         });

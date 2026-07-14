@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { editorDragPosition } from "../editor/dragPosition";
 import {
   mapNormalizedDocumentChangesToHost,
   normalizeDocumentText,
@@ -35,6 +36,30 @@ const standard = [
   "",
   "Done",
 ].join("\n");
+
+const dragCoordinates: { x: number; y: number }[] = [];
+const dragView = {
+  dom: {
+    getBoundingClientRect: () => ({
+      left: 10,
+      right: 110,
+      top: 20,
+      bottom: 120,
+      width: 100,
+    }),
+  },
+  state: { doc: { length: 500 } },
+  posAtCoords: (coordinates: { x: number; y: number }) => {
+    dragCoordinates.push(coordinates);
+    return 42;
+  },
+} as unknown as Parameters<typeof editorDragPosition>[0];
+assert.equal(editorDragPosition(dragView, -200, 60), 42);
+assert.deepEqual(dragCoordinates.pop(), { x: 10.5, y: 60 });
+assert.equal(editorDragPosition(dragView, 400, 60), 42);
+assert.deepEqual(dragCoordinates.pop(), { x: 109.5, y: 60 });
+assert.equal(editorDragPosition(dragView, 40, 10), 0);
+assert.equal(editorDragPosition(dragView, 40, 130), 500);
 
 const standardTables = parseMarkdownTables(standard);
 assert.equal(standardTables.length, 1);
@@ -600,6 +625,10 @@ const liveEditorSource = fs.readFileSync(
   path.join(process.cwd(), "src", "webview", "liveEditor.ts"),
   "utf8",
 );
+const liveEditorCss = fs.readFileSync(
+  path.join(process.cwd(), "media", "liveEditor.css"),
+  "utf8",
+);
 const tableDecorationsSource = fs.readFileSync(
   path.join(process.cwd(), "src", "editor", "tableDecorations.ts"),
   "utf8",
@@ -678,6 +707,15 @@ assert.equal(
 assert.match(extensionSource, /reopenActiveEditorWith/);
 assert.match(extensionSource, /const DEFAULT_EDITOR_ID = "default"/);
 assert.match(liveEditorSource, /doc: initialDocument/);
+assert.match(liveEditorCss, /--mlrt-selection-accent:\s*#3b9cff;/);
+assert.match(
+  liveEditorCss,
+  /var\(--mlrt-selection-accent\) 13%,\s*transparent/,
+);
+assert.doesNotMatch(
+  liveEditorCss,
+  /--mlrt-selection-fill:\s*var\(\s*--vscode-editor-selectionBackground/,
+);
 assert.doesNotMatch(extensionSource, /Loading Markdown live editor/);
 assert.doesNotMatch(
   liveEditorSource,
