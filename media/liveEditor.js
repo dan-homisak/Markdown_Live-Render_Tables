@@ -34371,7 +34371,8 @@
       if (!range && !projection || !event.clipboardData) {
         return;
       }
-      const mode = requestedDocumentCopyMode ?? readCopyMode(doc2);
+      const requestedMode = requestedDocumentCopyMode;
+      const mode = requestedMode ?? readCopyMode(doc2);
       requestedDocumentCopyMode = null;
       event.preventDefault();
       const representations = projection ? documentRepresentationsForMarkdown(
@@ -34383,7 +34384,10 @@
       clearPendingClipboardCut(doc2);
       setPendingCutToken(doc2, void 0);
       view2.dom.classList.remove("mlrt-document-cut-pending");
-      announce(doc2, "Copied document selection.");
+      announce(
+        doc2,
+        requestedMode ? `Copied as ${capitalize(requestedMode)}.` : "Copied document selection."
+      );
     };
     const onCut = (event) => {
       if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target)) {
@@ -35947,11 +35951,7 @@ ${replacement}
     });
     ["smart", "rich", "plain", "markdown"].forEach(
       (mode) => add2(`Copy ${capitalize(mode)}`, () => {
-        requestedDocumentCopyMode = mode;
-        if (!doc2.execCommand("copy")) {
-          requestedDocumentCopyMode = null;
-          announce(doc2, "Copy failed. Use Cmd/Ctrl+C.");
-        }
+        void copyDocumentThroughMenu(doc2, view2, mode);
       })
     );
     ["auto", "rich", "plain", "markdown"].forEach(
@@ -35987,6 +35987,57 @@ ${replacement}
     menu.querySelector("button")?.focus();
     documentMenuClosers.set(doc2, close);
     doc2.addEventListener("pointerdown", closeOnOutsidePointer, true);
+  }
+  async function copyDocumentThroughMenu(doc2, view2, mode) {
+    const projection = getDocumentSelectionProjection(
+      doc2,
+      view2.state.selection.main
+    );
+    const range = atomicDocumentSelection(view2);
+    if (!range && !projection) {
+      announce(doc2, "Nothing selected to copy.");
+      return;
+    }
+    const representations = projection ? documentRepresentationsForMarkdown(
+      view2,
+      compositeSelectionMarkdown(view2, projection),
+      mode
+    ) : documentRepresentations(view2, range.from, range.to, mode);
+    requestedDocumentCopyMode = mode;
+    try {
+      doc2.execCommand("copy");
+    } catch {
+    }
+    if (requestedDocumentCopyMode === null) {
+      return;
+    }
+    requestedDocumentCopyMode = null;
+    try {
+      await writeDocumentAsyncClipboard(representations);
+      clearPendingClipboardCut(doc2);
+      setPendingCutToken(doc2, void 0);
+      view2.dom.classList.remove("mlrt-document-cut-pending");
+      announce(doc2, `Copied as ${capitalize(mode)}.`);
+    } catch {
+      announce(doc2, "Copy failed. Use Cmd/Ctrl+C.");
+    }
+  }
+  async function writeDocumentAsyncClipboard(representations) {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      throw new Error("Async clipboard unavailable");
+    }
+    const data2 = {
+      "text/plain": new Blob([representations.plain], { type: "text/plain" })
+    };
+    if (representations.html) {
+      data2["text/html"] = new Blob([representations.html], { type: "text/html" });
+    }
+    if (representations.markdown) {
+      data2["text/markdown"] = new Blob([representations.markdown], {
+        type: "text/markdown"
+      });
+    }
+    await navigator.clipboard.write([new ClipboardItem(data2)]);
   }
   function announce(doc2, message) {
     let status = doc2.querySelector(".mlrt-clipboard-status");
@@ -38183,22 +38234,26 @@ ${replacement}
       if (selection?.wrapper !== wrapper && !hasNativeSelection) {
         return;
       }
+      const requestedMode = requestedCopyModes.get(doc2);
       const representations = representationsForCurrentSelection(
         doc2,
         currentTable(),
-        requestedCopyModes.get(doc2) ?? readDefaultCopyMode(doc2)
+        requestedMode ?? readDefaultCopyMode(doc2)
       );
-      requestedCopyModes.delete(doc2);
       if (!representations || !event.clipboardData) {
         return;
       }
+      requestedCopyModes.delete(doc2);
       beginClipboardOperation(doc2);
       event.preventDefault();
       writeDataTransfer(event.clipboardData, representations);
       clearPendingClipboardCut(doc2);
       setPendingCutToken(doc2, void 0);
       view2.dom.classList.remove("mlrt-document-cut-pending");
-      announce2(doc2, "Copied selection.");
+      announce2(
+        doc2,
+        requestedMode ? `Copied as ${COPY_MODE_LABELS[requestedMode]}.` : "Copied selection."
+      );
     };
     const onCut = (event) => {
       const selection = getTableRangeSelection(doc2);
@@ -38974,7 +39029,8 @@ ${replacement}
       return;
     }
     requestedCopyModes.set(doc2, mode);
-    if (executeClipboardCommand(doc2, "copy")) {
+    executeClipboardCommand(doc2, "copy");
+    if (!requestedCopyModes.has(doc2)) {
       return;
     }
     requestedCopyModes.delete(doc2);

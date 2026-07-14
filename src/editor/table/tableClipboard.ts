@@ -118,22 +118,28 @@ export function bindTableClipboard(
     if (selection?.wrapper !== wrapper && !hasNativeSelection) {
       return;
     }
+    const requestedMode = requestedCopyModes.get(doc);
     const representations = representationsForCurrentSelection(
       doc,
       currentTable(),
-      requestedCopyModes.get(doc) ?? readDefaultCopyMode(doc),
+      requestedMode ?? readDefaultCopyMode(doc),
     );
-    requestedCopyModes.delete(doc);
     if (!representations || !event.clipboardData) {
       return;
     }
+    requestedCopyModes.delete(doc);
     beginClipboardOperation(doc);
     event.preventDefault();
     writeDataTransfer(event.clipboardData, representations);
     clearPendingClipboardCut(doc);
     setPendingCutToken(doc, undefined);
     view.dom.classList.remove("mlrt-document-cut-pending");
-    announce(doc, "Copied selection.");
+    announce(
+      doc,
+      requestedMode
+        ? `Copied as ${COPY_MODE_LABELS[requestedMode]}.`
+        : "Copied selection.",
+    );
   };
 
   const onCut = (event: ClipboardEvent): void => {
@@ -1144,7 +1150,10 @@ async function copyThroughMenu(
     return;
   }
   requestedCopyModes.set(doc, mode);
-  if (executeClipboardCommand(doc, "copy")) {
+  executeClipboardCommand(doc, "copy");
+  // execCommand can report success without dispatching a copy event. The
+  // request is deleted only by onCopy after it has written the chosen mode.
+  if (!requestedCopyModes.has(doc)) {
     return;
   }
   requestedCopyModes.delete(doc);

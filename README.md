@@ -39,6 +39,11 @@ Live Editor. Raw pipe-delimited Markdown is only placed on the public
 clipboard by **Copy Markdown**. Right-click a selected range to choose an
 explicit copy or paste representation.
 
+**Copy Rich** publishes standard inline hyperlinks together with bold, italic,
+code, strike-through, and line-break formatting. Editors such as Word keep a
+link scoped to its linked label; spreadsheet applications may promote that
+same link to their native cell-level hyperlink behavior.
+
 The defaults are configurable with:
 
 - `markdownLiveRenderTables.clipboard.defaultCopyMode`

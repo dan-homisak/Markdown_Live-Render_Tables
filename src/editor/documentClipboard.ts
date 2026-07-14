@@ -139,7 +139,8 @@ export function installDocumentClipboard(
     if ((!range && !projection) || !event.clipboardData) {
       return;
     }
-    const mode = requestedDocumentCopyMode ?? readCopyMode(doc);
+    const requestedMode = requestedDocumentCopyMode;
+    const mode = requestedMode ?? readCopyMode(doc);
     requestedDocumentCopyMode = null;
     event.preventDefault();
     const representations = projection
@@ -153,7 +154,12 @@ export function installDocumentClipboard(
     clearPendingClipboardCut(doc);
     setPendingCutToken(doc, undefined);
     view.dom.classList.remove("mlrt-document-cut-pending");
-    announce(doc, "Copied document selection.");
+    announce(
+      doc,
+      requestedMode
+        ? `Copied as ${capitalize(requestedMode)}.`
+        : "Copied document selection.",
+    );
   };
 
   const onCut = (event: ClipboardEvent): void => {
@@ -2218,11 +2224,7 @@ function showDocumentMenu(
   (["smart", "rich", "plain", "markdown"] as ClipboardCopyMode[]).forEach(
     (mode) =>
       add(`Copy ${capitalize(mode)}`, () => {
-        requestedDocumentCopyMode = mode;
-        if (!doc.execCommand("copy")) {
-          requestedDocumentCopyMode = null;
-          announce(doc, "Copy failed. Use Cmd/Ctrl+C.");
-        }
+        void copyDocumentThroughMenu(doc, view, mode);
       }),
   );
   (["auto", "rich", "plain", "markdown"] as ClipboardPasteMode[]).forEach(
@@ -2258,6 +2260,72 @@ function showDocumentMenu(
   menu.querySelector<HTMLButtonElement>("button")?.focus();
   documentMenuClosers.set(doc, close);
   doc.addEventListener("pointerdown", closeOnOutsidePointer, true);
+}
+
+async function copyDocumentThroughMenu(
+  doc: Document,
+  view: EditorView,
+  mode: ClipboardCopyMode,
+): Promise<void> {
+  const projection = getDocumentSelectionProjection(
+    doc,
+    view.state.selection.main,
+  );
+  const range = atomicDocumentSelection(view);
+  if (!range && !projection) {
+    announce(doc, "Nothing selected to copy.");
+    return;
+  }
+  const representations = projection
+    ? documentRepresentationsForMarkdown(
+        view,
+        compositeSelectionMarkdown(view, projection),
+        mode,
+      )
+    : documentRepresentations(view, range!.from, range!.to, mode);
+
+  requestedDocumentCopyMode = mode;
+  try {
+    doc.execCommand("copy");
+  } catch {
+    // Fall through to the async clipboard path below.
+  }
+  // execCommand can report success without dispatching a copy event. onCopy
+  // clears this request only after it has populated the clipboard data.
+  if (requestedDocumentCopyMode === null) {
+    return;
+  }
+  requestedDocumentCopyMode = null;
+
+  try {
+    await writeDocumentAsyncClipboard(representations);
+    clearPendingClipboardCut(doc);
+    setPendingCutToken(doc, undefined);
+    view.dom.classList.remove("mlrt-document-cut-pending");
+    announce(doc, `Copied as ${capitalize(mode)}.`);
+  } catch {
+    announce(doc, "Copy failed. Use Cmd/Ctrl+C.");
+  }
+}
+
+async function writeDocumentAsyncClipboard(
+  representations: ReturnType<typeof documentRepresentations>,
+): Promise<void> {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new Error("Async clipboard unavailable");
+  }
+  const data: Record<string, Blob> = {
+    "text/plain": new Blob([representations.plain], { type: "text/plain" }),
+  };
+  if (representations.html) {
+    data["text/html"] = new Blob([representations.html], { type: "text/html" });
+  }
+  if (representations.markdown) {
+    data["text/markdown"] = new Blob([representations.markdown], {
+      type: "text/markdown",
+    });
+  }
+  await navigator.clipboard.write([new ClipboardItem(data)]);
 }
 
 function announce(doc: Document, message: string): void {

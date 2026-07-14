@@ -586,6 +586,12 @@ try {
     wb,
     path.join(qaDir, "edh-table-clipboard-menu.png"),
   );
+  const richCopyFallback = await evaluateJson(
+    liveClient,
+    tableRichCopyFallbackExpression(),
+  );
+  assertTableRichCopyFallback(richCopyFallback);
+  console.log("TABLE RICH COPY FALLBACK CHECK:", richCopyFallback);
   const tablePointerSetup = await evaluateJson(
     liveClient,
     tablePointerSelectionSetupExpression(),
@@ -5996,6 +6002,108 @@ function tableClipboardMenuExpression() {
   })()`;
 }
 
+function tableRichCopyFallbackExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const menu = root?.querySelector('.mlrt-clipboard-menu:not(.mlrt-document-clipboard-menu)');
+    const richButton = menu?.querySelector('button[data-action="copy-rich"]');
+    if (!root || !richButton) {
+      return JSON.stringify({ ok: false, reason: 'missing rich-copy menu target' });
+    }
+    const win = root.defaultView;
+    const nav = win.navigator;
+    const execDescriptor = Object.getOwnPropertyDescriptor(root, 'execCommand');
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(nav, 'clipboard');
+    const clipboardItemDescriptor = Object.getOwnPropertyDescriptor(win, 'ClipboardItem');
+    let writtenItems = null;
+    let writeCalls = 0;
+    class MockClipboardItem {
+      constructor(data) {
+        this.data = data;
+        this.types = Object.keys(data);
+      }
+      async getType(type) {
+        return this.data[type];
+      }
+    }
+    try {
+      Object.defineProperty(root, 'execCommand', {
+        configurable: true,
+        value: () => true,
+      });
+      Object.defineProperty(nav, 'clipboard', {
+        configurable: true,
+        value: {
+          write: async (items) => {
+            writeCalls++;
+            writtenItems = items;
+          },
+        },
+      });
+      Object.defineProperty(win, 'ClipboardItem', {
+        configurable: true,
+        value: MockClipboardItem,
+      });
+      richButton.click();
+      await new Promise((done) => win.requestAnimationFrame(() => win.requestAnimationFrame(done)));
+      const item = writtenItems?.[0];
+      const html = item?.types.includes('text/html')
+        ? await (await item.getType('text/html')).text()
+        : '';
+      const plain = item?.types.includes('text/plain')
+        ? await (await item.getType('text/plain')).text()
+        : '';
+      const parsedHtml = new win.DOMParser().parseFromString(html, 'text/html');
+      const mixedLink = Array.from(
+        parsedHtml.querySelectorAll('a[href]')
+      ).find((candidate) => candidate.textContent === 'link');
+      const mixedLinkCell = mixedLink?.closest('td');
+      return JSON.stringify({
+        ok: true,
+        writeCalls,
+        types: item?.types ?? [],
+        htmlHasTable: html.includes('<table'),
+        htmlHasRichFormatting:
+          /<span style="font-weight:700">bold text<\\/span>/i.test(html) &&
+          /<span style="font-family:monospace">inline code<\\/span>/i.test(html),
+        mixedLinkLabelPreserved: parsedHtml.body.textContent.includes('a link'),
+        mixedLinkIsInline: Boolean(
+          mixedLink &&
+          mixedLink.textContent === 'link' &&
+          mixedLinkCell?.textContent.includes('It includes bold text, inline code, a link') &&
+          mixedLinkCell.textContent !== mixedLink.textContent
+        ),
+        mixedLinkTargetPreserved:
+          mixedLink?.getAttribute('href') === 'https://example.com',
+        htmlHasAnchor: /<a(?:\\s|>)/i.test(html),
+        plainHasTabs: plain.includes('\\t'),
+        status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
+      });
+    } catch (error) {
+      return JSON.stringify({ ok: false, reason: String(error) });
+    } finally {
+      if (execDescriptor) {
+        Object.defineProperty(root, 'execCommand', execDescriptor);
+      } else {
+        delete root.execCommand;
+      }
+      if (clipboardDescriptor) {
+        Object.defineProperty(nav, 'clipboard', clipboardDescriptor);
+      } else {
+        delete nav.clipboard;
+      }
+      if (clipboardItemDescriptor) {
+        Object.defineProperty(win, 'ClipboardItem', clipboardItemDescriptor);
+      } else {
+        delete win.ClipboardItem;
+      }
+    }
+  })()`;
+}
+
 function documentClipboardExpression() {
   return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
@@ -6061,6 +6169,8 @@ function documentClipboardExpression() {
       clipboardData: richTransfer, bubbles: true, cancelable: true,
     }));
     const richHtml = richTransfer.getData('text/html');
+    const richText = new root.defaultView.DOMParser()
+      .parseFromString(richHtml, 'text/html').body.textContent ?? '';
 
     const oldCopyMode = 'smart';
     root.documentElement.dataset.mlrtDefaultCopyMode = 'markdown';
@@ -6148,7 +6258,10 @@ function documentClipboardExpression() {
       smartContainsRichCellMarkup: /<(strong|a)(\\s|>)/i.test(smartHtml),
       richUsesWorksheetLayout: richHtml.includes('data-mlrt-clipboard-layout="worksheet"'),
       richUsesBlackBorders: /border:1px solid #000000/i.test(richHtml),
-      richPreservesSupportedFormatting: /<span style="font-weight:700">bold text<\\/span>/i.test(richHtml) && /<a href="https:\\/\\/example.com"/i.test(richHtml),
+      richPreservesSupportedFormatting: /<span style="font-weight:700">bold text<\\/span>/i.test(richHtml) && /<span style="font-family:monospace">inline code<\\/span>/i.test(richHtml),
+      richPreservesLinkLabel: richText.includes('a link'),
+      richUsesInlineLink: /<a href="https:\\/\\/example.com"[^>]*>link<\\/a>/i.test(richHtml),
+      richPreservesMixedLinkTarget: /href="https:\\/\\/example.com"/i.test(richHtml),
       smartLeakedPipeTable: smartPlain.includes('| Key |') || smartPlain.includes('| Value |'),
       privateKind,
       markdownHasPipeTable: markdownPlain.includes('| Key |') || markdownPlain.includes('| Value |'),
@@ -9309,6 +9422,27 @@ function assertTableClipboardMenu(result) {
   }
 }
 
+function assertTableRichCopyFallback(result) {
+  if (
+    !result?.ok ||
+    result.writeCalls !== 1 ||
+    !result.types.includes('text/plain') ||
+    !result.types.includes('text/html') ||
+    !result.htmlHasTable ||
+    !result.htmlHasRichFormatting ||
+    !result.mixedLinkLabelPreserved ||
+    !result.mixedLinkIsInline ||
+    !result.mixedLinkTargetPreserved ||
+    !result.htmlHasAnchor ||
+    !result.plainHasTabs ||
+    result.status !== 'Copied as Rich.'
+  ) {
+    throw new Error(
+      `Table rich copy fallback check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
 function assertDocumentClipboard(result) {
   if (
     !result?.ok ||
@@ -9323,6 +9457,9 @@ function assertDocumentClipboard(result) {
     !result.richUsesWorksheetLayout ||
     !result.richUsesBlackBorders ||
     !result.richPreservesSupportedFormatting ||
+    !result.richPreservesLinkLabel ||
+    !result.richUsesInlineLink ||
+    !result.richPreservesMixedLinkTarget ||
     result.smartLeakedPipeTable ||
     result.privateKind !== 'document' ||
     !result.markdownHasPipeTable ||
