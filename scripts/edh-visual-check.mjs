@@ -6232,6 +6232,23 @@ function documentClipboardExpression() {
     }));
     const smartPlain = transfer.getData('text/plain');
     const smartHtml = transfer.getData('text/html');
+    const smartDocument = new root.defaultView.DOMParser()
+      .parseFromString(smartHtml, 'text/html');
+    const smartFlow = smartDocument.querySelector('[data-mlrt-clipboard-layout="document"]');
+    const smartFlowChildren = Array.from(smartFlow?.children ?? []);
+    const smart17Index = smartFlowChildren.findIndex((element) => element.textContent.trim() === '17');
+    const smart20Index = smartFlowChildren.findIndex((element) => element.textContent.trim() === '20');
+    const smartBlankLinesBetween17And20 = smart17Index >= 0 && smart20Index > smart17Index
+      ? smartFlowChildren.slice(smart17Index + 1, smart20Index)
+        .filter((element) => element.matches('[data-mlrt-blank-line="true"]')).length
+      : -1;
+    const smartPlainRows = smartPlain.replace(/\\r\\n?/g, '\\n').split('\\n');
+    const smartPlain17Index = smartPlainRows.indexOf('17');
+    const smartPlain20Index = smartPlainRows.indexOf('20');
+    const smartPlainBlankLinesBetween17And20 = smartPlain17Index >= 0 && smartPlain20Index > smartPlain17Index
+      ? smartPlainRows.slice(smartPlain17Index + 1, smartPlain20Index)
+        .filter((row) => row === '').length
+      : -1;
     const privateData = transfer.getData('application/x-markdown-live-editor+json');
     let privateKind = null;
     try { privateKind = JSON.parse(privateData).kind; } catch {}
@@ -6326,10 +6343,16 @@ function documentClipboardExpression() {
       documentTextContextMenuPreserved,
       smartHasHtmlTable: smartHtml.includes('<table'),
       smartUsesBlackBorders: /border:1px solid #000000/i.test(smartHtml),
-      smartUsesWorksheetLayout: smartHtml.includes('data-mlrt-clipboard-layout="worksheet"'),
+      smartUsesDocumentLayout: Boolean(smartFlow),
+      smartOnlyMarkdownTablesAreTables: smartDocument.querySelectorAll('table').length === 2,
+      smartProseOutsideTables: Array.from(smartDocument.querySelectorAll('p')).some((element) =>
+        element.textContent.includes('Text up here') && !element.closest('table')
+      ),
+      smartBlankLinesBetween17And20,
+      smartPlainBlankLinesBetween17And20,
       smartContainsNestedList: /<(ul|ol)(\\s|>)/i.test(smartHtml),
       smartContainsRichCellMarkup: /<(strong|a)(\\s|>)/i.test(smartHtml),
-      richUsesWorksheetLayout: richHtml.includes('data-mlrt-clipboard-layout="worksheet"'),
+      richUsesDocumentLayout: richHtml.includes('data-mlrt-clipboard-layout="document"'),
       richUsesBlackBorders: /border:1px solid #000000/i.test(richHtml),
       richPreservesSupportedFormatting: /<span style="font-weight:700">bold text<\\/span>/i.test(richHtml) && /<span style="font-family:monospace">inline code<\\/span>/i.test(richHtml),
       richPreservesLinkLabel: richText.includes('a link'),
@@ -9562,10 +9585,14 @@ function assertDocumentClipboard(result) {
     !result.documentTextContextMenuPreserved ||
     !result.smartHasHtmlTable ||
     !result.smartUsesBlackBorders ||
-    !result.smartUsesWorksheetLayout ||
-    result.smartContainsNestedList ||
+    !result.smartUsesDocumentLayout ||
+    !result.smartOnlyMarkdownTablesAreTables ||
+    !result.smartProseOutsideTables ||
+    result.smartBlankLinesBetween17And20 !== 2 ||
+    result.smartPlainBlankLinesBetween17And20 !== 2 ||
+    !result.smartContainsNestedList ||
     result.smartContainsRichCellMarkup ||
-    !result.richUsesWorksheetLayout ||
+    !result.richUsesDocumentLayout ||
     !result.richUsesBlackBorders ||
     !result.richPreservesSupportedFormatting ||
     !result.richPreservesLinkLabel ||

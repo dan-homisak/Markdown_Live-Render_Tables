@@ -35087,8 +35087,8 @@
         } : {}
       };
     }
-    const worksheet = buildClipboardWorksheet(markdown2, mode === "rich");
-    const plain = worksheet.plain;
+    const clipboard = buildDocumentClipboard(markdown2, mode === "rich");
+    const plain = clipboard.plain;
     if (mode === "plain") {
       return {
         plain,
@@ -35098,7 +35098,7 @@
         } : {}
       };
     }
-    const rendered = worksheet.html;
+    const rendered = clipboard.html;
     const sanitized = purify.sanitize(rendered, {
       FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
       FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
@@ -35244,59 +35244,131 @@
       userEvent: "delete.selection"
     });
   }
-  function buildClipboardWorksheet(markdown2, rich) {
-    const tables2 = parseMarkdownTables(markdown2);
+  function buildDocumentClipboard(markdown2, rich) {
+    const segments = clipboardDocumentSegments(markdown2);
     const rows = [];
-    let cursor = 0;
-    for (const table2 of tables2) {
-      rows.push(...proseWorksheetRows(markdown2.slice(cursor, table2.from)));
-      rows.push({
-        cells: tableRowDisplayValues(table2.header.cells.map((cell2) => cell2.raw)),
-        ...rich ? { richCells: tableRowRichValues(table2.header.cells.map((cell2) => cell2.raw)) } : {},
-        kind: "table-header",
-        alignments: table2.alignments
-      });
-      for (const row of table2.body) {
-        rows.push({
-          cells: tableRowDisplayValues(Array.from(
-            { length: table2.columnCount },
-            (_, column) => row.cells[column]?.raw ?? ""
-          )),
-          ...rich ? { richCells: tableRowRichValues(Array.from(
-            { length: table2.columnCount },
-            (_, column) => row.cells[column]?.raw ?? ""
-          )) } : {},
-          kind: "table-body",
-          alignments: table2.alignments
-        });
+    const html3 = [];
+    for (const segment of segments) {
+      if (segment.kind === "blank") {
+        rows.push([""]);
+        html3.push(
+          '<p data-mlrt-blank-line="true" style="margin:0"><br></p>'
+        );
+        continue;
       }
-      cursor = table2.to;
+      if (segment.kind === "prose") {
+        rows.push(...proseWorksheetRows(segment.markdown));
+        html3.push(renderClipboardProse(segment.markdown, rich));
+        continue;
+      }
+      const table2 = segment.table;
+      rows.push(
+        tableRowDisplayValues(table2.header.cells.map((cell2) => cell2.raw))
+      );
+      for (const row of table2.body) {
+        rows.push(
+          tableRowDisplayValues(Array.from(
+            { length: table2.columnCount },
+            (_, column) => row.cells[column]?.raw ?? ""
+          ))
+        );
+      }
+      html3.push(renderClipboardTable(table2, rich));
     }
-    rows.push(...proseWorksheetRows(markdown2.slice(cursor)));
     if (rows.length === 0) {
-      rows.push({ cells: [""], kind: "prose" });
+      rows.push([""]);
     }
-    const width = Math.max(1, ...rows.map((row) => row.cells.length));
-    const plain = serializeDelimitedGrid(
-      rows.map((row) => row.cells),
-      "	"
-    );
-    const htmlRows = rows.map((row) => {
-      const cells = Array.from({ length: width }, (_, column) => {
-        const value = row.cells[column] ?? "";
-        const isTable = row.kind !== "prose";
-        const alignment = row.alignments?.[column] ?? "left";
-        const tag = row.kind === "table-header" ? "th" : "td";
-        const style = isTable ? `border:1px solid #000000;padding:2px 6px;text-align:${alignment};vertical-align:top;white-space:pre-wrap` : "border:none;padding:2px 6px;text-align:left;vertical-align:top;white-space:pre-wrap";
-        const content2 = row.richCells?.[column] ?? escapeWorksheetText(value);
-        return `<${tag} style="${style}">${content2}</${tag}>`;
-      }).join("");
-      return `<tr data-mlrt-row-kind="${row.kind}">${cells}</tr>`;
-    }).join("");
+    const plain = serializeDelimitedGrid(rows, "	");
     return {
       plain,
-      html: `<table data-mlrt-clipboard-layout="worksheet" style="border-collapse:collapse;border-spacing:0"><tbody>${htmlRows}</tbody></table>`
+      html: `<div data-mlrt-clipboard-layout="document">${html3.join("")}</div>`
     };
+  }
+  function clipboardDocumentSegments(markdown2) {
+    const segments = [];
+    const tables2 = parseMarkdownTables(markdown2);
+    let cursor = 0;
+    for (const table2 of tables2) {
+      appendClipboardProseSegments(
+        segments,
+        markdown2.slice(cursor, table2.from),
+        true
+      );
+      segments.push({ kind: "table", table: table2 });
+      cursor = table2.to;
+      if (markdown2[cursor] === "\n") {
+        cursor++;
+      }
+    }
+    appendClipboardProseSegments(segments, markdown2.slice(cursor), false);
+    return segments;
+  }
+  function appendClipboardProseSegments(segments, markdown2, tableFollows) {
+    if (markdown2.length === 0) {
+      return;
+    }
+    const lines = markdown2.replace(/\r\n?/g, "\n").split("\n");
+    if (tableFollows && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+    let proseLines = [];
+    const flushProse = () => {
+      if (proseLines.length > 0) {
+        segments.push({ kind: "prose", markdown: proseLines.join("\n") });
+        proseLines = [];
+      }
+    };
+    for (const line of lines) {
+      if (line.trim().length === 0) {
+        flushProse();
+        segments.push({ kind: "blank" });
+      } else {
+        proseLines.push(line);
+      }
+    }
+    flushProse();
+  }
+  function renderClipboardProse(markdown2, rich) {
+    const rendered = purify.sanitize(
+      (rich ? richMarkdownRenderer : markdownRenderer).render(markdown2),
+      {
+        FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
+        FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
+      }
+    );
+    if (rich) {
+      return excelSafeRichInline(rendered);
+    }
+    const parsed = new DOMParser().parseFromString(rendered, "text/html");
+    parsed.body.querySelectorAll("a, strong, b, em, i, u, s, del, code, sub, sup").forEach((element) => element.replaceWith(...Array.from(element.childNodes)));
+    return parsed.body.innerHTML;
+  }
+  function renderClipboardTable(table2, rich) {
+    const renderRow = (rawCells, kind) => {
+      const values2 = tableRowDisplayValues(rawCells);
+      const richValues = rich ? tableRowRichValues(rawCells) : void 0;
+      const tag = kind === "table-header" ? "th" : "td";
+      const cells = Array.from({ length: table2.columnCount }, (_, column) => {
+        const alignment = table2.alignments[column] ?? "left";
+        const content2 = richValues?.[column] ?? escapeWorksheetText(values2[column] ?? "");
+        return `<${tag} style="border:1px solid #000000;padding:2px 6px;text-align:${alignment};vertical-align:top;white-space:pre-wrap">${content2}</${tag}>`;
+      }).join("");
+      return `<tr data-mlrt-row-kind="${kind}">${cells}</tr>`;
+    };
+    const header = renderRow(
+      table2.header.cells.map((cell2) => cell2.raw),
+      "table-header"
+    );
+    const body = table2.body.map(
+      (row) => renderRow(
+        Array.from(
+          { length: table2.columnCount },
+          (_, column) => row.cells[column]?.raw ?? ""
+        ),
+        "table-body"
+      )
+    ).join("");
+    return `<table data-mlrt-clipboard-table="true" style="border-collapse:collapse;border-spacing:0"><thead>${header}</thead><tbody>${body}</tbody></table>`;
   }
   function proseWorksheetRows(markdown2) {
     if (markdown2.trim().length === 0) {
@@ -35315,7 +35387,7 @@
       }
       visibleElementText(child).split("\n").map((value) => value.trimEnd()).filter((value) => value.length > 0).forEach((value) => values2.push(value));
     }
-    return values2.map((value) => ({ cells: [value], kind: "prose" }));
+    return values2.map((value) => [value]);
   }
   function appendListValues(list2, values2, depth) {
     const ordered = list2.tagName === "OL";
