@@ -18,12 +18,14 @@ export function editorDragPosition(
   if (clientY > editorRect.bottom) {
     return view.state.doc.length;
   }
-  if (editorRect.width <= 1) {
+  const contentRect = view.contentDOM.getBoundingClientRect();
+  const horizontalRect = contentRect.width > 1 ? contentRect : editorRect;
+  if (horizontalRect.width <= 1) {
     return null;
   }
   const clampedX = Math.max(
-    editorRect.left + 0.5,
-    Math.min(clientX, editorRect.right - 0.5),
+    horizontalRect.left + 0.5,
+    Math.min(clientX, horizontalRect.right - 0.5),
   );
   return view.posAtCoords({ x: clampedX, y: clientY });
 }

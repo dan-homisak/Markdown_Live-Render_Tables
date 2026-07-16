@@ -48,6 +48,15 @@ const dragView = {
       width: 100,
     }),
   },
+  contentDOM: {
+    getBoundingClientRect: () => ({
+      left: 30,
+      right: 90,
+      top: 20,
+      bottom: 120,
+      width: 60,
+    }),
+  },
   state: { doc: { length: 500 } },
   posAtCoords: (coordinates: { x: number; y: number }) => {
     dragCoordinates.push(coordinates);
@@ -55,9 +64,9 @@ const dragView = {
   },
 } as unknown as Parameters<typeof editorDragPosition>[0];
 assert.equal(editorDragPosition(dragView, -200, 60), 42);
-assert.deepEqual(dragCoordinates.pop(), { x: 10.5, y: 60 });
+assert.deepEqual(dragCoordinates.pop(), { x: 30.5, y: 60 });
 assert.equal(editorDragPosition(dragView, 400, 60), 42);
-assert.deepEqual(dragCoordinates.pop(), { x: 109.5, y: 60 });
+assert.deepEqual(dragCoordinates.pop(), { x: 89.5, y: 60 });
 assert.equal(editorDragPosition(dragView, 40, 10), 0);
 assert.equal(editorDragPosition(dragView, 40, 130), 500);
 

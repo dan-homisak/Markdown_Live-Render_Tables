@@ -1005,6 +1005,69 @@ try {
     wrappedGutterClick: wrappedGutterClick.tableAddresses,
   });
 
+  const adjacentSetup = await evaluateJson(
+    liveClient,
+    adjacentProseSurfaceDragSetupExpression(),
+  );
+  assertAdjacentProseSurfaceSetup(adjacentSetup);
+  const adjacentResults = {};
+  for (const surface of adjacentSetup.surfaces) {
+    await evaluateJson(liveClient, clearSelectionStateExpression());
+    await liveClient.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: surface.x,
+      y: surface.y,
+      button: "left",
+      clickCount: 1,
+    });
+    const pending = await evaluateJson(
+      liveClient,
+      adjacentProseSurfacePendingExpression(),
+    );
+    assertAdjacentProseSurfacePending(surface.name, pending);
+    await liveClient.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: adjacentSetup.targetX,
+      y: adjacentSetup.targetY,
+      button: "left",
+    });
+    await liveClient.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: adjacentSetup.targetX,
+      y: adjacentSetup.targetY,
+      button: "left",
+      clickCount: 1,
+    });
+    await sleep(100);
+    const result = await evaluateJson(
+      liveClient,
+      adjacentProseSurfaceSelectionResultExpression(),
+    );
+    assertAdjacentProseSurfaceSelection(surface, adjacentSetup, result);
+    adjacentResults[surface.name] = result;
+    if (surface.name === "blank-line") {
+      await captureWorkbenchScreenshot(
+        wb,
+        path.join(qaDir, "edh-adjacent-blank-line-selection.png"),
+      );
+    }
+  }
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+  console.log(
+    "ADJACENT PROSE-SURFACE TO TABLE SELECTION CHECK:",
+    Object.fromEntries(
+      Object.entries(adjacentResults).map(([name, result]) => [
+        name,
+        {
+          anchor: result.anchor,
+          head: result.head,
+          selectedAddresses: result.selectedAddresses,
+          copiedPlain: result.copiedPlain,
+        },
+      ]),
+    ),
+  );
+
   const tableOwnershipSetup = await evaluateJson(
     liveClient,
     tablePointerSelectionSetupExpression(),
@@ -4983,6 +5046,161 @@ function tableGutterSelectionSetupExpression() {
       cellUserSelect: root.defaultView.getComputedStyle(rowCell).userSelect,
       gutterUserSelect: root.defaultView.getComputedStyle(gutter).userSelect,
       above,
+    });
+  })()`;
+}
+
+function adjacentProseSurfaceDragSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root?.querySelector('.mlrt-table-widget');
+    const table = wrapper?.querySelector('.mlrt-table');
+    const target = wrapper?.querySelector(
+      '.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]'
+    );
+    if (!root || !view || !wrapper || !table || !target) {
+      return JSON.stringify({ ok: false, reason: 'missing adjacent surface targets' });
+    }
+    view.scrollDOM.scrollTop = 0;
+    const tableFrom = Number(wrapper.dataset.srcFrom);
+    const beforeLine = view.state.doc.lineAt(Math.max(0, tableFrom - 1));
+    const shortLine = view.state.doc.line(Math.max(1, beforeLine.number - 1));
+    const blankCaret = view.coordsAtPos(beforeLine.from);
+    const shortEndCaret = view.coordsAtPos(shortLine.to);
+    const contentRect = view.contentDOM.getBoundingClientRect();
+    const tableRect = table.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const blankY = blankCaret ? (blankCaret.top + blankCaret.bottom) / 2 : NaN;
+    const shortY = shortEndCaret ? (shortEndCaret.top + shortEndCaret.bottom) / 2 : NaN;
+    const gutter = Array.from(root.querySelectorAll('.cm-lineNumbers .cm-gutterElement'))
+      .find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        const style = root.defaultView.getComputedStyle(candidate);
+        return style.visibility !== 'hidden' && blankY >= rect.top && blankY <= rect.bottom;
+      });
+    const gutterRect = gutter?.getBoundingClientRect();
+    const resolve = (x, y) => view.posAtCoords({
+      x: Math.max(contentRect.left + 0.5, Math.min(x, contentRect.right - 0.5)),
+      y,
+    });
+    const surfaces = [
+      {
+        name: 'line-number-gutter',
+        x: gutterRect ? (gutterRect.left + gutterRect.right) / 2 : NaN,
+        y: blankY,
+      },
+      {
+        name: 'blank-line',
+        x: contentRect.left + 0.5,
+        y: blankY,
+      },
+      {
+        name: 'end-of-line-margin',
+        x: shortEndCaret
+          ? Math.min(contentRect.right - 4, shortEndCaret.right + 80)
+          : NaN,
+        y: shortY,
+      },
+      {
+        name: 'prose-table-boundary',
+        x: contentRect.left + 0.5,
+        y: tableRect.top - 0.5,
+      },
+    ].map((surface) => ({
+      ...surface,
+      expectedAnchor: resolve(surface.x, surface.y),
+      targetClass: root.elementFromPoint(surface.x, surface.y)?.className ?? null,
+    }));
+    root.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__ = {
+      beforeDoc: view.state.doc.toString(),
+      targetTableFrom: tableFrom,
+    };
+    return JSON.stringify({
+      ok: Boolean(
+        Number.isFinite(tableFrom) &&
+        Number(target.dataset.sourceTo) > tableFrom &&
+        beforeLine.length === 0 &&
+        gutterRect &&
+        surfaces.every((surface) =>
+          Number.isFinite(surface.x) &&
+          Number.isFinite(surface.y) &&
+          Number.isInteger(surface.expectedAnchor)
+        )
+      ),
+      tableFrom,
+      tableTo: Number(wrapper.dataset.srcTo),
+      targetHead: Number(target.dataset.sourceTo),
+      targetX: targetRect.left + Math.min(12, targetRect.width / 2),
+      targetY: targetRect.bottom - Math.min(8, targetRect.height / 2),
+      expectedAddresses: ['0:0', '0:1', '1:0', '1:1'],
+      surfaces,
+    });
+  })()`;
+}
+
+function adjacentProseSurfacePendingExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_DOCUMENT_TABLE_DRAG__);
+    const cell = root?.querySelector('.mlrt-table-cell');
+    return JSON.stringify({
+      ok: Boolean(root && cell),
+      pendingClass: Boolean(root?.querySelector('.mlrt-document-drag-pending')),
+      cellUserSelect: cell ? root.defaultView.getComputedStyle(cell).userSelect : null,
+    });
+  })()`;
+}
+
+function adjacentProseSurfaceSelectionResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_DOCUMENT_TABLE_DRAG__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root?.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__;
+    const wrapper = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? [])
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.targetTableFrom);
+    const range = view?.state.selection.main;
+    const selectedCells = Array.from(wrapper?.querySelectorAll('.mlrt-document-range-selected') ?? []);
+    const address = (cell) =>
+      (cell.dataset.rowKind === 'header' ? 0 : Number(cell.dataset.rowIndex) + 1) +
+      ':' + Number(cell.dataset.column);
+    const nativeSelection = root?.defaultView.getSelection();
+    const transfer = new root.defaultView.DataTransfer();
+    const copy = new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: transfer,
+      bubbles: true,
+      cancelable: true,
+    });
+    view?.contentDOM.dispatchEvent(copy);
+    return JSON.stringify({
+      ok: Boolean(root && view && wrapper && range),
+      anchor: range?.anchor ?? null,
+      head: range?.head ?? null,
+      selectionEmpty: range?.empty ?? true,
+      selectedAddresses: selectedCells.map(address).sort(),
+      proseSelectionMarkCount: root?.querySelectorAll('.mlrt-prose-selection').length ?? 0,
+      overlayCount: wrapper?.querySelectorAll('.mlrt-table-selection-overlay').length ?? 0,
+      rectangularCellCount: root?.querySelectorAll('.mlrt-table-cell-selected').length ?? 0,
+      dragPending: Boolean(root?.querySelector('.mlrt-document-drag-pending')),
+      nativeSelectionInsideEditor: Boolean(
+        nativeSelection?.anchorNode && nativeSelection?.focusNode &&
+        view?.contentDOM.contains(nativeSelection.anchorNode) &&
+        view?.contentDOM.contains(nativeSelection.focusNode)
+      ),
+      nativeTableSelectionBackground: selectedCells[0]
+        ? root.defaultView.getComputedStyle(selectedCells[0], '::selection').backgroundColor
+        : null,
+      copyPrevented: copy.defaultPrevented,
+      copiedPlain: transfer.getData('text/plain'),
+      copiedHtmlHasTable: /<table[\\s>]/i.test(transfer.getData('text/html')),
     });
   })()`;
 }
@@ -10230,6 +10448,63 @@ function assertTableGutterSelectionSetup(result) {
   ) {
     throw new Error(
       `Table gutter selection setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertAdjacentProseSurfaceSetup(result) {
+  if (
+    !result?.ok ||
+    !Number.isFinite(result.targetX) ||
+    !Number.isFinite(result.targetY) ||
+    !Number.isInteger(result.targetHead) ||
+    result.surfaces?.length !== 4 ||
+    result.expectedAddresses?.length !== 4 ||
+    !result.surfaces.every((surface) =>
+      typeof surface.name === "string" &&
+      Number.isFinite(surface.x) &&
+      Number.isFinite(surface.y) &&
+      Number.isInteger(surface.expectedAnchor)
+    )
+  ) {
+    throw new Error(
+      `Adjacent prose-surface setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertAdjacentProseSurfacePending(name, result) {
+  if (
+    !result?.ok ||
+    !result.pendingClass ||
+    result.cellUserSelect !== "none"
+  ) {
+    throw new Error(
+      `Adjacent ${name} drag did not claim native selection: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertAdjacentProseSurfaceSelection(surface, setup, result) {
+  if (
+    !result?.ok ||
+    result.selectionEmpty ||
+    result.anchor !== surface.expectedAnchor ||
+    result.head !== setup.targetHead ||
+    JSON.stringify(result.selectedAddresses) !==
+      JSON.stringify(setup.expectedAddresses) ||
+    result.overlayCount !== 1 ||
+    result.rectangularCellCount !== 0 ||
+    result.dragPending ||
+    !result.nativeSelectionInsideEditor ||
+    !selectionColorIsTransparent(result.nativeTableSelectionBackground) ||
+    !result.copyPrevented ||
+    !result.copiedPlain.includes("Key\tValue") ||
+    !result.copiedPlain.includes("Long\tThis is a very long cell") ||
+    !result.copiedHtmlHasTable
+  ) {
+    throw new Error(
+      `Adjacent ${surface.name} to table selection failed: ${JSON.stringify({ surface, setup, result })}`,
     );
   }
 }

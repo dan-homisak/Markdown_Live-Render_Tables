@@ -362,7 +362,11 @@ export function installDocumentClipboard(
     ) {
       return;
     }
-    const anchor = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    // Gutter, blank-line, end-of-line margin, and block-widget boundary
+    // coordinates may be outside CodeMirror's text hit boxes even though the
+    // gesture begins inside the editor. Resolve them through the same
+    // content-edge clamping used while dragging.
+    const anchor = editorDragPosition(view, event.clientX, event.clientY);
     if (anchor === null) {
       return;
     }
@@ -374,6 +378,7 @@ export function installDocumentClipboard(
     mixedDragOwnsPointerCapture = false;
     mixedDragGeneration += 1;
     mixedDragDocument = view.state.doc;
+    root.classList.add("mlrt-document-drag-pending");
     clearDocumentSelectionProjection(doc);
     doc.addEventListener("pointermove", onMixedPointerMove, true);
     doc.addEventListener("pointerup", onMixedPointerUp, true);
@@ -729,6 +734,7 @@ export function installDocumentClipboard(
     mixedDragProjection = null;
     mixedDragActive = false;
     mixedDragDocument = null;
+    root.classList.remove("mlrt-document-drag-pending");
     if (pointerId !== null && root.hasPointerCapture(pointerId)) {
       try {
         root.releasePointerCapture(pointerId);

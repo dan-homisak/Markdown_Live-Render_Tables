@@ -33197,12 +33197,14 @@
     if (clientY > editorRect.bottom) {
       return view2.state.doc.length;
     }
-    if (editorRect.width <= 1) {
+    const contentRect = view2.contentDOM.getBoundingClientRect();
+    const horizontalRect = contentRect.width > 1 ? contentRect : editorRect;
+    if (horizontalRect.width <= 1) {
       return null;
     }
     const clampedX = Math.max(
-      editorRect.left + 0.5,
-      Math.min(clientX, editorRect.right - 0.5)
+      horizontalRect.left + 0.5,
+      Math.min(clientX, horizontalRect.right - 0.5)
     );
     return view2.posAtCoords({ x: clampedX, y: clientY });
   }
@@ -34787,7 +34789,7 @@
       if (event.button !== 0 || findCell(event.target) || event.target instanceof Element && Boolean(event.target.closest(".mlrt-table-widget"))) {
         return;
       }
-      const anchor = view2.posAtCoords({ x: event.clientX, y: event.clientY });
+      const anchor = editorDragPosition(view2, event.clientX, event.clientY);
       if (anchor === null) {
         return;
       }
@@ -34799,6 +34801,7 @@
       mixedDragOwnsPointerCapture = false;
       mixedDragGeneration += 1;
       mixedDragDocument = view2.state.doc;
+      root2.classList.add("mlrt-document-drag-pending");
       clearDocumentSelectionProjection(doc2);
       doc2.addEventListener("pointermove", onMixedPointerMove, true);
       doc2.addEventListener("pointerup", onMixedPointerUp, true);
@@ -35059,6 +35062,7 @@
       mixedDragProjection = null;
       mixedDragActive = false;
       mixedDragDocument = null;
+      root2.classList.remove("mlrt-document-drag-pending");
       if (pointerId !== null && root2.hasPointerCapture(pointerId)) {
         try {
           root2.releasePointerCapture(pointerId);

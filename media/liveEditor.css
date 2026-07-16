@@ -295,6 +295,14 @@ body,
   user-select: text;
 }
 
+/* A prose-origin drag must never fall through to Chromium's DOM-order
+   selection when it reaches a replacement widget. The document drag model
+   owns table inclusion for the lifetime of the gesture. Cell-origin gestures
+   do not set this class, so same-cell character selection stays native. */
+.mlrt-document-drag-pending .mlrt-table-cell {
+  user-select: none;
+}
+
 .mlrt-table-source-line + .mlrt-table-cell {
   border-left-width: 1px;
 }
