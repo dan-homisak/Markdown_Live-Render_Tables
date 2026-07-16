@@ -556,21 +556,37 @@ export function installDocumentClipboard(
 
   const onMixedPointerMove = (event: PointerEvent): void => {
     if (
+      mixedDragPointerId !== null &&
+      event.pointerId === mixedDragPointerId &&
+      (event.buttons & 1) === 0
+    ) {
+      // A release outside the webview is not guaranteed to send pointerup
+      // back into this document. The first hover move after re-entry is the
+      // reliable proof that the physical gesture ended.
+      finishMixedDrag(true, mixedDragGeneration);
+      return;
+    }
+    if (
       mixedDragOwnsPointerCapture &&
       mixedDragPointerId !== null &&
       !root.hasPointerCapture(mixedDragPointerId)
     ) {
-      // Pointer-capture loss can be committed by the browser before the
-      // corresponding lostpointercapture event is delivered. Ignore any move
-      // that lands in that gap instead of extending a gesture we no longer
-      // own.
-      finishMixedDrag(true, mixedDragGeneration);
-      return;
+      // Crossing the webview boundary can release capture while the mouse
+      // button is still held. Keep the gesture latched so a rapid re-entry
+      // continues the source-backed selection instead of falling through to
+      // Chromium's DOM-order selection.
+      mixedDragOwnsPointerCapture = false;
     }
     updateMixedDrag(event);
   };
 
   const onMixedMouseMove = (event: MouseEvent): void => {
+    if (mixedDragPointerId !== null && (event.buttons & 1) === 0) {
+      // Compatibility mouse events also expose a release that happened while
+      // the pointer was outside the embedded document.
+      finishMixedDrag(true, mixedDragGeneration);
+      return;
+    }
     // The PointerEvent can scroll the editor to keep its head visible before
     // Chromium emits this compatibility event. Re-evaluate the same client
     // point against the settled layout; publishMixedDragSelection suppresses
@@ -691,13 +707,22 @@ export function installDocumentClipboard(
     ) {
       return;
     }
-    finishMixedDrag(true, mixedDragGeneration);
+    // Capture is an optimization, not the lifetime of the physical gesture.
+    // The pointer can leave an iframe and re-enter with its primary button
+    // still down. Document listeners plus the pending user-select guard keep
+    // ownership until pointerup, a buttons=0 move, or a replacement gesture.
+    mixedDragOwnsPointerCapture = false;
   };
 
   const onWindowBlur = (): void => {
-    if (mixedDragPointerId !== null) {
-      finishMixedDrag(true);
+    if (mixedDragPointerId === null) {
+      return;
     }
+    // Workbench excursions blur the webview even though the drag is still in
+    // progress. Preserve both the source-backed range and native-selection
+    // suppression so a quick return cannot paint browser-only table text.
+    doc.defaultView?.getSelection()?.removeAllRanges();
+    restoreMixedDrag(mixedDragGeneration);
   };
 
   const finishMixedDrag = (

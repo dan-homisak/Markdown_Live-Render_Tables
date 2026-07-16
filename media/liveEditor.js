@@ -34939,13 +34939,20 @@
       });
     };
     const onMixedPointerMove = (event) => {
-      if (mixedDragOwnsPointerCapture && mixedDragPointerId !== null && !root2.hasPointerCapture(mixedDragPointerId)) {
+      if (mixedDragPointerId !== null && event.pointerId === mixedDragPointerId && (event.buttons & 1) === 0) {
         finishMixedDrag(true, mixedDragGeneration);
         return;
+      }
+      if (mixedDragOwnsPointerCapture && mixedDragPointerId !== null && !root2.hasPointerCapture(mixedDragPointerId)) {
+        mixedDragOwnsPointerCapture = false;
       }
       updateMixedDrag(event);
     };
     const onMixedMouseMove = (event) => {
+      if (mixedDragPointerId !== null && (event.buttons & 1) === 0) {
+        finishMixedDrag(true, mixedDragGeneration);
+        return;
+      }
       updateMixedDrag(event);
       if (mixedDragActive) {
         event.preventDefault();
@@ -35029,12 +35036,14 @@
       if (!mixedDragOwnsPointerCapture || event.pointerId !== mixedDragPointerId || root2.hasPointerCapture(event.pointerId)) {
         return;
       }
-      finishMixedDrag(true, mixedDragGeneration);
+      mixedDragOwnsPointerCapture = false;
     };
     const onWindowBlur = () => {
-      if (mixedDragPointerId !== null) {
-        finishMixedDrag(true);
+      if (mixedDragPointerId === null) {
+        return;
       }
+      doc2.defaultView?.getSelection()?.removeAllRanges();
+      restoreMixedDrag(mixedDragGeneration);
     };
     const finishMixedDrag = (restoreFinalRange, expectedGeneration) => {
       if (expectedGeneration !== void 0 && expectedGeneration !== mixedDragGeneration) {

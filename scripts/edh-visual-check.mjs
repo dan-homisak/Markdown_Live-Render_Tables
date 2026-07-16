@@ -1516,6 +1516,34 @@ try {
     forceMixedDragOwnershipLossExpression(),
   );
   assertMixedDragOwnershipLoss(ownershipLoss);
+  const rapidExcursionPoints = [
+    [ownershipSetup.rightX, ownershipSetup.firstY],
+    [ownershipSetup.firstX, ownershipSetup.firstY],
+    [ownershipSetup.rightX, ownershipSetup.secondY],
+    [ownershipSetup.secondX, ownershipSetup.secondY],
+    [ownershipSetup.rightX, ownershipSetup.finalY],
+    [ownershipSetup.finalX, ownershipSetup.finalY],
+  ];
+  for (let index = 0; index < 8; index += 1) {
+    for (const [x, y] of rapidExcursionPoints) {
+      await liveClient.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "left",
+      });
+    }
+  }
+  await sleep(60);
+  const rapidExcursion = await evaluateJson(
+    liveClient,
+    mixedDragRapidExcursionExpression(),
+  );
+  assertMixedDragRapidExcursion(rapidExcursion);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-rapid-right-excursion-selection.png"),
+  );
   await liveClient.send("Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x: ownershipSetup.finalX,
@@ -5698,6 +5726,8 @@ function documentToTableDragSetupExpression() {
     const firstRect = first.getBoundingClientRect();
     const secondRect = second.getBoundingClientRect();
     const finalRect = final.getBoundingClientRect();
+    const contentRect = view.contentDOM.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
     root.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__ = {
       beforeDoc: source,
       targetTableFrom: Number(target.dataset.srcFrom),
@@ -5720,6 +5750,10 @@ function documentToTableDragSetupExpression() {
       secondY: secondRect.top + Math.min(8, secondRect.height / 2),
       finalX: finalRect.left + Math.min(8, finalRect.width / 2),
       finalY: finalRect.top + Math.min(8, finalRect.height / 2),
+      rightX: Math.max(
+        targetRect.right + 12,
+        Math.min(contentRect.right - 4, targetRect.right + 80),
+      ),
       belowHeads: belowHeads.map((point) => ({
         ...point,
         expectedText: source.slice(startPosition, point?.pos ?? startPosition),
@@ -6459,9 +6493,11 @@ function forceMixedDragOwnershipLossExpression() {
     const addressesBefore = Array.from(
       root.querySelectorAll('.mlrt-document-range-selected')
     ).map(address).sort();
+    const selectedCell = root.querySelector('.mlrt-document-range-selected');
     if (capturedBefore.length > 0) {
       shell.releasePointerCapture(capturedBefore[0]);
     }
+    root.defaultView.dispatchEvent(new root.defaultView.Event('blur'));
     await Promise.resolve();
     await Promise.resolve();
     const capturedAfter = Array.from({ length: 32 }, (_, pointerId) => pointerId)
@@ -6470,42 +6506,51 @@ function forceMixedDragOwnershipLossExpression() {
     const addressesAfter = Array.from(
       root.querySelectorAll('.mlrt-document-range-selected')
     ).map(address).sort();
-    const staleTarget = root.querySelector(
-      '.mlrt-table-widget:nth-of-type(2) .mlrt-table-cell[data-row-kind="header"][data-column="0"]'
-    ) ?? root.querySelector(
-      '.mlrt-table-cell[data-row-kind="header"][data-column="0"]'
-    );
-    const staleRect = staleTarget?.getBoundingClientRect();
-    if (capturedBefore.length > 0 && staleRect) {
-      root.dispatchEvent(new root.defaultView.PointerEvent('pointermove', {
-        bubbles: true,
-        cancelable: true,
-        buttons: 1,
-        pointerId: capturedBefore[0],
-        pointerType: 'mouse',
-        isPrimary: true,
-        clientX: staleRect.left + Math.min(8, staleRect.width / 2),
-        clientY: staleRect.top + Math.min(8, staleRect.height / 2),
-      }));
-      await Promise.resolve();
-    }
-    const rangeAfterStaleMove =
-      root.defaultView.__MLRT_EDITOR_VIEW__.state.selection.main.toJSON();
-    const addressesAfterStaleMove = Array.from(
-      root.querySelectorAll('.mlrt-document-range-selected')
-    ).map(address).sort();
     return JSON.stringify({
       ok: true,
       capturedBefore,
       capturedAfter,
-      staleTargetFound: Boolean(staleRect),
-      selectionFinalized:
+      selectionPreserved:
         JSON.stringify(rangeAfter) === JSON.stringify(rangeBefore) &&
         JSON.stringify(addressesAfter) === JSON.stringify(addressesBefore),
-      staleMoveIgnored:
-        JSON.stringify(rangeAfterStaleMove) === JSON.stringify(rangeAfter) &&
-        JSON.stringify(addressesAfterStaleMove) === JSON.stringify(addressesAfter),
+      dragPending: shell.classList.contains('mlrt-document-drag-pending'),
+      selectedCellUserSelect: selectedCell
+        ? root.defaultView.getComputedStyle(selectedCell).userSelect
+        : null,
+      nativeTableSelectionBackground: selectedCell
+        ? root.defaultView.getComputedStyle(selectedCell, '::selection').backgroundColor
+        : null,
       addressesBefore,
+    });
+  })()`;
+}
+
+function mixedDragRapidExcursionExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_DOCUMENT_TABLE_DRAG__);
+    const state = root?.defaultView.__MLRT_DOCUMENT_TABLE_DRAG__;
+    const wrapper = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? [])
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.targetTableFrom);
+    const selectedCells = Array.from(
+      wrapper?.querySelectorAll('.mlrt-document-range-selected') ?? []
+    );
+    const address = (cell) =>
+      (cell.dataset.rowKind === 'header' ? 0 : Number(cell.dataset.rowIndex) + 1) +
+      ':' + Number(cell.dataset.column);
+    return JSON.stringify({
+      ok: Boolean(root && wrapper),
+      selectedAddresses: selectedCells.map(address).sort(),
+      dragPending: Boolean(root?.querySelector('.mlrt-document-drag-pending')),
+      selectedCellUserSelect: selectedCells[0]
+        ? root.defaultView.getComputedStyle(selectedCells[0]).userSelect
+        : null,
+      nativeTableSelectionBackground: selectedCells[0]
+        ? root.defaultView.getComputedStyle(selectedCells[0], '::selection').backgroundColor
+        : null,
+      overlayCount: wrapper?.querySelectorAll('.mlrt-table-selection-overlay').length ?? 0,
     });
   })()`;
 }
@@ -11014,15 +11059,33 @@ function assertMixedDragOwnershipLoss(result) {
     !result?.ok ||
     result.capturedBefore?.length !== 1 ||
     result.capturedAfter?.length !== 0 ||
-    !result.staleTargetFound ||
     JSON.stringify(result.addressesBefore) !== JSON.stringify([
       "0:0", "0:1", "1:0", "1:1", "2:0", "2:1",
     ]) ||
-    !result.selectionFinalized ||
-    !result.staleMoveIgnored
+    !result.selectionPreserved ||
+    !result.dragPending ||
+    result.selectedCellUserSelect !== "none" ||
+    result.nativeTableSelectionBackground !== "rgba(0, 0, 0, 0)"
   ) {
     throw new Error(
-      `Mixed drag ownership cleanup failed: ${JSON.stringify(result)}`,
+      `Mixed drag ownership latch failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertMixedDragRapidExcursion(result) {
+  if (
+    !result?.ok ||
+    JSON.stringify(result.selectedAddresses) !== JSON.stringify([
+      "0:0", "0:1", "1:0", "1:1", "2:0", "2:1",
+    ]) ||
+    !result.dragPending ||
+    result.selectedCellUserSelect !== "none" ||
+    result.nativeTableSelectionBackground !== "rgba(0, 0, 0, 0)" ||
+    result.overlayCount !== 1
+  ) {
+    throw new Error(
+      `Mixed drag rapid right-side excursion failed: ${JSON.stringify(result)}`,
     );
   }
 }
