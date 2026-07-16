@@ -1,6 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
+  ensureTableCellSeparatorSafe,
   formatMarkdownCell,
   formatTableCellSourceEdit,
   getCellPaddingWhitespace,
@@ -9,9 +10,15 @@ import {
   ParsedTable,
   positionAfterTable,
   positionBeforeTable,
+  tableCellLeadingPipePrefix,
   TableCellSourceEdit,
 } from "../../shared/tableModel";
 import { allowTableSourceChange } from "../../shared/tableSourceProtection";
+import {
+  CellTextEditSnapshot,
+  CellTextSelection,
+  computeCellBeforeInputDecision,
+} from "../../shared/tableCellInput";
 import {
   tableCellCommitSequenceAnnotation,
   tableCellLiveEditAnnotation,
@@ -44,10 +51,7 @@ interface CellEditHistory {
   lastValue: string;
 }
 
-interface CellEditSnapshot {
-  value: string;
-  caretOffset: number;
-}
+type CellEditSnapshot = CellTextEditSnapshot;
 
 interface CellCommitValueStep {
   value: string;
@@ -135,18 +139,34 @@ export function bindTableEditing(
       return;
     }
 
-    const nextSnapshot = computeBeforeInputSnapshot(cell, event);
-    if (!nextSnapshot) {
+    const cellSelection = getCellSelectionOffsets(cell);
+    const inputDecision = computeCellBeforeInputDecision({
+      value: readCellDisplayValue(cell),
+      selection: cellSelection,
+      // A target range confined to this editing host cannot make a DOM
+      // selection that visibly crosses sibling cells safe. Fail closed when
+      // the live selection itself is not wholly owned by the target cell.
+      targetSelection:
+        cellSelection === null
+          ? null
+          : getCellInputTargetSelection(cell, event),
+      inputType: event.inputType,
+      data: getCellInputData(event),
+    });
+    if (inputDecision.kind === "native") {
       recordCellEditHistory(cell);
       return;
     }
 
     event.preventDefault();
+    if (inputDecision.kind === "block") {
+      return;
+    }
     applyCellEditSnapshotChange(
       view,
       currentTable,
       cell,
-      nextSnapshot,
+      inputDecision.snapshot,
       scheduleTableLayout,
     );
   });
@@ -580,7 +600,9 @@ function formatLiveTableCellSourceEdit(
   return {
     from: sourceCell.start,
     to: sourceCell.end,
-    insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`,
+    insert: ensureTableCellSeparatorSafe(
+      `${tableCellLeadingPipePrefix(sourceRow, column)}${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`,
+    ),
   };
 }
 
@@ -904,75 +926,87 @@ function restoreCellEditHistory(
 }
 
 /**
- * Predicts the cell text and caret produced by a `beforeinput` event so the
- * edit can be applied synchronously as plain text (bypassing contenteditable
- * HTML mutations). Returns null for input types that are left to the browser.
+ * Converts Chromium's platform-native target range to display-text offsets.
+ * A non-empty range that crosses a cell boundary is reported as unsafe so the
+ * pure input decision blocks it instead of allowing the browser to merge DOM
+ * cells or rows.
  */
-function computeBeforeInputSnapshot(
+function getCellInputTargetSelection(
   cell: HTMLElement,
   event: InputEvent,
-): CellEditSnapshot | null {
-  const selection = getCellSelectionOffsets(cell);
-  if (!selection) {
+): CellTextSelection | null | undefined {
+  let ranges: StaticRange[];
+  try {
+    ranges = event.getTargetRanges();
+  } catch {
+    return undefined;
+  }
+  if (ranges.length === 0) {
+    return undefined;
+  }
+  if (ranges.length !== 1) {
     return null;
   }
 
-  const value = readCellDisplayValue(cell);
-  const from = Math.min(selection.anchor, selection.head);
-  const to = Math.max(selection.anchor, selection.head);
-  if (event.inputType === "insertText") {
-    const insert = event.data ?? "";
-    return replaceCellTextRange(value, from, to, insert);
+  const [range] = ranges;
+  if (
+    !isNodeInsideCell(range.startContainer, cell) ||
+    !isNodeInsideCell(range.endContainer, cell)
+  ) {
+    return null;
   }
 
+  try {
+    return {
+      anchor: getCellDomPointOffset(
+        cell,
+        range.startContainer,
+        range.startOffset,
+      ),
+      head: getCellDomPointOffset(
+        cell,
+        range.endContainer,
+        range.endOffset,
+      ),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getCellInputData(event: InputEvent): string | null {
   if (
     event.inputType === "insertFromPaste" ||
+    event.inputType === "insertFromPasteAsQuotation" ||
     event.inputType === "insertFromDrop" ||
-    event.inputType === "insertReplacementText"
+    event.inputType === "insertReplacementText" ||
+    event.inputType === "insertFromYank" ||
+    event.inputType === "insertTranspose"
   ) {
-    // Keep cells plain text: take the text/plain payload instead of letting
-    // the browser splice styled HTML into the contenteditable.
-    const insert =
-      event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
-    return replaceCellTextRange(
-      value,
-      from,
-      to,
-      insert.replace(/\r\n?/g, "\n"),
-    );
+    const transferred = event.dataTransfer?.getData("text/plain");
+    // Chromium can expose the transfer object while keeping its plain-text
+    // slot empty for replacement-style events. Preserve a populated `data`
+    // fallback instead of accidentally turning that replacement into delete.
+    return transferred || event.data || null;
   }
+  return event.data;
+}
 
-  if (
-    event.inputType === "insertLineBreak" ||
-    event.inputType === "insertParagraph"
-  ) {
-    return replaceCellTextRange(value, from, to, "\n");
-  }
+function getCellDomPointOffset(
+  cell: HTMLElement,
+  node: Node,
+  offset: number,
+): number {
+  const range = cell.ownerDocument.createRange();
+  range.selectNodeContents(cell);
+  range.setEnd(node, offset);
+  const measured = range.toString().replace(/\u00a0/g, " ").length;
+  range.detach();
+  return measured;
+}
 
-  if (
-    event.inputType === "deleteContentBackward" ||
-    event.inputType === "deleteByCut"
-  ) {
-    if (from !== to) {
-      return replaceCellTextRange(value, from, to, "");
-    }
-    if (from === 0) {
-      return { value, caretOffset: 0 };
-    }
-    return replaceCellTextRange(value, from - 1, to, "");
-  }
-
-  if (event.inputType === "deleteContentForward") {
-    if (from !== to) {
-      return replaceCellTextRange(value, from, to, "");
-    }
-    if (to >= value.length) {
-      return { value, caretOffset: value.length };
-    }
-    return replaceCellTextRange(value, from, to + 1, "");
-  }
-
-  return null;
+function isNodeInsideCell(node: Node, cell: HTMLElement): boolean {
+  return node === cell || cell.contains(node);
 }
 
 function computeCellTextInsertionSnapshot(

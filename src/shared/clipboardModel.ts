@@ -1,5 +1,6 @@
 import {
   CellAlignment,
+  ensureTableCellSeparatorSafe,
   formatMarkdownCell,
   getCellPaddingWhitespace,
   markdownCellToDisplayText,
@@ -256,7 +257,7 @@ export function gridToMarkdown(
   const width = rows[0].length;
   const sourceRows = rows.map((row) =>
     `|${Array.from({ length: width }, (_, column) =>
-      sourceCellForMarkdown(row[column]),
+      ensureTableCellSeparatorSafe(sourceCellForMarkdown(row[column])),
     ).join("|")}|`,
   );
   const delimiter = `|${Array.from({ length: width }, (_, column) =>
@@ -399,7 +400,8 @@ export function buildGridPasteEdit(
     return alignmentDelimiter(alignment);
   });
   const lines = [rawRows[0], delimiterRaw, ...rawRows.slice(1)].map(
-    (rawCells) => `|${rawCells.join("|")}|`,
+    (rawCells) =>
+      `|${rawCells.map(ensureTableCellSeparatorSafe).join("|")}|`,
   );
   return {
     from: table.from,

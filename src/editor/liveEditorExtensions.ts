@@ -18,6 +18,7 @@ import { createDocumentSelectionInputHandler } from "./documentClipboard";
 import { createDocumentSelectionDecorations } from "./documentSelectionDecorations";
 import { TABLE_CELL_SELECTOR } from "./table/cellSelection";
 import { createTableBoundaryArrowNavigation } from "./tableBoundaryNavigation";
+import { createTableBoundaryInputHandler } from "./tableBoundaryInput";
 import { createTableCellFocusClassSync } from "./tableCellFocus";
 import { createTableDecorations } from "./tableDecorations";
 
@@ -49,6 +50,7 @@ export function createLiveEditorExtensions(
     history(),
     createEditorTheme(),
     createTableBoundaryArrowNavigation(),
+    createTableBoundaryInputHandler(),
     createDocumentSelectionInputHandler(),
     drawSelection(),
     createDocumentSelectionDecorations(),

@@ -51,6 +51,9 @@ declare global {
     __MLRT_DEBUG__?: unknown;
     __MLRT_DEBUG_EVENTS__?: DebugEvent[];
     __MLRT_EDITOR_VIEW__?: EditorView;
+    __MLRT_TEST_HOST_ISOLATED__?: boolean;
+    __MLRT_TEST_HOST_RESYNC_PENDING__?: boolean;
+    __MLRT_TEST_SET_HOST_ISOLATION__?: (isolated: boolean) => void;
   }
 }
 
@@ -59,7 +62,7 @@ interface HostSetDocumentMessage {
   text: string;
   revision: number;
   debug: boolean;
-  source?: "host" | "webviewAck";
+  source?: "host" | "webviewAck" | "webviewReject";
   ackId?: number;
   editorOptions?: unknown;
 }
@@ -78,6 +81,8 @@ interface DocumentChangeMessage {
 interface EditorCommandMessage {
   type: "editorCommand";
   command: "undo" | "redo";
+  beforeText: string;
+  baseRevision: number;
 }
 
 interface DebugEvent {
@@ -148,6 +153,21 @@ let editorOptions = readEditorOptions();
 const pendingWebviewEchoes: { id: number; text: string }[] = [];
 const pendingHostUndoFocusStack: PendingHostUndoFocus[] = [];
 const MAX_PENDING_HOST_UNDO_FOCUS = 200;
+
+// The full Electron visual suite deliberately injects synthetic host snapshots
+// while exercising webview-only stale-sync paths. Isolating mutation messages
+// during that section keeps the real Extension Host authoritative document
+// unchanged; disabling isolation requests a fresh real snapshot before the
+// suite resumes host-integrated undo checks.
+window.__MLRT_TEST_SET_HOST_ISOLATION__ = (isolated: boolean): void => {
+  window.__MLRT_TEST_HOST_ISOLATED__ = isolated;
+  window.__MLRT_TEST_HOST_RESYNC_PENDING__ = !isolated;
+  pendingWebviewEchoes.length = 0;
+  pendingHostUndoFocusStack.length = 0;
+  if (!isolated) {
+    vscode.postMessage({ type: "ready" });
+  }
+};
 
 try {
   const editorExtensions = createLiveEditorExtensions(editorOptions);
@@ -239,6 +259,10 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     return;
   }
 
+  if (window.__MLRT_TEST_HOST_RESYNC_PENDING__) {
+    window.__MLRT_TEST_HOST_RESYNC_PENDING__ = false;
+  }
+
   hostRevision = message.revision;
   debugEnabled = message.debug;
   if (isEditorOptions(message.editorOptions)) {
@@ -246,16 +270,43 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   }
   if (message.source === "webviewAck") {
     if (typeof message.ackId === "number") {
-      acknowledgeWebviewEcho(
+      const matched = acknowledgeWebviewEcho(
         message.ackId,
         message.text,
         `host revision ${message.revision}`,
       );
+      if (!matched) {
+        pendingWebviewEchoes.length = 0;
+        pendingHostUndoFocusStack.length = 0;
+        const mismatchSource = `host revision ${message.revision} authoritative mismatch`;
+        if (
+          !reconcileEditorCompositionWithHostDocument(
+            message.text,
+            mismatchSource,
+          )
+        ) {
+          setEditorDocument(message.text, mismatchSource, false);
+        }
+      }
     } else {
       recordDebug("ignore-unidentified-webview-echo", {
         echoedTextLength: message.text.length,
         currentTextLength: view.state.doc.length,
       });
+    }
+    return;
+  }
+  if (message.source === "webviewReject") {
+    pendingWebviewEchoes.length = 0;
+    pendingHostUndoFocusStack.length = 0;
+    const rejectionSource = `host revision ${message.revision} rejected stale change`;
+    if (
+      !reconcileEditorCompositionWithHostDocument(
+        message.text,
+        rejectionSource,
+      )
+    ) {
+      setEditorDocument(message.text, rejectionSource, false);
     }
     return;
   }
@@ -501,10 +552,25 @@ function postEditorCommand(command: EditorCommandMessage["command"]): void {
     activeElement: summarizeTarget(document.activeElement),
     editorSelection: summarizeEditorSelection(view),
   });
-  vscode.postMessage({
+  postMutationToHost({
     type: "editorCommand",
     command,
+    beforeText: view.state.doc.toString(),
+    baseRevision: hostRevision,
   } satisfies EditorCommandMessage);
+}
+
+function postMutationToHost(message: unknown): void {
+  if (window.__MLRT_TEST_HOST_ISOLATED__) {
+    recordDebug("suppress-test-host-mutation", {
+      messageType:
+        typeof message === "object" && message !== null && "type" in message
+          ? String(message.type)
+          : "unknown",
+    });
+    return;
+  }
+  vscode.postMessage(message);
 }
 
 function computeMinimalTextChange(
@@ -562,14 +628,14 @@ function acknowledgeWebviewEcho(
   const acknowledged = pendingWebviewEchoes[acknowledgedIndex];
   if (normalizeDocumentText(acknowledged.text) !== normalizeDocumentText(text)) {
     pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
-    recordDebug("ignore-mismatched-webview-echo", {
+    recordDebug("resync-mismatched-webview-echo", {
       ackId,
       pendingEchoCount: pendingWebviewEchoes.length,
       echoedTextLength: text.length,
       expectedTextLength: acknowledged.text.length,
       currentTextLength: view.state.doc.length,
     });
-    return true;
+    return false;
   }
 
   pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
@@ -839,6 +905,7 @@ function publishEditorDocumentUpdate(update: ViewUpdate): void {
   lastTableCellCommit = null;
   postDocumentChanges(
     update.changes,
+    update.startState.doc.toString(),
     update.state.doc.toString(),
     commitSequence,
   );
@@ -903,7 +970,7 @@ function flushEditorComposition(): void {
       anchor: composition.beforeAnchor,
     },
   });
-  postDocumentChanges(changes, finalText);
+  postDocumentChanges(changes, composition.beforeText, finalText);
 }
 
 function flushPendingEditorCommandsAfterComposition(): void {
@@ -1070,6 +1137,7 @@ function reconcileEditorCompositionWithHostDocument(
 
 function postDocumentChanges(
   changes: ChangeSet,
+  beforeText: string,
   text: string,
   commitSequence?: TableCellCommitSequence,
 ): void {
@@ -1092,10 +1160,11 @@ function postDocumentChanges(
   if (pendingWebviewEchoes.length > 100) {
     pendingWebviewEchoes.splice(0, pendingWebviewEchoes.length - 100);
   }
-  vscode.postMessage({
+  postMutationToHost({
     type: "change",
     changeId,
     text,
+    beforeText,
     changes: documentChanges,
     changeGroups: commitSequence?.steps.map((step) => [step.change]),
     baseRevision: hostRevision,

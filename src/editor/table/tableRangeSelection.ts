@@ -953,7 +953,8 @@ export function bindTableRangeSelection(
 export function getTableRangeSelection(
   doc: Document,
 ): TableRangeSelectionState | null {
-  const state = states.get(doc)?.selection ?? null;
+  const documentState = states.get(doc);
+  const state = documentState?.selection ?? null;
   if (state && !state.wrapper.isConnected) {
     const replacement = Array.from(
       doc.querySelectorAll<HTMLElement>(".mlrt-table-widget"),
@@ -963,15 +964,24 @@ export function getTableRangeSelection(
     );
     if (replacement) {
       state.wrapper = replacement;
+      if (!tableSelectionFitsWrapper(state, replacement)) {
+        discardStaleTableSelection(documentState, state);
+        return null;
+      }
       applySelectionClasses(state);
       return state;
     }
+    discardStaleTableSelection(documentState, state);
     return null;
   }
   if (state) {
     const currentFrom = Number(state.wrapper.dataset.srcFrom ?? "NaN");
     if (Number.isFinite(currentFrom)) {
       state.tableFrom = currentFrom;
+    }
+    if (!tableSelectionFitsWrapper(state, state.wrapper)) {
+      discardStaleTableSelection(documentState, state);
+      return null;
     }
   }
   return state;
@@ -1230,7 +1240,37 @@ function restoreSelectionClasses(wrapper: HTMLElement): void {
     selection.tableFrom === Number(wrapper.dataset.srcFrom ?? "-1")
   ) {
     selection.wrapper = wrapper;
+    if (!tableSelectionFitsWrapper(selection, wrapper)) {
+      discardStaleTableSelection(
+        states.get(wrapper.ownerDocument),
+        selection,
+      );
+      return;
+    }
     applySelectionClasses(selection);
+  }
+}
+
+function tableSelectionFitsWrapper(
+  selection: TableRangeSelectionState,
+  wrapper: HTMLElement,
+): boolean {
+  return Boolean(
+    cellFromAddress(wrapper, selection.anchor) &&
+      cellFromAddress(wrapper, selection.head),
+  );
+}
+
+function discardStaleTableSelection(
+  documentState: SelectionDocumentState | undefined,
+  selection: TableRangeSelectionState,
+): void {
+  clearSelectionClasses(selection.wrapper);
+  if (documentState?.selection === selection) {
+    documentState.selection = null;
+  }
+  if (selection.wrapper.isConnected) {
+    dispatchSelectionChange(selection.wrapper);
   }
 }
 

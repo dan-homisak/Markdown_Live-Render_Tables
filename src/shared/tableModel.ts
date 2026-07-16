@@ -49,8 +49,12 @@ interface SourceLine {
   text: string;
 }
 
-const FENCE_RE = /^\s{0,3}(```|~~~)/;
 const DELIMITER_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+interface FenceState {
+  marker: "`" | "~";
+  length: number;
+}
 
 const parsedTablesByDoc = new WeakMap<object, ParsedTable[]>();
 
@@ -95,17 +99,42 @@ export function positionBeforeTable(table: ParsedTable): number {
 export function parseMarkdownTables(source: string): ParsedTable[] {
   const lines = getSourceLines(source);
   const tables: ParsedTable[] = [];
-  let inFence = false;
+  let activeFence: FenceState | null = null;
+  let inHtmlComment = false;
   let lineIndex = 0;
 
   while (lineIndex < lines.length) {
     const line = lines[lineIndex];
-    if (FENCE_RE.test(line.text)) {
-      inFence = !inFence;
+    if (inHtmlComment) {
+      if (line.text.includes("-->")) {
+        inHtmlComment = false;
+      }
       lineIndex++;
       continue;
     }
-    if (inFence) {
+
+    if (activeFence) {
+      if (isClosingFence(line.text, activeFence)) {
+        activeFence = null;
+      }
+      lineIndex++;
+      continue;
+    }
+
+    if (startsHtmlCommentBlock(line.text)) {
+      inHtmlComment = !line.text.includes("-->");
+      lineIndex++;
+      continue;
+    }
+
+    const openingFence = parseOpeningFence(line.text);
+    if (openingFence) {
+      activeFence = openingFence;
+      lineIndex++;
+      continue;
+    }
+
+    if (isIndentedCodeLine(line.text)) {
       lineIndex++;
       continue;
     }
@@ -113,8 +142,8 @@ export function parseMarkdownTables(source: string): ParsedTable[] {
     const delimiterLine = lines[lineIndex + 1];
     const isHeaderCandidate =
       hasUnescapedPipe(line.text) &&
-      !DELIMITER_RE.test(line.text) &&
       Boolean(delimiterLine) &&
+      !isIndentedCodeLine(delimiterLine.text) &&
       DELIMITER_RE.test(delimiterLine.text) &&
       hasUnescapedPipe(delimiterLine.text);
 
@@ -135,7 +164,9 @@ export function parseMarkdownTables(source: string): ParsedTable[] {
     while (bodyIndex < lines.length) {
       const bodyLine = lines[bodyIndex];
       if (
-        FENCE_RE.test(bodyLine.text) ||
+        parseOpeningFence(bodyLine.text) ||
+        startsHtmlCommentBlock(bodyLine.text) ||
+        isIndentedCodeLine(bodyLine.text) ||
         bodyLine.text.trim() === "" ||
         !hasUnescapedPipe(bodyLine.text)
       ) {
@@ -143,7 +174,7 @@ export function parseMarkdownTables(source: string): ParsedTable[] {
       }
 
       const row = parseRow(bodyLine);
-      if (row.cells.length === 0 || DELIMITER_RE.test(bodyLine.text)) {
+      if (row.cells.length === 0) {
         break;
       }
 
@@ -178,6 +209,61 @@ export function parseMarkdownTables(source: string): ParsedTable[] {
   return tables;
 }
 
+/**
+ * Parses a CommonMark-style fenced-code opener. Closing fences are tracked by
+ * marker and run length so a tilde fence cannot close a backtick fence, and a
+ * shorter run cannot close a longer opener.
+ */
+function parseOpeningFence(text: string): FenceState | null {
+  if (isIndentedCodeLine(text)) {
+    return null;
+  }
+
+  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  const run = match[1];
+  const marker = run[0] as FenceState["marker"];
+  if (marker === "`" && match[2].includes("`")) {
+    return null;
+  }
+
+  return { marker, length: run.length };
+}
+
+function isClosingFence(text: string, fence: FenceState): boolean {
+  const match = /^ {0,3}(`+|~+)[ \t]*$/.exec(text);
+  return Boolean(
+    match && match[1][0] === fence.marker && match[1].length >= fence.length,
+  );
+}
+
+function startsHtmlCommentBlock(text: string): boolean {
+  return /^ {0,3}<!--/.test(text);
+}
+
+/** Four columns of leading indentation form an indented code block. */
+function isIndentedCodeLine(text: string): boolean {
+  let column = 0;
+  for (const character of text) {
+    if (character === " ") {
+      column++;
+    } else if (character === "\t") {
+      column += 4 - (column % 4);
+    } else {
+      break;
+    }
+
+    if (column >= 4) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function rowToDisplayValues(
   row: ParsedRow,
   columnCount: number,
@@ -206,6 +292,25 @@ export function formatMarkdownCell(
   return (options.trim === false ? normalized : normalized.trim())
     .replace(/\n/g, "<br>")
     .replace(/\|/g, "&#124;");
+}
+
+/**
+ * Makes raw cell source safe to place immediately before a generated table
+ * separator. Markdown-it treats a separator preceded by any backslash run as
+ * escaped (including an even run), which merges this cell with the next one.
+ * Append invisible Markdown padding that the display-value parser trims off.
+ */
+export function ensureTableCellSeparatorSafe(raw: string): string {
+  return raw.endsWith("\\") ? `${raw} ` : raw;
+}
+
+/** Adds the structural opener needed when a compact row's first cell changes. */
+export function tableCellLeadingPipePrefix(
+  row: ParsedRow,
+  column: number,
+): "" | "|" {
+  const cell = row.cells[column];
+  return column === 0 && cell?.start === row.from ? "|" : "";
 }
 
 export function formatTableCellEdit(
@@ -241,7 +346,9 @@ export function formatTableCellSourceEdit(
   return {
     from: cell.start,
     to: cell.end,
-    insert: `${leadingWhitespace}${formatMarkdownCell(value)}${trailingWhitespace}`,
+    insert: ensureTableCellSeparatorSafe(
+      `${tableCellLeadingPipePrefix(row, column)}${leadingWhitespace}${formatMarkdownCell(value)}${trailingWhitespace}`,
+    ),
   };
 }
 

@@ -24008,7 +24008,6 @@
   });
 
   // src/shared/tableModel.ts
-  var FENCE_RE = /^\s{0,3}(```|~~~)/;
   var DELIMITER_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
   var parsedTablesByDoc = /* @__PURE__ */ new WeakMap();
   function getParsedTables(doc2) {
@@ -24029,21 +24028,42 @@
   function parseMarkdownTables(source) {
     const lines = getSourceLines(source);
     const tables2 = [];
-    let inFence = false;
+    let activeFence = null;
+    let inHtmlComment = false;
     let lineIndex = 0;
     while (lineIndex < lines.length) {
       const line = lines[lineIndex];
-      if (FENCE_RE.test(line.text)) {
-        inFence = !inFence;
+      if (inHtmlComment) {
+        if (line.text.includes("-->")) {
+          inHtmlComment = false;
+        }
         lineIndex++;
         continue;
       }
-      if (inFence) {
+      if (activeFence) {
+        if (isClosingFence(line.text, activeFence)) {
+          activeFence = null;
+        }
+        lineIndex++;
+        continue;
+      }
+      if (startsHtmlCommentBlock(line.text)) {
+        inHtmlComment = !line.text.includes("-->");
+        lineIndex++;
+        continue;
+      }
+      const openingFence = parseOpeningFence(line.text);
+      if (openingFence) {
+        activeFence = openingFence;
+        lineIndex++;
+        continue;
+      }
+      if (isIndentedCodeLine(line.text)) {
         lineIndex++;
         continue;
       }
       const delimiterLine2 = lines[lineIndex + 1];
-      const isHeaderCandidate = hasUnescapedPipe(line.text) && !DELIMITER_RE.test(line.text) && Boolean(delimiterLine2) && DELIMITER_RE.test(delimiterLine2.text) && hasUnescapedPipe(delimiterLine2.text);
+      const isHeaderCandidate = hasUnescapedPipe(line.text) && Boolean(delimiterLine2) && !isIndentedCodeLine(delimiterLine2.text) && DELIMITER_RE.test(delimiterLine2.text) && hasUnescapedPipe(delimiterLine2.text);
       if (!isHeaderCandidate || !delimiterLine2) {
         lineIndex++;
         continue;
@@ -24058,11 +24078,11 @@
       let bodyIndex = lineIndex + 2;
       while (bodyIndex < lines.length) {
         const bodyLine = lines[bodyIndex];
-        if (FENCE_RE.test(bodyLine.text) || bodyLine.text.trim() === "" || !hasUnescapedPipe(bodyLine.text)) {
+        if (parseOpeningFence(bodyLine.text) || startsHtmlCommentBlock(bodyLine.text) || isIndentedCodeLine(bodyLine.text) || bodyLine.text.trim() === "" || !hasUnescapedPipe(bodyLine.text)) {
           break;
         }
         const row = parseRow2(bodyLine);
-        if (row.cells.length === 0 || DELIMITER_RE.test(bodyLine.text)) {
+        if (row.cells.length === 0) {
           break;
         }
         body.push(row);
@@ -24092,6 +24112,46 @@
     }
     return tables2;
   }
+  function parseOpeningFence(text3) {
+    if (isIndentedCodeLine(text3)) {
+      return null;
+    }
+    const match2 = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(text3);
+    if (!match2) {
+      return null;
+    }
+    const run = match2[1];
+    const marker = run[0];
+    if (marker === "`" && match2[2].includes("`")) {
+      return null;
+    }
+    return { marker, length: run.length };
+  }
+  function isClosingFence(text3, fence2) {
+    const match2 = /^ {0,3}(`+|~+)[ \t]*$/.exec(text3);
+    return Boolean(
+      match2 && match2[1][0] === fence2.marker && match2[1].length >= fence2.length
+    );
+  }
+  function startsHtmlCommentBlock(text3) {
+    return /^ {0,3}<!--/.test(text3);
+  }
+  function isIndentedCodeLine(text3) {
+    let column = 0;
+    for (const character of text3) {
+      if (character === " ") {
+        column++;
+      } else if (character === "	") {
+        column += 4 - column % 4;
+      } else {
+        break;
+      }
+      if (column >= 4) {
+        return true;
+      }
+    }
+    return false;
+  }
   function rowToDisplayValues(row, columnCount) {
     return Array.from(
       { length: columnCount },
@@ -24107,6 +24167,13 @@
   function formatMarkdownCell(value, options = {}) {
     const normalized = value.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
     return (options.trim === false ? normalized : normalized.trim()).replace(/\n/g, "<br>").replace(/\|/g, "&#124;");
+  }
+  function ensureTableCellSeparatorSafe(raw) {
+    return raw.endsWith("\\") ? `${raw} ` : raw;
+  }
+  function tableCellLeadingPipePrefix(row, column) {
+    const cell2 = row.cells[column];
+    return column === 0 && cell2?.start === row.from ? "|" : "";
   }
   function formatTableCellEdit(row, columnCount, column, value) {
     const values2 = rowToDisplayValues(row, Math.max(columnCount, column + 1));
@@ -24128,7 +24195,9 @@
     return {
       from: cell2.start,
       to: cell2.end,
-      insert: `${leadingWhitespace}${formatMarkdownCell(value)}${trailingWhitespace}`
+      insert: ensureTableCellSeparatorSafe(
+        `${tableCellLeadingPipePrefix(row, column)}${leadingWhitespace}${formatMarkdownCell(value)}${trailingWhitespace}`
+      )
     };
   }
   function getCellPaddingWhitespace(raw) {
@@ -24253,17 +24322,19 @@
         return true;
       }
       const tables2 = getParsedTables(transaction.startState.doc);
-      if (tables2.length === 0 || !selectionTouchesTableSource(
-        transaction.startState,
-        transaction.startState.selection,
-        tables2
-      )) {
+      if (tables2.length === 0) {
         return true;
       }
       let changeTouchesTable = false;
-      transaction.changes.iterChangedRanges((from, to) => {
+      transaction.changes.iterChanges((from, to, _fromB, _toB, inserted) => {
         if (tables2.some(
-          (table2) => changeTouchesTableSource(transaction.startState, from, to, table2)
+          (table2) => changeTouchesTableSource(
+            transaction.startState,
+            from,
+            to,
+            inserted.toString(),
+            table2
+          )
         )) {
           changeTouchesTable = true;
         }
@@ -24319,11 +24390,6 @@
   function isUndoRedo(transaction) {
     return transaction.isUserEvent("undo") || transaction.isUserEvent("redo");
   }
-  function selectionTouchesTableSource(state, selection, tables2) {
-    return selection.ranges.some(
-      (range) => tables2.some((table2) => rangeTouchesTableSource(state, range, table2))
-    );
-  }
   function findSafeSelectionAnchor(state, previousHead) {
     const tables2 = getParsedTables(state.doc);
     const range = state.selection.main;
@@ -24344,11 +24410,17 @@
     }
     return range.from < getTableReplacementTo(state, table2) && range.to > table2.from;
   }
-  function changeTouchesTableSource(state, from, to, table2) {
+  function changeTouchesTableSource(state, from, to, inserted, table2) {
     if (from === to) {
+      if (from === table2.to && table2.to === state.doc.length) {
+        return !inserted.startsWith("\n");
+      }
       return isPositionInTableSource(state, from, table2);
     }
-    return from < getTableReplacementTo(state, table2) && to > table2.from;
+    return from < getTableReplacementTo(state, table2) && to > getTableReplacementFrom(state, table2);
+  }
+  function getTableReplacementFrom(state, table2) {
+    return table2.from > 0 && state.doc.sliceString(table2.from - 1, table2.from) === "\n" ? table2.from - 1 : table2.from;
   }
   function isPositionInTableSource(state, position, table2) {
     return position >= table2.from && position < getTableReplacementTo(state, table2);
@@ -32931,7 +33003,7 @@
     const sourceRows = rows.map(
       (row) => `|${Array.from(
         { length: width },
-        (_, column) => sourceCellForMarkdown(row[column])
+        (_, column) => ensureTableCellSeparatorSafe(sourceCellForMarkdown(row[column]))
       ).join("|")}|`
     );
     const delimiter2 = `|${Array.from(
@@ -33032,7 +33104,7 @@
       return alignmentDelimiter(alignment);
     });
     const lines = [rawRows[0], delimiterRaw, ...rawRows.slice(1)].map(
-      (rawCells) => `|${rawCells.join("|")}|`
+      (rawCells) => `|${rawCells.map(ensureTableCellSeparatorSafe).join("|")}|`
     );
     return {
       from: table2.from,
@@ -33960,7 +34032,8 @@
     };
   }
   function getTableRangeSelection(doc2) {
-    const state = states.get(doc2)?.selection ?? null;
+    const documentState = states.get(doc2);
+    const state = documentState?.selection ?? null;
     if (state && !state.wrapper.isConnected) {
       const replacement = Array.from(
         doc2.querySelectorAll(".mlrt-table-widget")
@@ -33969,15 +34042,24 @@
       );
       if (replacement) {
         state.wrapper = replacement;
+        if (!tableSelectionFitsWrapper(state, replacement)) {
+          discardStaleTableSelection(documentState, state);
+          return null;
+        }
         applySelectionClasses(state);
         return state;
       }
+      discardStaleTableSelection(documentState, state);
       return null;
     }
     if (state) {
       const currentFrom = Number(state.wrapper.dataset.srcFrom ?? "NaN");
       if (Number.isFinite(currentFrom)) {
         state.tableFrom = currentFrom;
+      }
+      if (!tableSelectionFitsWrapper(state, state.wrapper)) {
+        discardStaleTableSelection(documentState, state);
+        return null;
       }
     }
     return state;
@@ -34162,7 +34244,28 @@
     const selection = states.get(wrapper.ownerDocument)?.selection;
     if (selection && selection.tableFrom === Number(wrapper.dataset.srcFrom ?? "-1")) {
       selection.wrapper = wrapper;
+      if (!tableSelectionFitsWrapper(selection, wrapper)) {
+        discardStaleTableSelection(
+          states.get(wrapper.ownerDocument),
+          selection
+        );
+        return;
+      }
       applySelectionClasses(selection);
+    }
+  }
+  function tableSelectionFitsWrapper(selection, wrapper) {
+    return Boolean(
+      cellFromAddress(wrapper, selection.anchor) && cellFromAddress(wrapper, selection.head)
+    );
+  }
+  function discardStaleTableSelection(documentState, selection) {
+    clearSelectionClasses(selection.wrapper);
+    if (documentState?.selection === selection) {
+      documentState.selection = null;
+    }
+    if (selection.wrapper.isConnected) {
+      dispatchSelectionChange(selection.wrapper);
     }
   }
   function clearSelectionClasses(wrapper) {
@@ -36407,6 +36510,34 @@ ${replacement}
     return Boolean(findCell(view2.dom.ownerDocument.activeElement));
   }
 
+  // src/editor/tableBoundaryInput.ts
+  function createTableBoundaryInputHandler() {
+    return EditorView.inputHandler.of((view2, from, to, text3) => {
+      if (from !== to || text3.length === 0) {
+        return false;
+      }
+      const table2 = getParsedTables(view2.state.doc).find(
+        (candidate) => candidate.from === 0 && from === candidate.from || candidate.to === view2.state.doc.length && from === candidate.to
+      );
+      if (!table2) {
+        return false;
+      }
+      const insertingBefore = table2.from === 0 && from === table2.from;
+      const insert2 = insertingBefore ? text3.endsWith("\n") ? text3 : `${text3}
+` : text3.startsWith("\n") ? text3 : `
+${text3}`;
+      const anchor = insertingBefore ? from + insert2.length - 1 : from + insert2.length;
+      view2.dispatch({
+        changes: { from, to, insert: insert2 },
+        selection: EditorSelection.cursor(anchor, insertingBefore ? -1 : 1),
+        annotations: allowTableSourceChange.of(true),
+        scrollIntoView: true,
+        userEvent: "input.type"
+      });
+      return true;
+    });
+  }
+
   // src/editor/tableCellFocus.ts
   var TABLE_CELL_FOCUSED_CLASS = "mlrt-table-cell-focused";
   var SELECTION_ACTIVE_CLASS = "mlrt-selection-active";
@@ -36674,6 +36805,94 @@ ${replacement}
     return Math.max(min, Math.min(value, max));
   }
 
+  // src/shared/tableCellInput.ts
+  var graphemeSegmenter = new Intl.Segmenter(void 0, {
+    granularity: "grapheme"
+  });
+  function computeCellBeforeInputDecision(options) {
+    const { value, inputType, data: data2 } = options;
+    const selection = normalizeSelection(
+      value,
+      options.targetSelection === void 0 ? options.selection : options.targetSelection
+    );
+    if (!selection) {
+      return { kind: "block" };
+    }
+    const from = Math.min(selection.anchor, selection.head);
+    const to = Math.max(selection.anchor, selection.head);
+    if (inputType === "insertText") {
+      return data2 === null ? { kind: "native" } : applyReplacement(value, from, to, data2);
+    }
+    if (inputType === "insertFromPaste" || inputType === "insertFromPasteAsQuotation" || inputType === "insertFromDrop" || inputType === "insertReplacementText" || inputType === "insertFromYank" || inputType === "insertTranspose") {
+      return data2 === null ? { kind: "block" } : applyReplacement(value, from, to, normalizeLineEndings(data2));
+    }
+    if (inputType === "insertLineBreak" || inputType === "insertParagraph") {
+      return applyReplacement(value, from, to, "\n");
+    }
+    if (inputType === "insertCompositionText" || inputType === "deleteCompositionText") {
+      return { kind: "native" };
+    }
+    if (inputType.startsWith("delete")) {
+      if (from !== to) {
+        return applyReplacement(value, from, to, "");
+      }
+      if (inputType === "deleteContentBackward") {
+        const previous = previousGraphemeBoundary(value, from);
+        return applyReplacement(value, previous, to, "");
+      }
+      if (inputType === "deleteContentForward") {
+        const next2 = nextGraphemeBoundary(value, to);
+        return applyReplacement(value, from, next2, "");
+      }
+      return {
+        kind: "apply",
+        snapshot: { value, caretOffset: from }
+      };
+    }
+    return { kind: "block" };
+  }
+  function previousGraphemeBoundary(value, offset) {
+    const clamped = clampOffset(value, offset);
+    let previous = 0;
+    for (const segment of graphemeSegmenter.segment(value)) {
+      if (segment.index >= clamped) {
+        break;
+      }
+      previous = segment.index;
+    }
+    return previous;
+  }
+  function nextGraphemeBoundary(value, offset) {
+    const clamped = clampOffset(value, offset);
+    for (const segment of graphemeSegmenter.segment(value)) {
+      if (segment.index > clamped) {
+        return segment.index;
+      }
+    }
+    return value.length;
+  }
+  function normalizeSelection(value, selection) {
+    if (!selection || !Number.isInteger(selection.anchor) || !Number.isInteger(selection.head) || selection.anchor < 0 || selection.head < 0 || selection.anchor > value.length || selection.head > value.length) {
+      return null;
+    }
+    return selection;
+  }
+  function applyReplacement(value, from, to, insert2) {
+    return {
+      kind: "apply",
+      snapshot: {
+        value: `${value.slice(0, from)}${insert2}${value.slice(to)}`,
+        caretOffset: from + insert2.length
+      }
+    };
+  }
+  function clampOffset(value, offset) {
+    return Math.min(value.length, Math.max(0, offset));
+  }
+  function normalizeLineEndings(value) {
+    return value.replace(/\r\n?/g, "\n");
+  }
+
   // src/editor/table/tableCellMetadata.ts
   function syncTableSourceMetadata(dom, table2) {
     setTableWidgetTable(dom, table2);
@@ -36765,17 +36984,30 @@ ${replacement}
         scheduleTableLayout();
         return;
       }
-      const nextSnapshot = computeBeforeInputSnapshot(cell2, event);
-      if (!nextSnapshot) {
+      const cellSelection = getCellSelectionOffsets(cell2);
+      const inputDecision = computeCellBeforeInputDecision({
+        value: readCellDisplayValue(cell2),
+        selection: cellSelection,
+        // A target range confined to this editing host cannot make a DOM
+        // selection that visibly crosses sibling cells safe. Fail closed when
+        // the live selection itself is not wholly owned by the target cell.
+        targetSelection: cellSelection === null ? null : getCellInputTargetSelection(cell2, event),
+        inputType: event.inputType,
+        data: getCellInputData(event)
+      });
+      if (inputDecision.kind === "native") {
         recordCellEditHistory(cell2);
         return;
       }
       event.preventDefault();
+      if (inputDecision.kind === "block") {
+        return;
+      }
       applyCellEditSnapshotChange(
         view2,
         currentTable,
         cell2,
-        nextSnapshot,
+        inputDecision.snapshot,
         scheduleTableLayout
       );
     });
@@ -37106,7 +37338,9 @@ ${replacement}
     return {
       from: sourceCell.start,
       to: sourceCell.end,
-      insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`
+      insert: ensureTableCellSeparatorSafe(
+        `${tableCellLeadingPipePrefix(sourceRow, column)}${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`
+      )
     };
   }
   function readCurrentSourceRowText(view2, sourceRow) {
@@ -37334,49 +37568,57 @@ ${replacement}
     history2.lastValue = snapshot.value;
     return true;
   }
-  function computeBeforeInputSnapshot(cell2, event) {
-    const selection = getCellSelectionOffsets(cell2);
-    if (!selection) {
+  function getCellInputTargetSelection(cell2, event) {
+    let ranges;
+    try {
+      ranges = event.getTargetRanges();
+    } catch {
+      return void 0;
+    }
+    if (ranges.length === 0) {
+      return void 0;
+    }
+    if (ranges.length !== 1) {
       return null;
     }
-    const value = readCellDisplayValue(cell2);
-    const from = Math.min(selection.anchor, selection.head);
-    const to = Math.max(selection.anchor, selection.head);
-    if (event.inputType === "insertText") {
-      const insert2 = event.data ?? "";
-      return replaceCellTextRange(value, from, to, insert2);
+    const [range] = ranges;
+    if (!isNodeInsideCell(range.startContainer, cell2) || !isNodeInsideCell(range.endContainer, cell2)) {
+      return null;
     }
-    if (event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop" || event.inputType === "insertReplacementText") {
-      const insert2 = event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
-      return replaceCellTextRange(
-        value,
-        from,
-        to,
-        insert2.replace(/\r\n?/g, "\n")
-      );
+    try {
+      return {
+        anchor: getCellDomPointOffset(
+          cell2,
+          range.startContainer,
+          range.startOffset
+        ),
+        head: getCellDomPointOffset(
+          cell2,
+          range.endContainer,
+          range.endOffset
+        )
+      };
+    } catch {
+      return null;
     }
-    if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
-      return replaceCellTextRange(value, from, to, "\n");
+  }
+  function getCellInputData(event) {
+    if (event.inputType === "insertFromPaste" || event.inputType === "insertFromPasteAsQuotation" || event.inputType === "insertFromDrop" || event.inputType === "insertReplacementText" || event.inputType === "insertFromYank" || event.inputType === "insertTranspose") {
+      const transferred = event.dataTransfer?.getData("text/plain");
+      return transferred || event.data || null;
     }
-    if (event.inputType === "deleteContentBackward" || event.inputType === "deleteByCut") {
-      if (from !== to) {
-        return replaceCellTextRange(value, from, to, "");
-      }
-      if (from === 0) {
-        return { value, caretOffset: 0 };
-      }
-      return replaceCellTextRange(value, from - 1, to, "");
-    }
-    if (event.inputType === "deleteContentForward") {
-      if (from !== to) {
-        return replaceCellTextRange(value, from, to, "");
-      }
-      if (to >= value.length) {
-        return { value, caretOffset: value.length };
-      }
-      return replaceCellTextRange(value, from, to + 1, "");
-    }
-    return null;
+    return event.data;
+  }
+  function getCellDomPointOffset(cell2, node, offset) {
+    const range = cell2.ownerDocument.createRange();
+    range.selectNodeContents(cell2);
+    range.setEnd(node, offset);
+    const measured = range.toString().replace(/\u00a0/g, " ").length;
+    range.detach();
+    return measured;
+  }
+  function isNodeInsideCell(node, cell2) {
+    return node === cell2 || cell2.contains(node);
   }
   function computeCellTextInsertionSnapshot(cell2, insert2) {
     const selection = getCellSelectionOffsets(cell2);
@@ -37671,7 +37913,11 @@ ${replacement}
   function replaceTableLines(table2, mutateRawCells) {
     const lines = [table2.header, table2.delimiter, ...table2.body].map((row) => {
       const emptyCellRaw = row === table2.delimiter ? EMPTY_DELIMITER_CELL_RAW : EMPTY_DATA_CELL_RAW;
-      return `|${mutateRawCells(paddedRawCells(row, table2.columnCount, emptyCellRaw), emptyCellRaw).join("|")}|`;
+      const rawCells = mutateRawCells(
+        paddedRawCells(row, table2.columnCount, emptyCellRaw),
+        emptyCellRaw
+      );
+      return `|${rawCells.map(ensureTableCellSeparatorSafe).join("|")}|`;
     });
     return {
       from: table2.from,
@@ -39875,6 +40121,7 @@ ${replacement}
       history(),
       createEditorTheme(),
       createTableBoundaryArrowNavigation(),
+      createTableBoundaryInputHandler(),
       createDocumentSelectionInputHandler(),
       drawSelection(),
       createDocumentSelectionDecorations(),
@@ -39922,6 +40169,15 @@ ${replacement}
   var pendingWebviewEchoes = [];
   var pendingHostUndoFocusStack = [];
   var MAX_PENDING_HOST_UNDO_FOCUS = 200;
+  window.__MLRT_TEST_SET_HOST_ISOLATION__ = (isolated) => {
+    window.__MLRT_TEST_HOST_ISOLATED__ = isolated;
+    window.__MLRT_TEST_HOST_RESYNC_PENDING__ = !isolated;
+    pendingWebviewEchoes.length = 0;
+    pendingHostUndoFocusStack.length = 0;
+    if (!isolated) {
+      vscode.postMessage({ type: "ready" });
+    }
+  };
   try {
     const editorExtensions = createLiveEditorExtensions(editorOptions);
     const initialDocument = readInitialDocument();
@@ -39994,6 +40250,9 @@ ${replacement}
     if (!isHostSetDocumentMessage(message)) {
       return;
     }
+    if (window.__MLRT_TEST_HOST_RESYNC_PENDING__) {
+      window.__MLRT_TEST_HOST_RESYNC_PENDING__ = false;
+    }
     hostRevision = message.revision;
     debugEnabled = message.debug;
     if (isEditorOptions(message.editorOptions)) {
@@ -40001,16 +40260,39 @@ ${replacement}
     }
     if (message.source === "webviewAck") {
       if (typeof message.ackId === "number") {
-        acknowledgeWebviewEcho(
+        const matched = acknowledgeWebviewEcho(
           message.ackId,
           message.text,
           `host revision ${message.revision}`
         );
+        if (!matched) {
+          pendingWebviewEchoes.length = 0;
+          pendingHostUndoFocusStack.length = 0;
+          const mismatchSource = `host revision ${message.revision} authoritative mismatch`;
+          if (!reconcileEditorCompositionWithHostDocument(
+            message.text,
+            mismatchSource
+          )) {
+            setEditorDocument(message.text, mismatchSource, false);
+          }
+        }
       } else {
         recordDebug("ignore-unidentified-webview-echo", {
           echoedTextLength: message.text.length,
           currentTextLength: view.state.doc.length
         });
+      }
+      return;
+    }
+    if (message.source === "webviewReject") {
+      pendingWebviewEchoes.length = 0;
+      pendingHostUndoFocusStack.length = 0;
+      const rejectionSource = `host revision ${message.revision} rejected stale change`;
+      if (!reconcileEditorCompositionWithHostDocument(
+        message.text,
+        rejectionSource
+      )) {
+        setEditorDocument(message.text, rejectionSource, false);
       }
       return;
     }
@@ -40187,10 +40469,21 @@ ${replacement}
       activeElement: summarizeTarget(document.activeElement),
       editorSelection: summarizeEditorSelection(view)
     });
-    vscode.postMessage({
+    postMutationToHost({
       type: "editorCommand",
-      command
+      command,
+      beforeText: view.state.doc.toString(),
+      baseRevision: hostRevision
     });
+  }
+  function postMutationToHost(message) {
+    if (window.__MLRT_TEST_HOST_ISOLATED__) {
+      recordDebug("suppress-test-host-mutation", {
+        messageType: typeof message === "object" && message !== null && "type" in message ? String(message.type) : "unknown"
+      });
+      return;
+    }
+    vscode.postMessage(message);
   }
   function computeMinimalTextChange(currentText, nextText) {
     let from = 0;
@@ -40228,14 +40521,14 @@ ${replacement}
     const acknowledged = pendingWebviewEchoes[acknowledgedIndex];
     if (normalizeDocumentText(acknowledged.text) !== normalizeDocumentText(text3)) {
       pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
-      recordDebug("ignore-mismatched-webview-echo", {
+      recordDebug("resync-mismatched-webview-echo", {
         ackId,
         pendingEchoCount: pendingWebviewEchoes.length,
         echoedTextLength: text3.length,
         expectedTextLength: acknowledged.text.length,
         currentTextLength: view.state.doc.length
       });
-      return true;
+      return false;
     }
     pendingWebviewEchoes.splice(0, acknowledgedIndex + 1);
     updateStatus(view.state.doc.toString(), `${source} acknowledged`);
@@ -40417,6 +40710,7 @@ ${replacement}
     lastTableCellCommit = null;
     postDocumentChanges(
       update.changes,
+      update.startState.doc.toString(),
       update.state.doc.toString(),
       commitSequence
     );
@@ -40476,7 +40770,7 @@ ${replacement}
         anchor: composition.beforeAnchor
       }
     });
-    postDocumentChanges(changes, finalText);
+    postDocumentChanges(changes, composition.beforeText, finalText);
   }
   function flushPendingEditorCommandsAfterComposition() {
     if (pendingEditorCommandsAfterComposition.length === 0) {
@@ -40582,7 +40876,7 @@ ${replacement}
     }
     return true;
   }
-  function postDocumentChanges(changes, text3, commitSequence) {
+  function postDocumentChanges(changes, beforeText, text3, commitSequence) {
     const documentChanges = [];
     changes.iterChanges((from, to, _fromB, _toB, inserted) => {
       documentChanges.push({
@@ -40602,10 +40896,11 @@ ${replacement}
     if (pendingWebviewEchoes.length > 100) {
       pendingWebviewEchoes.splice(0, pendingWebviewEchoes.length - 100);
     }
-    vscode.postMessage({
+    postMutationToHost({
       type: "change",
       changeId,
       text: text3,
+      beforeText,
       changes: documentChanges,
       changeGroups: commitSequence?.steps.map((step) => [step.change]),
       baseRevision: hostRevision

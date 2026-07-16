@@ -20,6 +20,9 @@ const userDataDir = mkdtempSync(path.join(os.tmpdir(), "mlrt-edh-"));
 const qaDir = path.join(repoRoot, "qa");
 const pixelTolerance = 0.5;
 const mixedInputOnlyComplete = Symbol("mixed-input-only-complete");
+const editingReliabilityOnlyComplete = Symbol(
+  "editing-reliability-only-complete",
+);
 await mkdir(qaDir, { recursive: true });
 const fixturePath = path.join(userDataDir, "TestTable.md");
 await writeFile(
@@ -307,6 +310,14 @@ try {
     await runMixedImeHostConflictCheck(liveClient);
     throw mixedInputOnlyComplete;
   }
+  if (process.argv.includes("--editing-reliability-only")) {
+    await runTrustedTableEditingReliabilityCheck(liveClient);
+    await captureWorkbenchScreenshot(
+      wb,
+      path.join(qaDir, "edh-editing-reliability.png"),
+    );
+    throw editingReliabilityOnlyComplete;
+  }
   const gutterAlignment = await evaluateJson(
     liveClient,
     tableGutterAlignmentExpression(),
@@ -320,6 +331,13 @@ try {
   await runMixedImeImmediateUndoCheck(liveClient);
   await runMixedImeQueuedCommandFifoCheck(liveClient);
   await runMixedImeInputUndoCheck(liveClient);
+  await sleep(300);
+  const isolatedHost = await evaluateJson(
+    liveClient,
+    setTestHostIsolationExpression(true),
+  );
+  assertTestHostIsolation(isolatedHost, true);
+  console.log("SYNTHETIC HOST TEST ISOLATION ENABLED:", isolatedHost);
   const proseSelectionSetup = await evaluateJson(
     liveClient,
     proseCharacterSelectionSetupExpression(),
@@ -1247,6 +1265,12 @@ try {
   );
   assertClipboardMoveRegressions(clipboardMoveRegressions);
   console.log("CLIPBOARD MOVE REGRESSION CHECK:", clipboardMoveRegressions);
+  const resyncedHost = await evaluateJson(
+    liveClient,
+    setTestHostIsolationExpression(false),
+  );
+  assertTestHostIsolation(resyncedHost, false);
+  console.log("REAL HOST DOCUMENT RESYNCED:", resyncedHost);
   const trustedUndoSetup = await evaluateJson(
     liveClient,
     tableTrustedUndoSetupExpression(),
@@ -1293,6 +1317,34 @@ try {
   );
   assertTableTrustedUndo(trustedUndo);
   console.log("TABLE TRUSTED UNDO CHECK:", trustedUndo);
+  // The scenario intentionally checks only the first undo (bas -> base).
+  // Perform the second real host undo so both VS Code and the webview return
+  // to the fixture before switching back to synthetic host snapshots.
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    modifiers: 4,
+    key: "z",
+    code: "KeyZ",
+    windowsVirtualKeyCode: 90,
+  });
+  await liveClient.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    modifiers: 4,
+    key: "z",
+    code: "KeyZ",
+    windowsVirtualKeyCode: 90,
+  });
+  await sleep(250);
+  const trustedUndoCleanup = await evaluateJson(
+    liveClient,
+    setTestHostIsolationExpression(false),
+  );
+  assertTestHostIsolation(trustedUndoCleanup, false);
+  const simulatedUndoIsolation = await evaluateJson(
+    liveClient,
+    setTestHostIsolationExpression(true),
+  );
+  assertTestHostIsolation(simulatedUndoIsolation, true);
   const hostUndoFocus = await evaluateJson(
     liveClient,
     tableHostUndoFocusExpression(),
@@ -1311,12 +1363,22 @@ try {
   );
   assertTableThenEditorUndoFocus(mixedUndoFocus);
   console.log("TABLE THEN EDITOR UNDO FOCUS CHECK:", mixedUndoFocus);
+  const globalUndoHostResync = await evaluateJson(
+    liveClient,
+    setTestHostIsolationExpression(false),
+  );
+  assertTestHostIsolation(globalUndoHostResync, false);
   const globalUndoBridge = await evaluateJson(
     liveClient,
     tableGlobalUndoBridgeExpression(),
   );
   assertTableGlobalUndoBridge(globalUndoBridge);
   console.log("TABLE GLOBAL UNDO BRIDGE CHECK:", globalUndoBridge);
+  const remainingSyntheticIsolation = await evaluateJson(
+    liveClient,
+    setTestHostIsolationExpression(true),
+  );
+  assertTestHostIsolation(remainingSyntheticIsolation, true);
   const outsideTypingFocus = await evaluateJson(
     liveClient,
     tableOutsideTypingFocusExpression(),
@@ -1475,7 +1537,10 @@ try {
   });
   wb.ws.close();
 } catch (error) {
-  if (error !== mixedInputOnlyComplete) {
+  if (
+    error !== mixedInputOnlyComplete &&
+    error !== editingReliabilityOnlyComplete
+  ) {
     throw error;
   }
 } finally {
@@ -3036,6 +3101,7 @@ function tableCellEditShortcutsExpression() {
       data: 'base',
     }));
     await waitForRender();
+    const afterBaseDoc = view.state.doc.toString();
     cell = queryCell();
     const selectedForDelete = cell ? selectTextOffsets(cell, 3, 4) : false;
     if (!cell) {
@@ -3057,6 +3123,16 @@ function tableCellEditShortcutsExpression() {
       keyCode: 90,
       which: 90,
     }) : null;
+    if (root.defaultView.__MLRT_TEST_HOST_ISOLATED__) {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: {
+          type: 'setDocument',
+          text: afterBaseDoc,
+          revision: 999009,
+          debug: false,
+        },
+      }));
+    }
     await waitForRender();
     cell = queryCell();
     const afterUndoText = cell?.innerText ?? null;
@@ -3921,6 +3997,49 @@ function captureSelectionFixtureExpression() {
       ok: true,
       documentLength: view.state.doc.length,
       tableCount: root.querySelectorAll('.mlrt-table-widget').length,
+    });
+  })()`;
+}
+
+function setTestHostIsolationExpression(isolated) {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const setIsolation = root?.defaultView.__MLRT_TEST_SET_HOST_ISOLATION__;
+    if (!root || !view || typeof setIsolation !== 'function') {
+      return JSON.stringify({
+        ok: false,
+        reason: 'missing test host isolation hook',
+        hasRoot: Boolean(root),
+        hasView: Boolean(view),
+        hasHook: typeof setIsolation === 'function',
+      });
+    }
+    setIsolation(${isolated ? "true" : "false"});
+    const deadline = Date.now() + 3000;
+    while (
+      root.defaultView.__MLRT_TEST_HOST_RESYNC_PENDING__ &&
+      Date.now() < deadline
+    ) {
+      await new Promise((done) => root.defaultView.setTimeout(done, 25));
+    }
+    await new Promise((done) => {
+      root.defaultView.requestAnimationFrame(() => {
+        root.defaultView.requestAnimationFrame(done);
+      });
+    });
+    const fixture = root.defaultView.__MLRT_SELECTION_FIXTURE__;
+    return JSON.stringify({
+      ok: true,
+      isolated: root.defaultView.__MLRT_TEST_HOST_ISOLATED__ === true,
+      resyncPending:
+        root.defaultView.__MLRT_TEST_HOST_RESYNC_PENDING__ === true,
+      matchesFixture:
+        typeof fixture === 'string' && view.state.doc.toString() === fixture,
+      documentLength: view.state.doc.length,
     });
   })()`;
 }
@@ -6893,19 +7012,6 @@ function tableTrustedUndoResultExpression() {
     const selection = root.defaultView.getSelection();
     const selectionCollapsed = selection?.isCollapsed ?? false;
     const afterDoc = view.state.doc.toString();
-    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
-      data: {
-        type: 'setDocument',
-        text: state.originalDoc,
-        revision: 999011,
-        debug: false,
-      },
-    }));
-    await new Promise((done) => {
-      root.defaultView.requestAnimationFrame(() => {
-        root.defaultView.requestAnimationFrame(done);
-      });
-    });
     delete root.defaultView.__MLRT_TRUSTED_UNDO_STATE__;
     return JSON.stringify({
       ok: true,
@@ -7996,6 +8102,19 @@ function assertDocumentEndScroll(result) {
   }
 }
 
+function assertTestHostIsolation(result, expectedIsolated) {
+  if (
+    !result?.ok ||
+    result.isolated !== expectedIsolated ||
+    result.resyncPending ||
+    !result.matchesFixture
+  ) {
+    throw new Error(
+      `Test host isolation ${expectedIsolated ? "enable" : "resync"} failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
 function assertTableResponsiveScroll(result) {
   const sourceLineDelta = Math.abs(
     (result?.sourceLineAfterScroll?.left ?? 0) -
@@ -8583,6 +8702,496 @@ function assertSameCellNativeSelection(result, expectedText) {
       `Same-cell native character selection failed: ${JSON.stringify({ result, expectedText })}`,
     );
   }
+}
+
+async function runTrustedTableEditingReliabilityCheck(client) {
+  const afterSetup = await evaluateJson(
+    client,
+    tableBoundaryDeleteSetupExpression("after"),
+  );
+  assertReliabilitySetup("after-table Backspace", afterSetup);
+  await dispatchTrustedEditingKey(client, {
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+  });
+  const afterResult = await evaluateJson(
+    client,
+    tableBoundaryDeleteResultExpression(),
+  );
+  assertBoundaryDeleteProtected("after-table Backspace", afterResult);
+
+  const beforeSetup = await evaluateJson(
+    client,
+    tableBoundaryDeleteSetupExpression("before"),
+  );
+  assertReliabilitySetup("before-table Delete", beforeSetup);
+  await dispatchTrustedEditingKey(client, {
+    key: "Delete",
+    code: "Delete",
+    windowsVirtualKeyCode: 46,
+  });
+  const beforeResult = await evaluateJson(
+    client,
+    tableBoundaryDeleteResultExpression(),
+  );
+  assertBoundaryDeleteProtected("before-table Delete", beforeResult);
+
+  const graphemeSetup = await evaluateJson(
+    client,
+    tableGraphemeDeleteSetupExpression(),
+  );
+  assertReliabilitySetup("grapheme Backspace", graphemeSetup);
+  await dispatchTrustedEditingKey(client, {
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+  });
+  const graphemeResult = await evaluateJson(
+    client,
+    tableGraphemeDeleteResultExpression(),
+  );
+  if (
+    !graphemeResult?.ok ||
+    graphemeResult.cellText !== "AB" ||
+    !graphemeResult.sourceContainsAB ||
+    !graphemeResult.shapePreserved ||
+    !graphemeResult.neighborPreserved ||
+    graphemeResult.hasUnpairedSurrogate ||
+    graphemeResult.lastInputType !== "deleteContentBackward"
+  ) {
+    throw new Error(
+      `Trusted grapheme Backspace failed: ${JSON.stringify(graphemeResult)}`,
+    );
+  }
+
+  const crossCellSetup = await evaluateJson(
+    client,
+    tableCrossCellDeleteSetupExpression(),
+  );
+  assertReliabilitySetup("cross-cell Backspace", crossCellSetup);
+  await dispatchTrustedEditingKey(client, {
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+  });
+  const crossCellResult = await evaluateJson(
+    client,
+    tableCrossCellDeleteResultExpression(),
+  );
+  if (
+    !crossCellResult?.ok ||
+    !crossCellResult.sourcePreserved ||
+    !crossCellResult.domShapePreserved
+  ) {
+    throw new Error(
+      `Cross-cell destructive edit guard failed: ${JSON.stringify(crossCellResult)}`,
+    );
+  }
+
+  const wordStartSetup = await evaluateJson(
+    client,
+    tableWordDeleteSetupExpression("start"),
+  );
+  assertReliabilitySetup("word Backspace at cell start", wordStartSetup);
+  await dispatchTrustedEditingKey(client, {
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+    modifiers: 1,
+  });
+  const wordStartResult = await evaluateJson(
+    client,
+    tableWordDeleteResultExpression(),
+  );
+  if (
+    !wordStartResult?.ok ||
+    !wordStartResult.sourcePreserved ||
+    !wordStartResult.shapePreserved ||
+    !wordStartResult.neighborPreserved
+  ) {
+    throw new Error(
+      `Word Backspace crossed the cell boundary: ${JSON.stringify(wordStartResult)}`,
+    );
+  }
+
+  const wordEndSetup = await evaluateJson(
+    client,
+    tableWordDeleteSetupExpression("end"),
+  );
+  assertReliabilitySetup("word Backspace within cell", wordEndSetup);
+  await dispatchTrustedEditingKey(client, {
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+    modifiers: 1,
+  });
+  const wordEndResult = await evaluateJson(
+    client,
+    tableWordDeleteResultExpression(),
+  );
+  if (
+    !wordEndResult?.ok ||
+    wordEndResult.sourcePreserved ||
+    wordEndResult.cellText === "alpha beta" ||
+    !wordEndResult.cellText?.startsWith("alpha") ||
+    !wordEndResult.shapePreserved ||
+    !wordEndResult.neighborPreserved ||
+    wordEndResult.hasUnpairedSurrogate
+  ) {
+    throw new Error(
+      `Word Backspace inside a cell failed: ${JSON.stringify(wordEndResult)}`,
+    );
+  }
+
+  console.log("TRUSTED TABLE EDITING RELIABILITY CHECK:", {
+    afterResult,
+    beforeResult,
+    graphemeResult,
+    crossCellResult,
+    wordStartResult,
+    wordEndResult,
+  });
+}
+
+async function dispatchTrustedEditingKey(client, options) {
+  const modifiers = options.modifiers ?? 0;
+  await client.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    modifiers,
+    key: options.key,
+    code: options.code,
+    windowsVirtualKeyCode: options.windowsVirtualKeyCode,
+  });
+  await client.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    modifiers,
+    key: options.key,
+    code: options.code,
+    windowsVirtualKeyCode: options.windowsVirtualKeyCode,
+  });
+  await sleep(180);
+}
+
+function assertReliabilitySetup(label, result) {
+  if (!result?.ok) {
+    throw new Error(`${label} setup failed: ${JSON.stringify(result)}`);
+  }
+}
+
+function assertBoundaryDeleteProtected(label, result) {
+  if (
+    !result?.ok ||
+    !result.sourcePreserved ||
+    !result.shapePreserved ||
+    result.postChangeDelta !== 0
+  ) {
+    throw new Error(`${label} was not blocked: ${JSON.stringify(result)}`);
+  }
+}
+
+function tableBoundaryDeleteSetupExpression(side) {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    if (!view || !wrapper) {
+      return JSON.stringify({ ok: false, reason: 'missing boundary targets' });
+    }
+    const tableFrom = Number(wrapper.dataset.srcFrom);
+    const tableTo = Number(wrapper.dataset.srcTo);
+    const position = ${JSON.stringify(side)} === 'after' ? tableTo + 1 : tableFrom - 1;
+    const source = view.state.doc.toString();
+    const separator = ${JSON.stringify(side)} === 'after'
+      ? source.slice(tableTo, tableTo + 1)
+      : source.slice(tableFrom - 1, tableFrom);
+    const rowCount = wrapper.querySelectorAll('tr').length;
+    const cellCount = wrapper.querySelectorAll('.mlrt-table-cell').length;
+    const postChangeCount = (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
+      .filter((event) => event.event === 'post-change').length;
+    root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__ = {
+      source,
+      tableFrom,
+      rowCount,
+      cellCount,
+      postChangeCount,
+    };
+    view.focus();
+    view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+    return JSON.stringify({
+      ok: separator === '\\n',
+      position,
+      separator,
+      side: ${JSON.stringify(side)},
+    });
+  })()`;
+}
+
+function tableBoundaryDeleteResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__;
+    const wrapper = Array.from(root.querySelectorAll('.mlrt-table-widget'))
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.tableFrom);
+    if (!view || !state || !wrapper) {
+      return JSON.stringify({ ok: false, reason: 'missing boundary result state' });
+    }
+    const postChangeCount = (root.defaultView.__MLRT_DEBUG_EVENTS__ ?? [])
+      .filter((event) => event.event === 'post-change').length;
+    return JSON.stringify({
+      ok: true,
+      sourcePreserved: view.state.doc.toString() === state.source,
+      shapePreserved:
+        wrapper.querySelectorAll('tr').length === state.rowCount &&
+        wrapper.querySelectorAll('.mlrt-table-cell').length === state.cellCount,
+      postChangeDelta: postChangeCount - state.postChangeCount,
+    });
+  })()`;
+}
+
+function tableGraphemeDeleteSetupExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    let cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const neighbor = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (!view || !wrapper || !cell || !neighbor) {
+      return JSON.stringify({ ok: false, reason: 'missing grapheme targets' });
+    }
+    const inputTypes = [];
+    wrapper.addEventListener('beforeinput', (event) => inputTypes.push(event.inputType), true);
+    root.defaultView.__MLRT_RELIABILITY_INPUT_TYPES__ = inputTypes;
+    cell.focus();
+    const replace = root.createRange();
+    replace.selectNodeContents(cell);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(replace);
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'A😀B',
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    cell = root.querySelector('.mlrt-table-widget .mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (!cell || !cell.firstChild) {
+      return JSON.stringify({ ok: false, reason: 'missing grapheme cell after setup' });
+    }
+    cell.focus();
+    const caret = root.createRange();
+    caret.setStart(cell.firstChild, 3);
+    caret.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__ = {
+      source: view.state.doc.toString(),
+      tableFrom: Number(wrapper.dataset.srcFrom),
+      rowCount: wrapper.querySelectorAll('tr').length,
+      cellCount: wrapper.querySelectorAll('.mlrt-table-cell').length,
+      neighborText: neighbor.textContent,
+    };
+    inputTypes.length = 0;
+    return JSON.stringify({ ok: cell.textContent === 'A😀B' });
+  })()`;
+}
+
+function tableGraphemeDeleteResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__;
+    const wrapper = Array.from(root.querySelectorAll('.mlrt-table-widget'))
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.tableFrom);
+    const cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const neighbor = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (!view || !state || !wrapper || !cell || !neighbor) {
+      return JSON.stringify({ ok: false, reason: 'missing grapheme result targets' });
+    }
+    const sourceFrom = Number(cell.dataset.sourceFrom);
+    const sourceLine = Number.isFinite(sourceFrom) ? view.state.doc.lineAt(sourceFrom).text : '';
+    const hasUnpairedSurrogate = (value) => {
+      for (let index = 0; index < value.length; index++) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+          const next = value.charCodeAt(index + 1);
+          if (!(next >= 0xDC00 && next <= 0xDFFF)) return true;
+          index++;
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const inputTypes = root.defaultView.__MLRT_RELIABILITY_INPUT_TYPES__ ?? [];
+    return JSON.stringify({
+      ok: true,
+      cellText: cell.textContent,
+      sourceContainsAB: sourceLine.includes('AB'),
+      shapePreserved:
+        wrapper.querySelectorAll('tr').length === state.rowCount &&
+        wrapper.querySelectorAll('.mlrt-table-cell').length === state.cellCount,
+      neighborPreserved: neighbor.textContent === state.neighborText,
+      hasUnpairedSurrogate: hasUnpairedSurrogate(view.state.doc.toString()),
+      lastInputType: inputTypes.at(-1) ?? null,
+    });
+  })()`;
+}
+
+function tableCrossCellDeleteSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    const first = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const second = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (!view || !wrapper || !first?.firstChild || !second?.firstChild) {
+      return JSON.stringify({ ok: false, reason: 'missing cross-cell targets' });
+    }
+    first.focus();
+    const range = root.createRange();
+    range.setStart(first.firstChild, 0);
+    range.setEnd(second.firstChild, second.firstChild.textContent.length);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__ = {
+      source: view.state.doc.toString(),
+      tableFrom: Number(wrapper.dataset.srcFrom),
+      rowCount: wrapper.querySelectorAll('tr').length,
+      cellCount: wrapper.querySelectorAll('.mlrt-table-cell').length,
+    };
+    return JSON.stringify({ ok: !selection.isCollapsed });
+  })()`;
+}
+
+function tableCrossCellDeleteResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__;
+    const wrapper = Array.from(root.querySelectorAll('.mlrt-table-widget'))
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.tableFrom);
+    if (!view || !state || !wrapper) {
+      return JSON.stringify({ ok: false, reason: 'missing cross-cell result state' });
+    }
+    return JSON.stringify({
+      ok: true,
+      sourcePreserved: view.state.doc.toString() === state.source,
+      domShapePreserved:
+        wrapper.querySelectorAll('tr').length === state.rowCount &&
+        wrapper.querySelectorAll('.mlrt-table-cell').length === state.cellCount,
+    });
+  })()`;
+}
+
+function tableWordDeleteSetupExpression(position) {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    let cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const neighbor = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (!view || !wrapper || !cell || !neighbor) {
+      return JSON.stringify({ ok: false, reason: 'missing word-delete targets' });
+    }
+    cell.focus();
+    const replace = root.createRange();
+    replace.selectNodeContents(cell);
+    const selection = root.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(replace);
+    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'alpha beta',
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done)));
+    cell = root.querySelector('.mlrt-table-widget .mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    if (!cell?.firstChild) {
+      return JSON.stringify({ ok: false, reason: 'missing word-delete cell after setup' });
+    }
+    cell.focus();
+    const caret = root.createRange();
+    const offset = ${JSON.stringify(position)} === 'start' ? 0 : cell.firstChild.textContent.length;
+    caret.setStart(cell.firstChild, offset);
+    caret.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__ = {
+      source: view.state.doc.toString(),
+      tableFrom: Number(wrapper.dataset.srcFrom),
+      rowCount: wrapper.querySelectorAll('tr').length,
+      cellCount: wrapper.querySelectorAll('.mlrt-table-cell').length,
+      neighborText: neighbor.textContent,
+    };
+    return JSON.stringify({ ok: cell.textContent === 'alpha beta', offset });
+  })()`;
+}
+
+function tableWordDeleteResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget')) ?? document;
+    const view = root.defaultView.__MLRT_EDITOR_VIEW__;
+    const state = root.defaultView.__MLRT_EDITING_RELIABILITY_STATE__;
+    const wrapper = Array.from(root.querySelectorAll('.mlrt-table-widget'))
+      .find((candidate) => Number(candidate.dataset.srcFrom) === state?.tableFrom);
+    const cell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const neighbor = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
+    if (!view || !state || !wrapper || !cell || !neighbor) {
+      return JSON.stringify({ ok: false, reason: 'missing word-delete result targets' });
+    }
+    const hasUnpairedSurrogate = (value) => {
+      for (let index = 0; index < value.length; index++) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+          const next = value.charCodeAt(index + 1);
+          if (!(next >= 0xDC00 && next <= 0xDFFF)) return true;
+          index++;
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+          return true;
+        }
+      }
+      return false;
+    };
+    return JSON.stringify({
+      ok: true,
+      sourcePreserved: view.state.doc.toString() === state.source,
+      cellText: cell.textContent,
+      shapePreserved:
+        wrapper.querySelectorAll('tr').length === state.rowCount &&
+        wrapper.querySelectorAll('.mlrt-table-cell').length === state.cellCount,
+      neighborPreserved: neighbor.textContent === state.neighborText,
+      hasUnpairedSurrogate: hasUnpairedSurrogate(view.state.doc.toString()),
+    });
+  })()`;
 }
 
 async function runTableOriginMixedPasteCase(
@@ -9673,11 +10282,10 @@ function assertTableTrustedUndoSetup(result) {
 function assertTableTrustedUndo(result) {
   if (
     !result?.ok ||
-    result.afterUndoText === "bas" ||
+    result.afterUndoText !== "base" ||
     !result.selectionCollapsed ||
-    result.afterDocIncludesBas ||
-    result.afterDocMatchesBefore ||
-    !result.restoredDoc
+    !result.afterDocIncludesBase ||
+    !result.afterDocMatchesBefore
   ) {
     throw new Error(`Table trusted undo check failed: ${JSON.stringify(result)}`);
   }

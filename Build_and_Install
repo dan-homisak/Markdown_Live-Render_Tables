@@ -128,8 +128,16 @@ if ! grep -q "formatTableCellSourceEdit" "$INSTALLED_DIR/media/liveEditor.js"; t
   echo "Installed webview bundle does not contain the expected source-span edit marker."
   exit 1
 fi
+if ! grep -q "computeCellBeforeInputDecision" "$INSTALLED_DIR/media/liveEditor.js"; then
+  echo "Installed webview bundle does not contain the safe table-cell input marker."
+  exit 1
+fi
 if ! grep -q "ignored a change without source ranges" "$INSTALLED_DIR/dist/extension.js"; then
   echo "Installed extension host does not contain the expected full-document fallback guard."
+  exit 1
+fi
+if ! grep -q "validateDocumentChangeClaim" "$INSTALLED_DIR/dist/extension.js"; then
+  echo "Installed extension host does not contain document change validation."
   exit 1
 fi
 if ! grep -q "reopenActiveEditorWith" "$INSTALLED_DIR/dist/extension.js"; then

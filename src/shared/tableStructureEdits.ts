@@ -1,4 +1,5 @@
 import {
+  ensureTableCellSeparatorSafe,
   formatMarkdownRow,
   ParsedRow,
   ParsedTable,
@@ -134,7 +135,11 @@ function replaceTableLines(
   const lines = [table.header, table.delimiter, ...table.body].map((row) => {
     const emptyCellRaw =
       row === table.delimiter ? EMPTY_DELIMITER_CELL_RAW : EMPTY_DATA_CELL_RAW;
-    return `|${mutateRawCells(paddedRawCells(row, table.columnCount, emptyCellRaw), emptyCellRaw).join("|")}|`;
+    const rawCells = mutateRawCells(
+      paddedRawCells(row, table.columnCount, emptyCellRaw),
+      emptyCellRaw,
+    );
+    return `|${rawCells.map(ensureTableCellSeparatorSafe).join("|")}|`;
   });
   return {
     from: table.from,
