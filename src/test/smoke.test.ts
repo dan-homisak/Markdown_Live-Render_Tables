@@ -716,6 +716,14 @@ assert.doesNotMatch(
   liveEditorCss,
   /--mlrt-selection-fill:\s*var\(\s*--vscode-editor-selectionBackground/,
 );
+assert.match(
+  liveEditorCss,
+  /\.mlrt-prose-selection\s*\{[\s\S]*?background-color:\s*var\(--mlrt-text-selection-fill\)\s*!important;[\s\S]*?box-decoration-break:\s*clone;/,
+);
+assert.match(
+  liveEditorCss,
+  /\.mlrt-prose-selection::before\s*\{\s*content:\s*none;\s*\}/,
+);
 assert.doesNotMatch(extensionSource, /Loading Markdown live editor/);
 assert.doesNotMatch(
   liveEditorSource,

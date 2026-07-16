@@ -918,6 +918,14 @@ function dispatchTableEdit(
   view: EditorView,
   edit: { from: number; to: number; insert: string },
 ): void {
+  // CodeMirror treats an identical replacement as a document change even
+  // though the resulting text is unchanged. Letting that transaction reach
+  // the extension host makes VS Code mark the document dirty until its text
+  // is reconciled. This is most visible when Delete clears a selection that
+  // already contains only empty cells.
+  if (view.state.doc.sliceString(edit.from, edit.to) === edit.insert) {
+    return;
+  }
   view.dispatch({
     changes: { from: edit.from, to: edit.to, insert: edit.insert },
     annotations: [

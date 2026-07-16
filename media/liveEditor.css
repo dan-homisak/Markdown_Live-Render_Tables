@@ -77,24 +77,29 @@ body,
 }
 
 .mlrt-prose-selection {
-  position: relative;
-  z-index: 0;
-  background-color: transparent !important;
+  /* Paint the inline box itself so CSS creates one background fragment for
+     every visual wrap row. A single absolutely positioned pseudo-element is
+     anchored to only one fragment of a wrapped inline and leaves the other
+     selected rows looking unselected. Vertical padding expands the inline
+     paint to the editor line height without changing layout. */
+  padding-block: max(
+    0px,
+    calc(
+      (
+          var(--mlrt-editor-line-height, 1lh) -
+            var(--mlrt-editor-font-size, 1em) - 2px
+        ) / 2
+    )
+  );
+  background-color: var(--mlrt-text-selection-fill) !important;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  border-radius: 1px;
   /* Keep the token's normal syntax color, like Monaco/VS Code does. */
 }
 
 .mlrt-prose-selection::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  top: 50%;
-  right: 0;
-  left: 0;
-  height: 1lh;
-  transform: translateY(-50%);
-  pointer-events: none;
-  background-color: var(--mlrt-text-selection-fill);
-  border-radius: 1px;
+  content: none;
 }
 
 .mlrt-prose-selection-empty-line::before {
@@ -111,22 +116,22 @@ body,
 /* Adjacent full-height rectangles meet exactly. Square only corners covered
    by the neighboring selected row; every exposed step keeps Monaco's subtle
    1px rounding without leaving a missing pixel at a straight seam. */
-.mlrt-prose-selection-connects-top-left::before,
+.mlrt-prose-selection-connects-top-left,
 .mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-top-left::before {
   border-top-left-radius: 0;
 }
 
-.mlrt-prose-selection-connects-top-right::before,
+.mlrt-prose-selection-connects-top-right,
 .mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-top-right::before {
   border-top-right-radius: 0;
 }
 
-.mlrt-prose-selection-connects-bottom-left::before,
+.mlrt-prose-selection-connects-bottom-left,
 .mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-bottom-left::before {
   border-bottom-left-radius: 0;
 }
 
-.mlrt-prose-selection-connects-bottom-right::before,
+.mlrt-prose-selection-connects-bottom-right,
 .mlrt-prose-selection-empty-line.mlrt-prose-selection-connects-bottom-right::before {
   border-bottom-right-radius: 0;
 }
@@ -190,6 +195,10 @@ body,
   padding: 0;
   overflow: visible;
   color: var(--vscode-editor-foreground, #d4d4d4);
+  /* Widget chrome must never paint a browser-only range. Editable cells opt
+     back into native character selection below; table/document selections
+     are rendered from the source-backed selection model. */
+  user-select: none;
 }
 
 .mlrt-table-widget.mlrt-table-controls-open,
@@ -283,6 +292,7 @@ body,
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  user-select: text;
 }
 
 .mlrt-table-source-line + .mlrt-table-cell {

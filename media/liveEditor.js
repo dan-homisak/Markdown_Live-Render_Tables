@@ -33344,8 +33344,8 @@
     const currentTable = () => getTableWidgetTable(wrapper) ?? table2;
     stateFor(wrapper.ownerDocument).view = view2;
     const onPointerDown = (event) => {
-      const cell2 = findCell(event.target);
-      if (!cell2 || !wrapper.contains(cell2)) {
+      const start = tableSelectionStart(wrapper, event);
+      if (!start) {
         return;
       }
       if (event.button !== 0) {
@@ -33357,7 +33357,7 @@
       if (!event.isPrimary) {
         return;
       }
-      const address = addressFromCell(cell2);
+      const address = addressFromCell(start.cell);
       if (!address) {
         return;
       }
@@ -33373,16 +33373,19 @@
         const current = getTableRangeSelection(wrapper.ownerDocument);
         const focusedCell = findCell(wrapper.ownerDocument.activeElement);
         const focusedAddress = focusedCell && wrapper.contains(focusedCell) ? addressFromCell(focusedCell) : null;
-        const anchor = current?.wrapper === wrapper ? current.anchor : focusedAddress ?? address;
+        const rawAnchor = current?.wrapper === wrapper ? current.anchor : focusedAddress ?? address;
+        const anchor = start.mode === "row" ? { row: rawAnchor.row, column: 0 } : rawAnchor;
+        const head = start.mode === "row" ? { row: address.row, column: currentTable().columnCount - 1 } : address;
         event.preventDefault();
-        setTableRangeSelection(wrapper, currentTable().from, anchor, address, true);
+        setTableRangeSelection(wrapper, currentTable().from, anchor, head, true);
         return;
       }
       state.pointerAnchor = address;
+      state.pointerAnchorMode = start.mode;
       state.pointerId = event.pointerId;
       state.pointerCrossedCells = false;
       activeGestureGeneration = ++gestureGeneration;
-      suppressNativeMouseDrag = false;
+      suppressNativeMouseDrag = start.mode === "row";
       lastDocumentDragRange = null;
       lastDocumentDragProjection = null;
       lastDocumentDragDocument = null;
@@ -33395,6 +33398,17 @@
       state.pointerCleanup = removeDocumentPointerListeners;
       if (state.selection?.wrapper === wrapper) {
         clearTableRangeSelection(wrapper.ownerDocument);
+      }
+      if (start.mode === "row") {
+        event.preventDefault();
+        clearNativeSelection(wrapper.ownerDocument);
+        setTableRangeSelection(
+          wrapper,
+          currentTable().from,
+          address,
+          { row: address.row, column: currentTable().columnCount - 1 },
+          true
+        );
       }
     };
     const claimPointerCapture = (event) => {
@@ -33426,7 +33440,11 @@
       );
       const cell2 = findCell(target);
       if (cell2 && wrapper.contains(cell2)) {
-        const address = addressFromCell(cell2);
+        const rawAddress = addressFromCell(cell2);
+        const address = rawAddress && state.pointerAnchorMode === "row" ? {
+          row: rawAddress.row,
+          column: currentTable().columnCount - 1
+        } : rawAddress;
         if (!address) {
           return;
         }
@@ -33469,6 +33487,10 @@
         );
         const address = clampedCell ? addressFromCell(clampedCell) : null;
         if (address) {
+          const selectionHead = state.pointerAnchorMode === "row" ? {
+            row: address.row,
+            column: latestTable.columnCount - 1
+          } : address;
           state.pointerCrossedCells = true;
           suppressNativeMouseDrag = true;
           claimPointerCapture(event);
@@ -33478,7 +33500,7 @@
             wrapper.ownerDocument
           );
           const selectionUnchanged = Boolean(
-            currentSelection?.wrapper === wrapper && sameAddress(currentSelection.anchor, state.pointerAnchor) && sameAddress(currentSelection.head, address) && lastDocumentDragRange === null
+            currentSelection?.wrapper === wrapper && sameAddress(currentSelection.anchor, state.pointerAnchor) && sameAddress(currentSelection.head, selectionHead) && lastDocumentDragRange === null
           );
           lastDocumentDragRange = null;
           lastDocumentDragProjection = null;
@@ -33489,7 +33511,7 @@
               wrapper,
               latestTable.from,
               state.pointerAnchor,
-              address,
+              selectionHead,
               true
             );
           }
@@ -33507,12 +33529,13 @@
       if (!movingBeforeTable && !movingAfterTable) {
         return;
       }
-      const targetCell = cell2 ?? documentCellAtPoint(
+      const selectionTarget = cell2 ? { cell: cell2, rowSelection: false } : documentTargetAtPoint(
         wrapper.ownerDocument,
         event.clientX,
         event.clientY,
         wrapper
       );
+      const targetCell = selectionTarget?.cell ?? null;
       let documentPosition = null;
       let targetTable = null;
       let targetAddress = null;
@@ -33521,7 +33544,11 @@
         targetTable = parsedTables.find(
           (candidate) => candidate.from === targetFrom
         ) ?? null;
-        targetAddress = addressFromCell(targetCell);
+        const rawTargetAddress = addressFromCell(targetCell);
+        targetAddress = rawTargetAddress && selectionTarget?.rowSelection ? {
+          row: rawTargetAddress.row,
+          column: movingAfterTable ? (targetTable?.columnCount ?? 1) - 1 : 0
+        } : rawTargetAddress;
         if (targetTable && targetAddress) {
           const sourceSpan = renderedCellSpan(targetCell, targetTable);
           documentPosition = movingAfterTable ? sourceSpan?.to ?? targetTable.to : sourceSpan?.from ?? targetTable.from;
@@ -33543,10 +33570,10 @@
       event.preventDefault();
       event.stopPropagation();
       clearTableRangeSelection(wrapper.ownerDocument);
-      clearNativeSelection(wrapper.ownerDocument);
       if (!view2.hasFocus) {
         view2.focus();
       }
+      clearNativeSelection(wrapper.ownerDocument);
       const anchorPosition = movingBeforeTable ? tableTo : tableFrom;
       const nextRange = {
         anchor: anchorPosition,
@@ -33607,6 +33634,7 @@
         return;
       }
       state.pointerAnchor = null;
+      state.pointerAnchorMode = null;
       state.pointerId = null;
       state.pointerCrossedCells = false;
       if (suppressNativeMouseDrag) {
@@ -33635,6 +33663,7 @@
       }
       if (state.pointerId === -1) {
         state.pointerAnchor = null;
+        state.pointerAnchorMode = null;
         state.pointerId = null;
         state.pointerCrossedCells = false;
         schedulePointerCleanup();
@@ -33713,20 +33742,25 @@
       }
       if (state.pointerAnchor) {
         if (state.pointerId !== -1) {
+          if (state.pointerAnchorMode === "row") {
+            event.preventDefault();
+            clearNativeSelection(wrapper.ownerDocument);
+          }
           return;
         }
         state.pointerCleanup?.();
       }
-      const cell2 = findCell(event.target);
-      const address = cell2 && wrapper.contains(cell2) ? addressFromCell(cell2) : null;
+      const start = tableSelectionStart(wrapper, event);
+      const address = start ? addressFromCell(start.cell) : null;
       if (!address) {
         return;
       }
       state.pointerAnchor = address;
+      state.pointerAnchorMode = start?.mode ?? "cell";
       state.pointerId = -1;
       state.pointerCrossedCells = false;
       activeGestureGeneration = ++gestureGeneration;
-      suppressNativeMouseDrag = false;
+      suppressNativeMouseDrag = start?.mode === "row";
       lastDocumentDragRange = null;
       lastDocumentDragProjection = null;
       lastDocumentDragDocument = null;
@@ -33742,6 +33776,17 @@
       state.pointerCleanup = removeDocumentPointerListeners;
       if (state.selection?.wrapper === wrapper) {
         clearTableRangeSelection(wrapper.ownerDocument);
+      }
+      if (start?.mode === "row") {
+        event.preventDefault();
+        clearNativeSelection(wrapper.ownerDocument);
+        setTableRangeSelection(
+          wrapper,
+          currentTable().from,
+          address,
+          { row: address.row, column: currentTable().columnCount - 1 },
+          true
+        );
       }
     };
     const removeDocumentPointerListeners = () => {
@@ -33773,6 +33818,7 @@
       lastDocumentDragDocument = null;
       if (ownsGesture) {
         state.pointerAnchor = null;
+        state.pointerAnchorMode = null;
         state.pointerId = null;
         state.pointerCrossedCells = false;
         state.pointerCleanup = null;
@@ -34302,6 +34348,7 @@
     const state = {
       selection: null,
       pointerAnchor: null,
+      pointerAnchorMode: null,
       pointerId: null,
       pointerCrossedCells: false,
       pointerCleanup: null,
@@ -34352,10 +34399,10 @@
     }
     return regions;
   }
-  function documentCellAtPoint(doc2, clientX, clientY, excludedWrapper) {
+  function documentTargetAtPoint(doc2, clientX, clientY, excludedWrapper) {
     const direct = findCell(doc2.elementFromPoint(clientX, clientY));
     if (direct && !excludedWrapper.contains(direct)) {
-      return direct;
+      return { cell: direct, rowSelection: false };
     }
     const wrapper = Array.from(
       doc2.querySelectorAll(".mlrt-table-widget")
@@ -34366,7 +34413,23 @@
       const rect = candidate.querySelector(".mlrt-table")?.getBoundingClientRect() ?? candidate.getBoundingClientRect();
       return clientY >= rect.top && clientY <= rect.bottom;
     });
-    return wrapper ? nearestCellInWrapper(wrapper, clientX, clientY) : null;
+    if (!wrapper) {
+      return null;
+    }
+    const sourceLine = Array.from(
+      wrapper.querySelectorAll(".mlrt-table-source-line")
+    ).find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    });
+    const rowCell = sourceLine?.parentElement?.querySelector(
+      TABLE_CELL_SELECTOR
+    );
+    if (rowCell) {
+      return { cell: rowCell, rowSelection: true };
+    }
+    const nearest = nearestCellInWrapper(wrapper, clientX, clientY);
+    return nearest ? { cell: nearest, rowSelection: false } : null;
   }
   function nearestCellInWrapper(wrapper, clientX, clientY) {
     const cells = Array.from(
@@ -34388,6 +34451,39 @@
       );
       return distance < nearestDistance ? candidate : nearest;
     });
+  }
+  function tableSelectionStart(wrapper, event) {
+    const directCell = findCell(event.target);
+    if (directCell && wrapper.contains(directCell)) {
+      return { cell: directCell, mode: "cell" };
+    }
+    if (event.target instanceof Element && event.target.closest(
+      "button, input, select, textarea, a, .mlrt-table-structure-menu, .mlrt-table-scrollbar"
+    )) {
+      return null;
+    }
+    const table2 = wrapper.querySelector(".mlrt-table");
+    if (!table2) {
+      return null;
+    }
+    const tableRect = table2.getBoundingClientRect();
+    if (event.clientX < tableRect.left || event.clientX > tableRect.right || event.clientY < tableRect.top || event.clientY > tableRect.bottom) {
+      return null;
+    }
+    const sourceLine = Array.from(
+      wrapper.querySelectorAll(".mlrt-table-source-line")
+    ).find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    });
+    const rowCell = sourceLine?.parentElement?.querySelector(
+      TABLE_CELL_SELECTOR
+    );
+    if (rowCell) {
+      return { cell: rowCell, mode: "row" };
+    }
+    const nearest = nearestCellInWrapper(wrapper, event.clientX, event.clientY);
+    return nearest ? { cell: nearest, mode: "cell" } : null;
   }
   function distanceToRect(rect, clientX, clientY) {
     const dx = Math.max(rect.left - clientX, 0, clientX - rect.right);
@@ -34725,11 +34821,12 @@
         clearDocumentSelectionProjection(doc2);
         return;
       }
-      const cell2 = documentSelectionCellAtPoint(
+      const target = documentSelectionTargetAtPoint(
         doc2,
         event.clientX,
         event.clientY
       );
+      const cell2 = target?.cell ?? null;
       if (!cell2) {
         if (!mixedDragActive) {
           return;
@@ -34750,10 +34847,10 @@
         } : null;
         event.preventDefault();
         event.stopPropagation();
-        doc2.defaultView?.getSelection()?.removeAllRanges();
         if (!view2.hasFocus) {
           view2.focus();
         }
+        doc2.defaultView?.getSelection()?.removeAllRanges();
         publishMixedDragSelection(nextRange2, nextProjection2);
         return;
       }
@@ -34768,11 +34865,15 @@
         return;
       }
       const span = renderedCellSourceSpan(cell2, table2);
-      const address = addressFromCell(cell2);
+      const rawAddress = addressFromCell(cell2);
+      const movingForward = mixedDragAnchor <= table2.from;
+      const address = rawAddress && target?.rowSelection ? {
+        row: rawAddress.row,
+        column: movingForward ? table2.columnCount - 1 : 0
+      } : rawAddress;
       if (!span || !address) {
         return;
       }
-      const movingForward = mixedDragAnchor <= table2.from;
       const nextRange = {
         anchor: mixedDragAnchor,
         head: movingForward ? span.to : span.from
@@ -34799,10 +34900,10 @@
       }
       event.preventDefault();
       event.stopPropagation();
-      doc2.defaultView?.getSelection()?.removeAllRanges();
       if (!view2.hasFocus) {
         view2.focus();
       }
+      doc2.defaultView?.getSelection()?.removeAllRanges();
       publishMixedDragSelection(nextRange, nextProjection);
     };
     const publishMixedDragSelection = (range, projection) => {
@@ -35112,10 +35213,10 @@
     });
     return regions;
   }
-  function documentSelectionCellAtPoint(doc2, clientX, clientY) {
+  function documentSelectionTargetAtPoint(doc2, clientX, clientY) {
     const direct = findCell(doc2.elementFromPoint(clientX, clientY));
     if (direct) {
-      return direct;
+      return { cell: direct, rowSelection: false };
     }
     const wrapper = Array.from(
       doc2.querySelectorAll(".mlrt-table-widget")
@@ -35132,19 +35233,29 @@
     if (cells.length === 0) {
       return null;
     }
-    return cells.reduce((nearest, candidate) => {
+    const nearest = cells.reduce((nearest2, candidate) => {
       const distance = distanceToRect2(
         candidate.getBoundingClientRect(),
         clientX,
         clientY
       );
       const nearestDistance = distanceToRect2(
-        nearest.getBoundingClientRect(),
+        nearest2.getBoundingClientRect(),
         clientX,
         clientY
       );
-      return distance < nearestDistance ? candidate : nearest;
+      return distance < nearestDistance ? candidate : nearest2;
     });
+    const sourceLine = Array.from(
+      wrapper.querySelectorAll(".mlrt-table-source-line")
+    ).find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    });
+    const rowCell = sourceLine?.parentElement?.querySelector(
+      ".mlrt-table-cell"
+    );
+    return rowCell ? { cell: rowCell, rowSelection: true } : { cell: nearest, rowSelection: false };
   }
   function distanceToRect2(rect, clientX, clientY) {
     const dx = Math.max(rect.left - clientX, 0, clientX - rect.right);
@@ -39209,6 +39320,9 @@ ${text3}`;
     return destinationTableFrom;
   }
   function dispatchTableEdit(view2, edit) {
+    if (view2.state.doc.sliceString(edit.from, edit.to) === edit.insert) {
+      return;
+    }
     view2.dispatch({
       changes: { from: edit.from, to: edit.to, insert: edit.insert },
       annotations: [

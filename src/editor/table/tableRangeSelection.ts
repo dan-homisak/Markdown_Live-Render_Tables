@@ -55,6 +55,7 @@ export interface TableRangeSelectionState {
 interface SelectionDocumentState {
   selection: TableRangeSelectionState | null;
   pointerAnchor: TableCellAddress | null;
+  pointerAnchorMode: "cell" | "row" | null;
   pointerId: number | null;
   pointerCrossedCells: boolean;
   pointerCleanup: (() => void) | null;
@@ -85,8 +86,8 @@ export function bindTableRangeSelection(
   stateFor(wrapper.ownerDocument).view = view;
 
   const onPointerDown = (event: PointerEvent): void => {
-    const cell = findCell(event.target);
-    if (!cell || !wrapper.contains(cell)) {
+    const start = tableSelectionStart(wrapper, event);
+    if (!start) {
       return;
     }
     if (event.button !== 0) {
@@ -102,7 +103,7 @@ export function bindTableRangeSelection(
       // primary table-selection gesture.
       return;
     }
-    const address = addressFromCell(cell);
+    const address = addressFromCell(start.cell);
     if (!address) {
       return;
     }
@@ -125,19 +126,26 @@ export function bindTableRangeSelection(
         focusedCell && wrapper.contains(focusedCell)
           ? addressFromCell(focusedCell)
           : null;
-      const anchor =
+      const rawAnchor =
         current?.wrapper === wrapper
           ? current.anchor
           : focusedAddress ?? address;
+      const anchor =
+        start.mode === "row" ? { row: rawAnchor.row, column: 0 } : rawAnchor;
+      const head =
+        start.mode === "row"
+          ? { row: address.row, column: currentTable().columnCount - 1 }
+          : address;
       event.preventDefault();
-      setTableRangeSelection(wrapper, currentTable().from, anchor, address, true);
+      setTableRangeSelection(wrapper, currentTable().from, anchor, head, true);
       return;
     }
     state.pointerAnchor = address;
+    state.pointerAnchorMode = start.mode;
     state.pointerId = event.pointerId;
     state.pointerCrossedCells = false;
     activeGestureGeneration = ++gestureGeneration;
-    suppressNativeMouseDrag = false;
+    suppressNativeMouseDrag = start.mode === "row";
     lastDocumentDragRange = null;
     lastDocumentDragProjection = null;
     lastDocumentDragDocument = null;
@@ -150,6 +158,21 @@ export function bindTableRangeSelection(
     state.pointerCleanup = removeDocumentPointerListeners;
     if (state.selection?.wrapper === wrapper) {
       clearTableRangeSelection(wrapper.ownerDocument);
+    }
+    if (start.mode === "row") {
+      // The rendered source-line gutter is table-owned DOM, not CodeMirror's
+      // real gutter. Make its familiar row-selection affordance real instead
+      // of allowing Chromium to paint a native range that copy/delete cannot
+      // observe.
+      event.preventDefault();
+      clearNativeSelection(wrapper.ownerDocument);
+      setTableRangeSelection(
+        wrapper,
+        currentTable().from,
+        address,
+        { row: address.row, column: currentTable().columnCount - 1 },
+        true,
+      );
     }
   };
 
@@ -202,7 +225,14 @@ export function bindTableRangeSelection(
     );
     const cell = findCell(target);
     if (cell && wrapper.contains(cell)) {
-      const address = addressFromCell(cell);
+      const rawAddress = addressFromCell(cell);
+      const address =
+        rawAddress && state.pointerAnchorMode === "row"
+          ? {
+              row: rawAddress.row,
+              column: currentTable().columnCount - 1,
+            }
+          : rawAddress;
       if (!address) {
         return;
       }
@@ -258,6 +288,13 @@ export function bindTableRangeSelection(
       );
       const address = clampedCell ? addressFromCell(clampedCell) : null;
       if (address) {
+        const selectionHead =
+          state.pointerAnchorMode === "row"
+            ? {
+                row: address.row,
+                column: latestTable.columnCount - 1,
+              }
+            : address;
         state.pointerCrossedCells = true;
         suppressNativeMouseDrag = true;
         claimPointerCapture(event);
@@ -269,7 +306,7 @@ export function bindTableRangeSelection(
         const selectionUnchanged = Boolean(
           currentSelection?.wrapper === wrapper &&
             sameAddress(currentSelection.anchor, state.pointerAnchor) &&
-            sameAddress(currentSelection.head, address) &&
+            sameAddress(currentSelection.head, selectionHead) &&
             lastDocumentDragRange === null,
         );
         lastDocumentDragRange = null;
@@ -281,7 +318,7 @@ export function bindTableRangeSelection(
             wrapper,
             latestTable.from,
             state.pointerAnchor,
-            address,
+            selectionHead,
             true,
           );
         }
@@ -302,12 +339,15 @@ export function bindTableRangeSelection(
       return;
     }
 
-    const targetCell = cell ?? documentCellAtPoint(
-      wrapper.ownerDocument,
-      event.clientX,
-      event.clientY,
-      wrapper,
-    );
+    const selectionTarget = cell
+      ? { cell, rowSelection: false }
+      : documentTargetAtPoint(
+          wrapper.ownerDocument,
+          event.clientX,
+          event.clientY,
+          wrapper,
+        );
+    const targetCell = selectionTarget?.cell ?? null;
     let documentPosition: number | null = null;
     let targetTable: ParsedTable | null = null;
     let targetAddress: TableCellAddress | null = null;
@@ -316,7 +356,16 @@ export function bindTableRangeSelection(
       targetTable = parsedTables.find(
         (candidate) => candidate.from === targetFrom,
       ) ?? null;
-      targetAddress = addressFromCell(targetCell);
+      const rawTargetAddress = addressFromCell(targetCell);
+      targetAddress =
+        rawTargetAddress && selectionTarget?.rowSelection
+          ? {
+              row: rawTargetAddress.row,
+              column: movingAfterTable
+                ? (targetTable?.columnCount ?? 1) - 1
+                : 0,
+            }
+          : rawTargetAddress;
       if (targetTable && targetAddress) {
         const sourceSpan = renderedCellSpan(targetCell, targetTable);
         documentPosition = movingAfterTable
@@ -341,10 +390,12 @@ export function bindTableRangeSelection(
     event.preventDefault();
     event.stopPropagation();
     clearTableRangeSelection(wrapper.ownerDocument);
-    clearNativeSelection(wrapper.ownerDocument);
     if (!view.hasFocus) {
       view.focus();
     }
+    // Focusing CodeMirror can restore its last DOM range. Collapse it after
+    // focus so the custom prose/table projection remains the only paint.
+    clearNativeSelection(wrapper.ownerDocument);
     const anchorPosition = movingBeforeTable ? tableTo : tableFrom;
     const nextRange = {
       anchor: anchorPosition,
@@ -420,6 +471,7 @@ export function bindTableRangeSelection(
       return;
     }
     state.pointerAnchor = null;
+    state.pointerAnchorMode = null;
     state.pointerId = null;
     state.pointerCrossedCells = false;
     if (suppressNativeMouseDrag) {
@@ -456,6 +508,7 @@ export function bindTableRangeSelection(
     }
     if (state.pointerId === -1) {
       state.pointerAnchor = null;
+      state.pointerAnchorMode = null;
       state.pointerId = null;
       state.pointerCrossedCells = false;
       schedulePointerCleanup();
@@ -562,25 +615,30 @@ export function bindTableRangeSelection(
     if (state.pointerAnchor) {
       if (state.pointerId !== -1) {
         // Compatibility mousedown after a real pointerdown belongs to the
-        // active pointer gesture and must not replace its anchor.
+        // active pointer gesture and must not replace its anchor. A gutter
+        // gesture is source-backed from pointerdown, so its compatibility
+        // event must not start a second, browser-only DOM selection.
+        if (state.pointerAnchorMode === "row") {
+          event.preventDefault();
+          clearNativeSelection(wrapper.ownerDocument);
+        }
         return;
       }
       // A mouse-only fallback has no capture guarantee. Recover from a missed
       // mouseup before beginning the next fallback gesture.
       state.pointerCleanup?.();
     }
-    const cell = findCell(event.target);
-    const address = cell && wrapper.contains(cell)
-      ? addressFromCell(cell)
-      : null;
+    const start = tableSelectionStart(wrapper, event);
+    const address = start ? addressFromCell(start.cell) : null;
     if (!address) {
       return;
     }
     state.pointerAnchor = address;
+    state.pointerAnchorMode = start?.mode ?? "cell";
     state.pointerId = -1;
     state.pointerCrossedCells = false;
     activeGestureGeneration = ++gestureGeneration;
-    suppressNativeMouseDrag = false;
+    suppressNativeMouseDrag = start?.mode === "row";
     lastDocumentDragRange = null;
     lastDocumentDragProjection = null;
     lastDocumentDragDocument = null;
@@ -596,6 +654,17 @@ export function bindTableRangeSelection(
     state.pointerCleanup = removeDocumentPointerListeners;
     if (state.selection?.wrapper === wrapper) {
       clearTableRangeSelection(wrapper.ownerDocument);
+    }
+    if (start?.mode === "row") {
+      event.preventDefault();
+      clearNativeSelection(wrapper.ownerDocument);
+      setTableRangeSelection(
+        wrapper,
+        currentTable().from,
+        address,
+        { row: address.row, column: currentTable().columnCount - 1 },
+        true,
+      );
     }
   };
 
@@ -641,6 +710,7 @@ export function bindTableRangeSelection(
     lastDocumentDragDocument = null;
     if (ownsGesture) {
       state.pointerAnchor = null;
+      state.pointerAnchorMode = null;
       state.pointerId = null;
       state.pointerCrossedCells = false;
       state.pointerCleanup = null;
@@ -1312,6 +1382,7 @@ function stateFor(doc: Document): SelectionDocumentState {
   const state: SelectionDocumentState = {
     selection: null,
     pointerAnchor: null,
+    pointerAnchorMode: null,
     pointerId: null,
     pointerCrossedCells: false,
     pointerCleanup: null,
@@ -1378,15 +1449,15 @@ function regionsForTableToDocument(
   return regions;
 }
 
-function documentCellAtPoint(
+function documentTargetAtPoint(
   doc: Document,
   clientX: number,
   clientY: number,
   excludedWrapper: HTMLElement,
-): HTMLElement | null {
+): { cell: HTMLElement; rowSelection: boolean } | null {
   const direct = findCell(doc.elementFromPoint(clientX, clientY));
   if (direct && !excludedWrapper.contains(direct)) {
-    return direct;
+    return { cell: direct, rowSelection: false };
   }
   const wrapper = Array.from(
     doc.querySelectorAll<HTMLElement>(".mlrt-table-widget"),
@@ -1398,9 +1469,28 @@ function documentCellAtPoint(
       ?.getBoundingClientRect() ?? candidate.getBoundingClientRect();
     return clientY >= rect.top && clientY <= rect.bottom;
   });
-  return wrapper
-    ? nearestCellInWrapper(wrapper, clientX, clientY)
-    : null;
+  if (!wrapper) {
+    return null;
+  }
+  const sourceLine = Array.from(
+    wrapper.querySelectorAll<HTMLElement>(".mlrt-table-source-line"),
+  ).find((candidate) => {
+    const rect = candidate.getBoundingClientRect();
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  });
+  const rowCell = sourceLine?.parentElement?.querySelector<HTMLElement>(
+    TABLE_CELL_SELECTOR,
+  );
+  if (rowCell) {
+    return { cell: rowCell, rowSelection: true };
+  }
+  const nearest = nearestCellInWrapper(wrapper, clientX, clientY);
+  return nearest ? { cell: nearest, rowSelection: false } : null;
 }
 
 function nearestCellInWrapper(
@@ -1427,6 +1517,67 @@ function nearestCellInWrapper(
     );
     return distance < nearestDistance ? candidate : nearest;
   });
+}
+
+interface TableSelectionStart {
+  cell: HTMLElement;
+  mode: "cell" | "row";
+}
+
+/**
+ * Resolves every selectable part of the rendered grid to source-backed table
+ * selection semantics. The line-number cells deliberately ignore pointer
+ * events so structure controls can sit above them, which means event.target
+ * is often a tr/table rather than the visible gutter cell.
+ */
+function tableSelectionStart(
+  wrapper: HTMLElement,
+  event: PointerEvent | MouseEvent,
+): TableSelectionStart | null {
+  const directCell = findCell(event.target);
+  if (directCell && wrapper.contains(directCell)) {
+    return { cell: directCell, mode: "cell" };
+  }
+  if (
+    event.target instanceof Element &&
+    event.target.closest(
+      "button, input, select, textarea, a, .mlrt-table-structure-menu, .mlrt-table-scrollbar",
+    )
+  ) {
+    return null;
+  }
+  const table = wrapper.querySelector<HTMLElement>(".mlrt-table");
+  if (!table) {
+    return null;
+  }
+  const tableRect = table.getBoundingClientRect();
+  if (
+    event.clientX < tableRect.left ||
+    event.clientX > tableRect.right ||
+    event.clientY < tableRect.top ||
+    event.clientY > tableRect.bottom
+  ) {
+    return null;
+  }
+  const sourceLine = Array.from(
+    wrapper.querySelectorAll<HTMLElement>(".mlrt-table-source-line"),
+  ).find((candidate) => {
+    const rect = candidate.getBoundingClientRect();
+    return (
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    );
+  });
+  const rowCell = sourceLine?.parentElement?.querySelector<HTMLElement>(
+    TABLE_CELL_SELECTOR,
+  );
+  if (rowCell) {
+    return { cell: rowCell, mode: "row" };
+  }
+  const nearest = nearestCellInWrapper(wrapper, event.clientX, event.clientY);
+  return nearest ? { cell: nearest, mode: "cell" } : null;
 }
 
 function distanceToRect(

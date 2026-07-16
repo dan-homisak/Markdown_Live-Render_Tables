@@ -23,6 +23,8 @@ const mixedInputOnlyComplete = Symbol("mixed-input-only-complete");
 const editingReliabilityOnlyComplete = Symbol(
   "editing-reliability-only-complete",
 );
+const emptyDeleteOnlyComplete = Symbol("empty-delete-only-complete");
+const wrappedSelectionOnlyComplete = Symbol("wrapped-selection-only-complete");
 await mkdir(qaDir, { recursive: true });
 const fixturePath = path.join(userDataDir, "TestTable.md");
 await writeFile(
@@ -317,6 +319,70 @@ try {
       path.join(qaDir, "edh-editing-reliability.png"),
     );
     throw editingReliabilityOnlyComplete;
+  }
+  if (process.argv.includes("--empty-delete-only")) {
+    const beforeTab = await evaluateJson(wb, activeTabStateExpression());
+    const setup = await evaluateJson(
+      liveClient,
+      emptyTableCellDeleteSetupExpression(),
+    );
+    if (
+      !setup?.ok ||
+      setup.cellText !== "" ||
+      setup.selectedCount !== 1 ||
+      beforeTab?.dirty !== false
+    ) {
+      throw new Error(
+        `Empty table-cell Delete setup failed: ${JSON.stringify({ beforeTab, setup })}`,
+      );
+    }
+    await liveClient.send("Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      key: "Delete",
+      code: "Delete",
+      windowsVirtualKeyCode: 46,
+    });
+    await liveClient.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Delete",
+      code: "Delete",
+      windowsVirtualKeyCode: 46,
+    });
+    await sleep(500);
+    const result = await evaluateJson(
+      liveClient,
+      emptyTableCellDeleteResultExpression(),
+    );
+    const afterTab = await evaluateJson(wb, activeTabStateExpression());
+    if (
+      !result?.ok ||
+      !result.documentUnchanged ||
+      result.selectedCount !== 1 ||
+      afterTab?.dirty !== false
+    ) {
+      throw new Error(
+        `Empty table-cell Delete no-op check failed: ${JSON.stringify({ afterTab, result })}`,
+      );
+    }
+    console.log("EMPTY TABLE-CELL DELETE NO-OP CHECK:", {
+      documentUnchanged: result.documentUnchanged,
+      dirtyBefore: beforeTab.dirty,
+      dirtyAfter: afterTab.dirty,
+    });
+    await captureWorkbenchScreenshot(
+      wb,
+      path.join(qaDir, "edh-empty-delete-noop.png"),
+    );
+    throw emptyDeleteOnlyComplete;
+  }
+  if (process.argv.includes("--wrapped-selection-only")) {
+    const isolatedHost = await evaluateJson(
+      liveClient,
+      setTestHostIsolationExpression(true),
+    );
+    assertTestHostIsolation(isolatedHost, true);
+    await runWrappedDownwardSelectionCheck(liveClient, wb);
+    throw wrappedSelectionOnlyComplete;
   }
   const gutterAlignment = await evaluateJson(
     liveClient,
@@ -746,6 +812,198 @@ try {
     path.join(qaDir, "edh-table-pointer-selection.png"),
   );
   await evaluateJson(liveClient, clearSelectionStateExpression());
+
+  const gutterSetup = await evaluateJson(
+    liveClient,
+    tableGutterSelectionSetupExpression(),
+  );
+  assertTableGutterSelectionSetup(gutterSetup);
+
+  // Clicking a rendered line number owns a real full-row selection.
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: gutterSetup.gutterX,
+    y: gutterSetup.gutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: gutterSetup.gutterX,
+    y: gutterSetup.gutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(80);
+  const gutterClick = await evaluateJson(
+    liveClient,
+    tablePointerSelectionResultExpression(),
+  );
+  assertTablePointerSelection(gutterClick, "table", ["2:0", "2:1", "2:2"]);
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+
+  // Gutter-origin drags stay full-row selections inside the grid.
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: gutterSetup.gutterX,
+    y: gutterSetup.gutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: gutterSetup.insideX,
+    y: gutterSetup.insideY,
+    button: "left",
+  });
+  await sleep(60);
+  const gutterInside = await evaluateJson(
+    liveClient,
+    tablePointerSelectionResultExpression(),
+  );
+  assertTablePointerSelection(gutterInside, "table", [
+    "2:0", "2:1", "2:2", "3:0", "3:1", "3:2", "4:0", "4:1", "4:2",
+  ]);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-table-gutter-selection.png"),
+  );
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: gutterSetup.insideX,
+    y: gutterSetup.insideY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(80);
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+
+  // Leaving a gutter row for prose produces one source-backed mixed range.
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: gutterSetup.gutterX,
+    y: gutterSetup.gutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: gutterSetup.above.x,
+    y: gutterSetup.above.y,
+    button: "left",
+  });
+  await sleep(60);
+  const gutterToProse = await evaluateJson(
+    liveClient,
+    tablePointerSelectionResultExpression(),
+  );
+  assertTablePointerProseEndpoint(
+    gutterToProse,
+    ["0:0", "0:1", "0:2", "1:0", "1:1", "1:2", "2:0", "2:1", "2:2"],
+    gutterSetup.tableTo,
+    gutterSetup.above,
+    true,
+  );
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: gutterSetup.above.x,
+    y: gutterSetup.above.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(80);
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+
+  // Entering the table through its gutter also selects whole traversed rows.
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: gutterSetup.above.x,
+    y: gutterSetup.above.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: gutterSetup.gutterX,
+    y: gutterSetup.gutterY,
+    button: "left",
+  });
+  await sleep(60);
+  const proseToGutter = await evaluateJson(
+    liveClient,
+    tablePointerSelectionResultExpression(),
+  );
+  assertProseToGutterSelection(proseToGutter, gutterSetup);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: gutterSetup.gutterX,
+    y: gutterSetup.gutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(80);
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+
+  // The opposite horizontal excursion clamps to the left edge cell.
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: gutterSetup.cellX,
+    y: gutterSetup.cellY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: gutterSetup.leftX,
+    y: gutterSetup.cellY,
+    button: "left",
+  });
+  await sleep(60);
+  const cellToLeftMargin = await evaluateJson(
+    liveClient,
+    tablePointerSelectionResultExpression(),
+  );
+  assertTablePointerSelection(cellToLeftMargin, "table", ["2:0", "2:1"]);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: gutterSetup.leftX,
+    y: gutterSetup.cellY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(80);
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+
+  // A wrapped row's full-height gutter remains one reliable hit target.
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: gutterSetup.wrappedGutterX,
+    y: gutterSetup.wrappedGutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: gutterSetup.wrappedGutterX,
+    y: gutterSetup.wrappedGutterY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(80);
+  const wrappedGutterClick = await evaluateJson(
+    liveClient,
+    firstTablePointerSelectionResultExpression(),
+  );
+  assertWrappedGutterSelection(wrappedGutterClick);
+  await evaluateJson(liveClient, clearSelectionStateExpression());
+  console.log("TABLE GUTTER/NEUTRAL SURFACE SELECTION CHECK:", {
+    gutterClick: gutterClick.tableAddresses,
+    gutterInside: gutterInside.tableAddresses,
+    gutterToProse: gutterToProse.documentAddresses,
+    proseToGutter: proseToGutter.documentAddresses,
+    cellToLeftMargin: cellToLeftMargin.tableAddresses,
+    wrappedGutterClick: wrappedGutterClick.tableAddresses,
+  });
 
   const tableOwnershipSetup = await evaluateJson(
     liveClient,
@@ -1499,6 +1757,7 @@ try {
     wb,
     path.join(qaDir, "edh-selection-document-end-table.png"),
   );
+  await runWrappedDownwardSelectionCheck(liveClient, wb);
   const restoredSelectionFixture = await evaluateJson(
     liveClient,
     restoreSelectionFixtureExpression(),
@@ -1539,7 +1798,9 @@ try {
 } catch (error) {
   if (
     error !== mixedInputOnlyComplete &&
-    error !== editingReliabilityOnlyComplete
+    error !== editingReliabilityOnlyComplete &&
+    error !== emptyDeleteOnlyComplete &&
+    error !== wrappedSelectionOnlyComplete
   ) {
     throw error;
   }
@@ -1559,6 +1820,45 @@ async function captureWorkbenchScreenshot(client, outputPath) {
   }
 }
 
+async function runWrappedDownwardSelectionCheck(liveClient, wb) {
+  const setup = await evaluateJson(
+    liveClient,
+    wrappedDownwardSelectionSetupExpression(),
+  );
+  assertWrappedDownwardSelectionSetup(setup);
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: setup.startX,
+    y: setup.startY,
+    button: "left",
+    clickCount: 1,
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: setup.endX,
+    y: setup.endY,
+    button: "left",
+  });
+  await liveClient.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: setup.endX,
+    y: setup.endY,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(120);
+  const result = await evaluateJson(
+    liveClient,
+    wrappedDownwardSelectionResultExpression(),
+  );
+  assertWrappedDownwardSelection(setup, result);
+  console.log("WRAPPED DOWNWARD SELECTION CHECK:", result);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-wrapped-downward-selection.png"),
+  );
+}
+
 async function evaluateJson(client, expression) {
   const result = await client.send("Runtime.evaluate", {
     expression,
@@ -1575,6 +1875,71 @@ async function evaluateJson(client, expression) {
     throw new Error(`Expected JSON string from evaluation, got ${JSON.stringify(value)}`);
   }
   return value ? JSON.parse(value) : null;
+}
+
+function activeTabStateExpression() {
+  return `(() => {
+    const activeTab = document.querySelector('.tab.active');
+    return JSON.stringify({
+      found: Boolean(activeTab),
+      dirty: activeTab?.classList.contains('dirty') ?? null,
+      className: activeTab?.className ?? null,
+      label: activeTab?.getAttribute('aria-label') ?? activeTab?.textContent ?? null,
+    });
+  })()`;
+}
+
+function emptyTableCellDeleteSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrappers = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? []);
+    const wrapper = wrappers[wrappers.length - 1];
+    const cell = wrapper?.querySelector(
+      '.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]'
+    );
+    if (!root || !view || !wrapper || !cell) {
+      return JSON.stringify({ ok: false, reason: 'missing empty table-cell targets' });
+    }
+    root.defaultView.__MLRT_EMPTY_DELETE_BEFORE__ = view.state.doc.toString();
+    cell.focus();
+    cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    }));
+    return JSON.stringify({
+      ok: true,
+      cellText: cell.innerText.trim(),
+      selectedCount: wrapper.querySelectorAll('.mlrt-table-cell-selected').length,
+      wrapperFocused: root.activeElement === wrapper,
+    });
+  })()`;
+}
+
+function emptyTableCellDeleteResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrappers = Array.from(root?.querySelectorAll('.mlrt-table-widget') ?? []);
+    const wrapper = wrappers[wrappers.length - 1];
+    if (!root || !view || !wrapper) {
+      return JSON.stringify({ ok: false, reason: 'missing empty table-cell result targets' });
+    }
+    return JSON.stringify({
+      ok: true,
+      documentUnchanged:
+        view.state.doc.toString() === root.defaultView.__MLRT_EMPTY_DELETE_BEFORE__,
+      selectedCount: wrapper.querySelectorAll('.mlrt-table-cell-selected').length,
+    });
+  })()`;
 }
 
 function stockMetricsExpression() {
@@ -3806,7 +4171,7 @@ function proseCharacterSelectionResultExpression() {
     const actualLeft = boxes.length ? Math.min(...boxes.map((box) => box.left)) : null;
     const actualRight = boxes.length ? Math.max(...boxes.map((box) => box.right)) : null;
     const markBackgrounds = marks.map((mark) =>
-      root.defaultView.getComputedStyle(mark, '::before').backgroundColor
+      root.defaultView.getComputedStyle(mark).backgroundColor
     );
     const markedLines = Array.from(new Set(marks.map((mark) => mark.closest('.cm-line')).filter(Boolean)));
     const markedLineBackgrounds = markedLines.map((line) =>
@@ -3874,9 +4239,8 @@ function proseMultilineSelectionResultExpression() {
     if (!root || !view) return JSON.stringify({ ok: false });
     const marks = Array.from(root.querySelectorAll('.mlrt-prose-selection'));
     const details = marks.map((mark) => {
-      const style = root.defaultView.getComputedStyle(mark, '::before');
+      const style = root.defaultView.getComputedStyle(mark);
       const rect = mark.getBoundingClientRect();
-      const height = Number.parseFloat(style.height);
       return {
         text: mark.textContent,
         continuesFromPrevious: mark.classList.contains('mlrt-prose-selection-continues-from-previous'),
@@ -3890,14 +4254,136 @@ function proseMultilineSelectionResultExpression() {
         borderBottomLeftRadius: style.borderBottomLeftRadius,
         borderBottomRightRadius: style.borderBottomRightRadius,
         background: style.backgroundColor,
-        paintedTop: rect.top + rect.height / 2 - height / 2,
-        paintedBottom: rect.top + rect.height / 2 + height / 2,
+        paintedTop: rect.top,
+        paintedBottom: rect.bottom,
       };
     });
     return JSON.stringify({
       ok: true,
       selectedText: view.state.doc.sliceString(view.state.selection.main.from, view.state.selection.main.to),
       details,
+    });
+  })()`;
+}
+
+function wrappedDownwardSelectionSetupExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false, reason: 'missing wrapped selection editor' });
+    const text = [
+      '# Downward Selection Fixture',
+      '',
+      'This is a deliberately long prose line with compatibility tests near its middle, followed by enough words to wrap across several visual rows in the live editor.',
+      'Another fully selected prose line is also intentionally long so a downward drag must paint every wrapped fragment before it enters the rendered table below.',
+      '',
+      '| # | Feature | Markdown In Table Cell | Expected Renderer Behavior |',
+      '| --- | --- | --- | --- |',
+      '| 1 | Plain text | Regular text with numbers 12345 and punctuation. | Baseline cell rendering. |',
+      '| 2 | Escaped characters | Not italic and not bold. | Escaped punctuation remains visible. |',
+      '| 3 | Entities | Ampersand, less-than, and copyright. | Entities display consistently. |',
+      '| 4 | Emphasis | Bold, italic, and strikethrough. | Inline emphasis rendering. |',
+      '| 5 | Nested emphasis | Nested inline content. | Nested parsing. |',
+    ].join('\\n');
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text, revision: 999811, debug: false },
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(() => root.defaultView.requestAnimationFrame(done))
+    ));
+    view.scrollDOM.scrollTop = 0;
+    const wrapper = root.querySelector('.mlrt-table-widget');
+    const target = wrapper?.querySelector(
+      '.mlrt-table-cell[data-row-kind="body"][data-row-index="3"][data-column="1"]'
+    );
+    const anchor = text.indexOf('compatibility tests');
+    const caret = view.coordsAtPos(anchor);
+    const y = caret ? (caret.top + caret.bottom) / 2 : 0;
+    let start = null;
+    if (caret) {
+      for (const dx of [-0.45, -0.2, 0.05, 0.2, 0.45, 0.8]) {
+        const x = caret.left + dx;
+        if (view.posAtCoords({ x, y }) === anchor) { start = { x, y }; break; }
+      }
+    }
+    const targetRect = target?.getBoundingClientRect();
+    const head = Number(target?.dataset.sourceTo ?? 'NaN');
+    return JSON.stringify({
+      ok: Boolean(start && targetRect && Number.isFinite(head)),
+      startX: start?.x ?? 0,
+      startY: start?.y ?? 0,
+      endX: targetRect ? targetRect.left + Math.min(18, targetRect.width / 2) : 0,
+      endY: targetRect ? targetRect.top + Math.min(10, targetRect.height / 2) : 0,
+      anchor,
+      head,
+      expectedText: Number.isFinite(head) ? text.slice(anchor, head) : '',
+      expectedAddresses: [
+        '0:0', '0:1', '1:0', '1:1', '2:0',
+        '2:1', '3:0', '3:1', '4:0', '4:1',
+      ],
+    });
+  })()`;
+}
+
+function wrappedDownwardSelectionResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root?.querySelector('.mlrt-table-widget');
+    const range = view?.state.selection.main;
+    if (!root || !view || !wrapper || !range) return JSON.stringify({ ok: false });
+    const marks = Array.from(root.querySelectorAll('.mlrt-prose-selection'));
+    const transparent = (value) =>
+      value === 'transparent' ||
+      /^rgba\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,\\s*0\\s*\\)$/.test(value) ||
+      /\\/\\s*0(?:\\.0+)?\\s*\\)$/.test(value);
+    const fragmentRects = marks.flatMap((mark) =>
+      Array.from(mark.getClientRects()).map((rect) => ({
+        top: rect.top,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      }))
+    ).filter((rect) => rect.width > 0 && rect.height > 0);
+    const wrapRows = Array.from(new Set(fragmentRects.map((rect) => Math.round(rect.top * 2) / 2)));
+    const selectedAddresses = Array.from(wrapper.querySelectorAll('.mlrt-document-range-selected'))
+      .map((cell) =>
+        (cell.dataset.rowKind === 'header' ? 0 : Number(cell.dataset.rowIndex) + 1) +
+        ':' + Number(cell.dataset.column)
+      ).sort();
+    const directBackgrounds = marks.map((mark) =>
+      root.defaultView.getComputedStyle(mark).backgroundColor
+    );
+    const pseudoContents = marks.map((mark) =>
+      root.defaultView.getComputedStyle(mark, '::before').content
+    );
+    return JSON.stringify({
+      ok: true,
+      anchor: range.anchor,
+      head: range.head,
+      selectedText: view.state.doc.sliceString(range.from, range.to),
+      selectedAddresses,
+      markCount: marks.length,
+      fragmentCount: fragmentRects.length,
+      wrapRowCount: wrapRows.length,
+      fragmentRects,
+      directBackgrounds,
+      everyFragmentUsesDirectFill:
+        directBackgrounds.length > 0 && directBackgrounds.every((value) => !transparent(value)),
+      pseudoHighlightsDisabled: pseudoContents.every((value) => value === 'none'),
+      visibleCodeMirrorBoxCount: Array.from(root.querySelectorAll('.cm-selectionBackground'))
+        .filter((element) => {
+          const style = root.defaultView.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== 'none' && rect.width > 0 && rect.height > 0;
+        }).length,
+      overlayCount: wrapper.querySelectorAll('.mlrt-table-selection-overlay').length,
     });
   })()`;
 }
@@ -4429,6 +4915,100 @@ function tablePointerSelectionSetupExpression() {
   })()`;
 }
 
+function tableGutterSelectionSetupExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelectorAll('.mlrt-table-widget').length >= 2);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrappers = root?.querySelectorAll('.mlrt-table-widget');
+    const wrapper = wrappers?.[1];
+    const wrappedWrapper = wrappers?.[0];
+    const rowCell = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="1"][data-column="0"]');
+    const gutter = rowCell?.parentElement?.querySelector('.mlrt-table-source-line');
+    const inside = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="3"][data-column="1"]');
+    const cellStart = wrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="1"][data-column="1"]');
+    const wrappedCell = wrappedWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const wrappedGutter = wrappedCell?.parentElement?.querySelector('.mlrt-table-source-line');
+    const table = wrapper?.querySelector('.mlrt-table');
+    if (!root || !view || !wrapper || !wrappedWrapper || !rowCell || !gutter || !inside || !cellStart || !wrappedCell || !wrappedGutter || !table) {
+      return JSON.stringify({ ok: false, reason: 'missing gutter selection targets' });
+    }
+    const source = view.state.doc.toString();
+    const tableFrom = Number(wrapper.dataset.srcFrom);
+    const tableTo = Number(wrapper.dataset.srcTo);
+    const beforePosition = source.lastIndexOf('\\n20\\n', tableFrom) + 1;
+    const caret = view.coordsAtPos(beforePosition);
+    const gutterRect = gutter.getBoundingClientRect();
+    const insideRect = inside.getBoundingClientRect();
+    const cellRect = cellStart.getBoundingClientRect();
+    const wrappedGutterRect = wrappedGutter.getBoundingClientRect();
+    const tableRect = table.getBoundingClientRect();
+    const gutterX = (gutterRect.left + gutterRect.right) / 2;
+    const gutterY = (gutterRect.top + gutterRect.bottom) / 2;
+    const target = root.elementFromPoint(gutterX, gutterY);
+    const above = caret ? {
+      x: caret.left + 0.05,
+      y: (caret.top + caret.bottom) / 2,
+      pos: beforePosition,
+      expectedText: source.slice(beforePosition, tableTo),
+    } : null;
+    return JSON.stringify({
+      ok: Boolean(
+        Number.isFinite(tableFrom) &&
+        Number.isFinite(tableTo) &&
+        beforePosition >= 0 &&
+        above &&
+        view.posAtCoords({ x: above.x, y: above.y }) === beforePosition &&
+        Number(rowCell.dataset.sourceTo) > beforePosition &&
+        wrappedGutterRect.height > gutterRect.height
+      ),
+      tableFrom,
+      tableTo,
+      gutterX,
+      gutterY,
+      gutterTargetClass: target?.className ?? null,
+      gutterSourceTo: Number(rowCell.dataset.sourceTo),
+      insideX: insideRect.left + Math.min(10, insideRect.width / 2),
+      insideY: insideRect.top + Math.min(10, insideRect.height / 2),
+      cellX: cellRect.left + Math.min(10, cellRect.width / 2),
+      cellY: cellRect.top + Math.min(10, cellRect.height / 2),
+      leftX: tableRect.left - 36,
+      wrappedGutterX: (wrappedGutterRect.left + wrappedGutterRect.right) / 2,
+      wrappedGutterY: wrappedGutterRect.bottom - 2,
+      wrappedGutterHeight: wrappedGutterRect.height,
+      ordinaryGutterHeight: gutterRect.height,
+      wrapperUserSelect: root.defaultView.getComputedStyle(wrapper).userSelect,
+      cellUserSelect: root.defaultView.getComputedStyle(rowCell).userSelect,
+      gutterUserSelect: root.defaultView.getComputedStyle(gutter).userSelect,
+      above,
+    });
+  })()`;
+}
+
+function firstTablePointerSelectionResultExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrapper = root?.querySelectorAll('.mlrt-table-widget')?.[0];
+    if (!root || !view || !wrapper) return JSON.stringify({ ok: false });
+    const address = (cell) => (cell.dataset.rowKind === 'header' ? 0 : Number(cell.dataset.rowIndex) + 1) + ':' + Number(cell.dataset.column);
+    return JSON.stringify({
+      ok: true,
+      editorSelectionEmpty: view.state.selection.main.empty,
+      tableAddresses: Array.from(wrapper.querySelectorAll('.mlrt-table-cell-selected')).map(address).sort(),
+      documentAddresses: Array.from(wrapper.querySelectorAll('.mlrt-document-range-selected')).map(address).sort(),
+      nativeSelectionCollapsed: root.defaultView.getSelection()?.isCollapsed ?? false,
+      activeIsCell: root.activeElement?.classList?.contains('mlrt-table-cell') ?? false,
+      overlayCount: wrapper.querySelectorAll('.mlrt-table-selection-overlay').length,
+    });
+  })()`;
+}
+
 function tablePointerSelectionResultExpression() {
   return `(() => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
@@ -4462,6 +5042,12 @@ function tablePointerSelectionResultExpression() {
     const gridStyle = grid ? root.defaultView.getComputedStyle(grid) : null;
     const frameStyle = frame ? root.defaultView.getComputedStyle(frame) : null;
     const nativeSelection = root.defaultView.getSelection();
+    const nativeSelectionInsideEditor = Boolean(
+      nativeSelection?.anchorNode &&
+      nativeSelection?.focusNode &&
+      view.contentDOM.contains(nativeSelection.anchorNode) &&
+      view.contentDOM.contains(nativeSelection.focusNode)
+    );
     const wrapperStyle = root.defaultView.getComputedStyle(wrapper);
     const frameStroke = frameStyle?.stroke ?? '';
     const editorRange = view.state.selection.main;
@@ -4518,6 +5104,10 @@ function tablePointerSelectionResultExpression() {
       documentAddresses,
       proseSelectionMarkCount: root.querySelectorAll('.mlrt-prose-selection').length,
       nativeSelectionCollapsed: nativeSelection?.isCollapsed ?? false,
+      nativeSelectionInsideEditor,
+      nativeTableSelectionBackground: selected
+        ? root.defaultView.getComputedStyle(selected, '::selection').backgroundColor
+        : null,
       activeIsCell: root.activeElement?.classList?.contains('mlrt-table-cell') ?? false,
       overlapCellCount: wrapper.querySelectorAll('.mlrt-table-cell-selected.mlrt-document-range-selected').length,
       overlayCount: wrapper.querySelectorAll('.mlrt-table-selection-overlay').length,
@@ -8547,6 +9137,49 @@ function assertMultilineProseSelection(setup, result) {
   }
 }
 
+function assertWrappedDownwardSelectionSetup(result) {
+  if (
+    !result?.ok ||
+    ![
+      result.startX,
+      result.startY,
+      result.endX,
+      result.endY,
+      result.anchor,
+      result.head,
+    ].every(Number.isFinite) ||
+    result.head <= result.anchor ||
+    typeof result.expectedText !== "string" ||
+    result.expectedAddresses?.length !== 10
+  ) {
+    throw new Error(
+      `Wrapped downward selection setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertWrappedDownwardSelection(setup, result) {
+  if (
+    !result?.ok ||
+    result.anchor !== setup.anchor ||
+    result.head !== setup.head ||
+    result.selectedText !== setup.expectedText ||
+    JSON.stringify(result.selectedAddresses) !==
+      JSON.stringify(setup.expectedAddresses) ||
+    result.markCount < 2 ||
+    result.fragmentCount < result.markCount ||
+    result.wrapRowCount < 4 ||
+    !result.everyFragmentUsesDirectFill ||
+    !result.pseudoHighlightsDisabled ||
+    result.visibleCodeMirrorBoxCount !== 0 ||
+    result.overlayCount !== 1
+  ) {
+    throw new Error(
+      `Wrapped downward selection check failed: ${JSON.stringify({ setup, result })}`,
+    );
+  }
+}
+
 function assertBlankLineProseSelection(setup, result) {
   if (
     !setup?.ok ||
@@ -9569,7 +10202,77 @@ function assertTablePointerSelectionSetup(result) {
   }
 }
 
-function assertTablePointerSelection(result, mode, expectedAddresses) {
+function assertTableGutterSelectionSetup(result) {
+  if (
+    !result?.ok ||
+    ![
+      result.gutterX,
+      result.gutterY,
+      result.insideX,
+      result.insideY,
+      result.cellX,
+      result.cellY,
+      result.leftX,
+      result.wrappedGutterX,
+      result.wrappedGutterY,
+      result.gutterSourceTo,
+      result.tableFrom,
+      result.tableTo,
+    ].every(Number.isFinite) ||
+    !Number.isFinite(result.above?.x) ||
+    !Number.isFinite(result.above?.y) ||
+    !Number.isInteger(result.above?.pos) ||
+    typeof result.above?.expectedText !== "string" ||
+    result.wrapperUserSelect !== "none" ||
+    result.cellUserSelect !== "text" ||
+    result.gutterUserSelect !== "none" ||
+    result.wrappedGutterHeight <= result.ordinaryGutterHeight
+  ) {
+    throw new Error(
+      `Table gutter selection setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertProseToGutterSelection(result, setup) {
+  const expectedAddresses = [
+    "0:0", "0:1", "0:2", "1:0", "1:1", "1:2", "2:0", "2:1", "2:2",
+  ];
+  assertTablePointerSelection(result, "document", expectedAddresses, true);
+  if (
+    result.anchor !== setup.above.pos ||
+    result.head !== setup.gutterSourceTo ||
+    result.selectedText !==
+      setup.above.expectedText.slice(0, setup.gutterSourceTo - setup.above.pos)
+  ) {
+    throw new Error(
+      `Prose-to-gutter selection failed: ${JSON.stringify({ result, setup })}`,
+    );
+  }
+}
+
+function assertWrappedGutterSelection(result) {
+  if (
+    !result?.ok ||
+    !result.editorSelectionEmpty ||
+    JSON.stringify(result.tableAddresses) !== JSON.stringify(["1:0", "1:1"]) ||
+    result.documentAddresses?.length !== 0 ||
+    !result.nativeSelectionCollapsed ||
+    result.activeIsCell ||
+    result.overlayCount !== 1
+  ) {
+    throw new Error(
+      `Wrapped gutter row selection failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTablePointerSelection(
+  result,
+  mode,
+  expectedAddresses,
+  allowNativeEditorRange = false,
+) {
   const actual = mode === "table"
     ? result?.tableAddresses
     : result?.documentAddresses;
@@ -9584,7 +10287,10 @@ function assertTablePointerSelection(result, mode, expectedAddresses) {
     (mode === "table"
       ? result.proseSelectionMarkCount !== 0
       : result.proseSelectionMarkCount < 1) ||
-    !result.nativeSelectionCollapsed ||
+    (!result.nativeSelectionCollapsed &&
+      (!allowNativeEditorRange ||
+        !result.nativeSelectionInsideEditor ||
+        !selectionColorIsTransparent(result.nativeTableSelectionBackground))) ||
     result.activeIsCell ||
     result.overlapCellCount !== 0 ||
     result.overlayCount !== 1 ||
@@ -9609,8 +10315,14 @@ function assertTablePointerProseEndpoint(
   expectedAddresses,
   expectedAnchor,
   point,
+  allowNativeEditorRange = false,
 ) {
-  assertTablePointerSelection(result, "document", expectedAddresses);
+  assertTablePointerSelection(
+    result,
+    "document",
+    expectedAddresses,
+    allowNativeEditorRange,
+  );
   if (
     result.anchor !== expectedAnchor ||
     result.head !== point.pos ||

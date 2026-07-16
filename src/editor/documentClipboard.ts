@@ -406,11 +406,12 @@ export function installDocumentClipboard(
       clearDocumentSelectionProjection(doc);
       return;
     }
-    const cell = documentSelectionCellAtPoint(
+    const target = documentSelectionTargetAtPoint(
       doc,
       event.clientX,
       event.clientY,
     );
+    const cell = target?.cell ?? null;
     if (!cell) {
       if (!mixedDragActive) {
         return;
@@ -433,13 +434,13 @@ export function installDocumentClipboard(
         : null;
       event.preventDefault();
       event.stopPropagation();
-      doc.defaultView?.getSelection()?.removeAllRanges();
       if (!view.hasFocus) {
         // Focus before publishing the custom range. Focusing after a mixed
         // drag makes CodeMirror reconcile the collapsed DOM selection and can
         // discard the spatial projection before the next text/IME input.
         view.focus();
       }
+      doc.defaultView?.getSelection()?.removeAllRanges();
       publishMixedDragSelection(nextRange, nextProjection);
       return;
     }
@@ -454,11 +455,18 @@ export function installDocumentClipboard(
       return;
     }
     const span = renderedCellSourceSpan(cell, table);
-    const address = addressFromCell(cell);
+    const rawAddress = addressFromCell(cell);
+    const movingForward = mixedDragAnchor <= table.from;
+    const address =
+      rawAddress && target?.rowSelection
+        ? {
+            row: rawAddress.row,
+            column: movingForward ? table.columnCount - 1 : 0,
+          }
+        : rawAddress;
     if (!span || !address) {
       return;
     }
-    const movingForward = mixedDragAnchor <= table.from;
     const nextRange = {
       anchor: mixedDragAnchor,
       head: movingForward ? span.to : span.from,
@@ -492,13 +500,13 @@ export function installDocumentClipboard(
     }
     event.preventDefault();
     event.stopPropagation();
-    doc.defaultView?.getSelection()?.removeAllRanges();
     if (!view.hasFocus) {
       // The drag may have started while a rendered cell or workbench control
       // owned focus. Establish editor focus before the projected selection so
       // subsequent normalized input replaces the selection atomically.
       view.focus();
     }
+    doc.defaultView?.getSelection()?.removeAllRanges();
     publishMixedDragSelection(nextRange, nextProjection);
   };
 
@@ -936,14 +944,14 @@ function regionsForProseToCell(
  * Clamp to the nearest rendered cell instead of asking CodeMirror to map the
  * point through hidden source lines (which can jump to 0/doc.length).
  */
-function documentSelectionCellAtPoint(
+function documentSelectionTargetAtPoint(
   doc: Document,
   clientX: number,
   clientY: number,
-): HTMLElement | null {
+): { cell: HTMLElement; rowSelection: boolean } | null {
   const direct = findCell(doc.elementFromPoint(clientX, clientY));
   if (direct) {
-    return direct;
+    return { cell: direct, rowSelection: false };
   }
   const wrapper = Array.from(
     doc.querySelectorAll<HTMLElement>(".mlrt-table-widget"),
@@ -962,7 +970,7 @@ function documentSelectionCellAtPoint(
   if (cells.length === 0) {
     return null;
   }
-  return cells.reduce((nearest, candidate) => {
+  const nearest = cells.reduce((nearest, candidate) => {
     const distance = distanceToRect(
       candidate.getBoundingClientRect(),
       clientX,
@@ -975,6 +983,23 @@ function documentSelectionCellAtPoint(
     );
     return distance < nearestDistance ? candidate : nearest;
   });
+  const sourceLine = Array.from(
+    wrapper.querySelectorAll<HTMLElement>(".mlrt-table-source-line"),
+  ).find((candidate) => {
+    const rect = candidate.getBoundingClientRect();
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  });
+  const rowCell = sourceLine?.parentElement?.querySelector<HTMLElement>(
+    ".mlrt-table-cell",
+  );
+  return rowCell
+    ? { cell: rowCell, rowSelection: true }
+    : { cell: nearest, rowSelection: false };
 }
 
 function distanceToRect(
