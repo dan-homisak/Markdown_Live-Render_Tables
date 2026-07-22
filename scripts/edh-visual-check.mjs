@@ -753,6 +753,12 @@ try {
   );
   assertTableMenuCopyCarrier(menuCopyCarrier);
   console.log("TABLE MENU COPY CARRIER CHECK:", menuCopyCarrier);
+  const deepListRichCopy = await evaluateJson(
+    liveClient,
+    deepListRichCopyExpression(),
+  );
+  assertDeepListRichCopy(deepListRichCopy);
+  console.log("DEEP LIST RICH COPY CHECK:", deepListRichCopy);
   const tablePointerSetup = await evaluateJson(
     liveClient,
     tablePointerSelectionSetupExpression(),
@@ -7447,6 +7453,128 @@ function tableMenuCopyCarrierExpression() {
   })()`;
 }
 
+function deepListRichCopyExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) {
+      return JSON.stringify({ ok: false, reason: 'missing deep-list clipboard root' });
+    }
+    const previousMode = root.documentElement.dataset.mlrtDefaultCopyMode;
+    const beforeDoc = view.state.doc.toString();
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    let result = { ok: false, reason: 'deep-list copy did not run' };
+    try {
+      const deepListDocument = [
+        '| ID | Feature | Input |',
+        '| --- | --- | --- |',
+        '| 58 | Deep nesting stress | <ul><li>Level 1<ul><li>Level 2<ul><li>Level 3<ul><li>Level 4<ul><li>Level 5<ul><li>Level 6</li></ul></li></ul></li></ul></li></ul></li></ul></li></ul> |',
+      ].join('\\n');
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: { type: 'setDocument', text: deepListDocument, revision: 999500, debug: false },
+      }));
+      await wait();
+      const cell = Array.from(root.querySelectorAll('.mlrt-table-cell')).find((candidate) =>
+        candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
+      );
+      const wrapper = cell?.closest('.mlrt-table-widget');
+      if (!cell || !wrapper) {
+        throw new Error('missing deep-list clipboard target');
+      }
+      cell.focus();
+      cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      }));
+      await wait();
+      root.documentElement.dataset.mlrtDefaultCopyMode = 'rich';
+      const transfer = new root.defaultView.DataTransfer();
+      const copy = new root.defaultView.ClipboardEvent('copy', {
+        clipboardData: transfer, bubbles: true, cancelable: true,
+      });
+      wrapper.dispatchEvent(copy);
+      const selectedCellCount = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+      const tableHtml = transfer.getData('text/html');
+      const tableDocument = new root.defaultView.DOMParser().parseFromString(tableHtml, 'text/html');
+      const copiedCell = Array.from(tableDocument.querySelectorAll('td, th')).find((candidate) =>
+        candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
+      );
+      const lists = Array.from(copiedCell?.querySelectorAll('ul, ol') ?? []);
+      const items = Array.from(copiedCell?.querySelectorAll('li') ?? []);
+      let nestedDepth = 0;
+      let branch = copiedCell?.querySelector(':scope > ul, :scope > ol') ?? null;
+      while (branch) {
+        nestedDepth++;
+        branch = branch.querySelector(':scope > li > ul, :scope > li > ol');
+      }
+      const expectedMarkers = ['disc', 'circle', 'square', 'disc', 'circle', 'square'];
+      view.focus();
+      view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+      await wait();
+      const documentTransfer = new root.defaultView.DataTransfer();
+      const documentCopy = new root.defaultView.ClipboardEvent('copy', {
+        clipboardData: documentTransfer, bubbles: true, cancelable: true,
+      });
+      view.contentDOM.dispatchEvent(documentCopy);
+      const fullDocument = new root.defaultView.DOMParser().parseFromString(
+        documentTransfer.getData('text/html'),
+        'text/html',
+      );
+      const documentListCell = Array.from(fullDocument.querySelectorAll('td, th')).find((candidate) =>
+        candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
+      );
+      let documentNestedDepth = 0;
+      let documentBranch = documentListCell?.querySelector(':scope > ul, :scope > ol') ?? null;
+      while (documentBranch) {
+        documentNestedDepth++;
+        documentBranch = documentBranch.querySelector(':scope > li > ul, :scope > li > ol');
+      }
+      result = {
+        ok: true,
+        copyPrevented: copy.defaultPrevented,
+        selectedCellCount,
+        htmlHasOuterTable: Boolean(tableDocument.querySelector('table > tbody > tr > td')),
+        copiedCellFound: Boolean(copiedCell),
+        nestedDepth,
+        listCount: lists.length,
+        itemCount: items.length,
+        semanticLevelsPreserved: items.map((item) =>
+          Array.from(item.childNodes).filter((node) => node.nodeType === 3)
+            .map((node) => node.textContent).join('').trim()
+        ),
+        listStylesPreserved: lists.every((list, index) => {
+          const style = list.getAttribute('style') ?? '';
+          return style.includes('padding-left:24pt') &&
+            style.includes('list-style-position:outside') &&
+            style.includes('list-style-type:' + expectedMarkers[index]);
+        }),
+        plainHasMarkdownList: transfer.getData('text/plain').includes('<ul><li>Level 1'),
+        plainHasTabs: transfer.getData('text/plain').includes('\\t'),
+        documentCopyPrevented: documentCopy.defaultPrevented,
+        documentNestedDepth,
+        documentListItemCount: documentListCell?.querySelectorAll('li').length ?? 0,
+      };
+    } catch (error) {
+      result = { ok: false, reason: String(error) };
+    } finally {
+      if (previousMode === undefined) {
+        delete root.documentElement.dataset.mlrtDefaultCopyMode;
+      } else {
+        root.documentElement.dataset.mlrtDefaultCopyMode = previousMode;
+      }
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: { type: 'setDocument', text: beforeDoc, revision: 999501, debug: false },
+      }));
+      await wait();
+    }
+    return JSON.stringify({ ...result, restoredDoc: view.state.doc.toString() === beforeDoc });
+  })()`;
+}
+
 function documentClipboardExpression() {
   return `(async () => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
@@ -13741,6 +13869,32 @@ function assertTableRichCopyFallback(result) {
   ) {
     throw new Error(
       `Table rich copy fallback check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertDeepListRichCopy(result) {
+  if (
+    !result?.ok ||
+    !result.copyPrevented ||
+    result.selectedCellCount !== 1 ||
+    !result.htmlHasOuterTable ||
+    !result.copiedCellFound ||
+    result.nestedDepth !== 6 ||
+    result.listCount !== 6 ||
+    result.itemCount !== 6 ||
+    JSON.stringify(result.semanticLevelsPreserved) !==
+      JSON.stringify(['Level 1', 'Level 2', 'Level 3', 'Level 4', 'Level 5', 'Level 6']) ||
+    !result.listStylesPreserved ||
+    !result.plainHasMarkdownList ||
+    result.plainHasTabs ||
+    !result.documentCopyPrevented ||
+    result.documentNestedDepth !== 6 ||
+    result.documentListItemCount !== 6 ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Deep-list rich copy check failed: ${JSON.stringify(result)}`,
     );
   }
 }

@@ -56,6 +56,11 @@ import {
   TableRangeSelectionState,
 } from "./tableRangeSelection";
 import { getTableWidgetTable } from "./tableWidgetState";
+import {
+  OFFICE_RICH_CELL_ALLOWED_ATTR,
+  OFFICE_RICH_CELL_ALLOWED_TAGS,
+  officeCompatibleRichHtml,
+} from "../officeClipboardHtml";
 
 const HTML_METADATA_SELECTOR = 'meta[name="mlrt-clipboard"]';
 const CLIPBOARD_MENU_CLASS = "mlrt-clipboard-menu";
@@ -494,24 +499,11 @@ function representationsForGrid(
     mode === "rich"
       ? payload.rows.map((row) =>
           row.map((cell) =>
-            excelSafeRichInline(DOMPurify.sanitize(
+            officeCompatibleRichHtml(DOMPurify.sanitize(
               richCellRenderer.renderInline(cell.markdown?.trim() ?? cell.text),
               {
-                ALLOWED_TAGS: [
-                  "a",
-                  "b",
-                  "strong",
-                  "i",
-                  "em",
-                  "u",
-                  "s",
-                  "del",
-                  "code",
-                  "br",
-                  "sub",
-                  "sup",
-                ],
-                ALLOWED_ATTR: ["href", "title"],
+                ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
+                ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
                 ALLOW_UNKNOWN_PROTOCOLS: false,
               },
             )),
@@ -530,26 +522,6 @@ function representationsForGrid(
     }),
     privatePayload,
   };
-}
-
-function excelSafeRichInline(html: string): string {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  const replaceWithSpan = (selector: string, style: string): void => {
-    parsed.body.querySelectorAll<HTMLElement>(selector).forEach((element) => {
-      const span = parsed.createElement("span");
-      span.setAttribute("style", style);
-      span.append(...Array.from(element.childNodes));
-      element.replaceWith(span);
-    });
-  };
-  replaceWithSpan("strong, b", "font-weight:700");
-  replaceWithSpan("em, i", "font-style:italic");
-  replaceWithSpan("code", "font-family:monospace");
-  replaceWithSpan("s, del", "text-decoration:line-through");
-  parsed.body.querySelectorAll("br").forEach((br) =>
-    br.setAttribute("style", "mso-data-placement:same-cell"),
-  );
-  return parsed.body.innerHTML;
 }
 
 function metadataTextCarrierHtml(

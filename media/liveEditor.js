@@ -34736,6 +34736,97 @@ ${text3}`;
     return left.row === right.row && left.column === right.column;
   }
 
+  // src/editor/officeClipboardHtml.ts
+  var OFFICE_RICH_CELL_ALLOWED_TAGS = [
+    "a",
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "s",
+    "del",
+    "code",
+    "br",
+    "sub",
+    "sup",
+    "ul",
+    "ol",
+    "li"
+  ];
+  var OFFICE_RICH_CELL_ALLOWED_ATTR = [
+    "href",
+    "title",
+    "start",
+    "reversed",
+    "type",
+    "value"
+  ];
+  var UNORDERED_MARKERS = ["disc", "circle", "square"];
+  var ORDERED_MARKERS = ["decimal", "lower-alpha", "lower-roman"];
+  function officeCompatibleRichHtml(html3) {
+    const parsed = new DOMParser().parseFromString(html3, "text/html");
+    const replaceWithSpan = (selector, style) => {
+      parsed.body.querySelectorAll(selector).forEach((element) => {
+        const span = parsed.createElement("span");
+        span.setAttribute("style", style);
+        span.append(...Array.from(element.childNodes));
+        element.replaceWith(span);
+      });
+    };
+    replaceWithSpan("strong, b", "font-weight:700");
+    replaceWithSpan("em, i", "font-style:italic");
+    replaceWithSpan("code", "font-family:monospace");
+    replaceWithSpan("s, del", "text-decoration:line-through");
+    parsed.body.querySelectorAll("br").forEach(
+      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
+    );
+    parsed.body.querySelectorAll("ul, ol").forEach((list2) => {
+      const depth = listDepth(list2);
+      const markers = list2.tagName === "OL" ? ORDERED_MARKERS : UNORDERED_MARKERS;
+      const marker = explicitListMarker(list2) ?? markers[(depth - 1) % markers.length];
+      list2.setAttribute(
+        "style",
+        [
+          "margin-top:0",
+          "margin-bottom:0",
+          "padding-left:24pt",
+          "list-style-position:outside",
+          `list-style-type:${marker}`
+        ].join(";")
+      );
+    });
+    parsed.body.querySelectorAll("li").forEach((item) => {
+      item.setAttribute("style", "margin:0;padding:0");
+    });
+    return parsed.body.innerHTML;
+  }
+  function listDepth(list2) {
+    let depth = 1;
+    for (let parent = list2.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === "UL" || parent.tagName === "OL") {
+        depth++;
+      }
+    }
+    return depth;
+  }
+  function explicitListMarker(list2) {
+    const type = list2.getAttribute("type");
+    if (!type) {
+      return null;
+    }
+    if (list2.tagName === "UL") {
+      return ["disc", "circle", "square"].includes(type.toLowerCase()) ? type.toLowerCase() : null;
+    }
+    return {
+      "1": "decimal",
+      a: "lower-alpha",
+      A: "upper-alpha",
+      i: "lower-roman",
+      I: "upper-roman"
+    }[type] ?? null;
+  }
+
   // src/editor/documentClipboard.ts
   var markdownRenderer = new lib_default({
     html: false,
@@ -35750,7 +35841,7 @@ ${text3}`;
       }
     );
     if (rich) {
-      return excelSafeRichInline(rendered);
+      return officeCompatibleRichHtml(rendered);
     }
     const parsed = new DOMParser().parseFromString(rendered, "text/html");
     parsed.body.querySelectorAll("a, strong, b, em, i, u, s, del, code, sub, sup").forEach((element) => element.replaceWith(...Array.from(element.childNodes)));
@@ -35836,45 +35927,13 @@ ${text3}`;
           markdownCellToDisplayText(raw).trim()
         ),
         {
-          ALLOWED_TAGS: [
-            "a",
-            "b",
-            "strong",
-            "i",
-            "em",
-            "u",
-            "s",
-            "del",
-            "code",
-            "br",
-            "sub",
-            "sup"
-          ],
-          ALLOWED_ATTR: ["href", "title"],
+          ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
+          ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
           ALLOW_UNKNOWN_PROTOCOLS: false
         }
       );
-      return excelSafeRichInline(sanitized);
+      return officeCompatibleRichHtml(sanitized);
     });
-  }
-  function excelSafeRichInline(html3) {
-    const parsed = new DOMParser().parseFromString(html3, "text/html");
-    const replaceWithSpan = (selector, style) => {
-      parsed.body.querySelectorAll(selector).forEach((element) => {
-        const span = parsed.createElement("span");
-        span.setAttribute("style", style);
-        span.append(...Array.from(element.childNodes));
-        element.replaceWith(span);
-      });
-    };
-    replaceWithSpan("strong, b", "font-weight:700");
-    replaceWithSpan("em, i", "font-style:italic");
-    replaceWithSpan("code", "font-family:monospace");
-    replaceWithSpan("s, del", "text-decoration:line-through");
-    parsed.body.querySelectorAll("br").forEach(
-      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
-    );
-    return parsed.body.innerHTML;
   }
   function visibleElementText(element) {
     const clone2 = element.cloneNode(true);
@@ -39549,24 +39608,11 @@ ${replacement}
     const embedded = encodePayloadForHtml(privatePayload);
     const richCells = mode === "rich" ? payload.rows.map(
       (row) => row.map(
-        (cell2) => excelSafeRichInline2(purify.sanitize(
+        (cell2) => officeCompatibleRichHtml(purify.sanitize(
           richCellRenderer.renderInline(cell2.markdown?.trim() ?? cell2.text),
           {
-            ALLOWED_TAGS: [
-              "a",
-              "b",
-              "strong",
-              "i",
-              "em",
-              "u",
-              "s",
-              "del",
-              "code",
-              "br",
-              "sub",
-              "sup"
-            ],
-            ALLOWED_ATTR: ["href", "title"],
+            ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
+            ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
             ALLOW_UNKNOWN_PROTOCOLS: false
           }
         ))
@@ -39584,25 +39630,6 @@ ${replacement}
       }),
       privatePayload
     };
-  }
-  function excelSafeRichInline2(html3) {
-    const parsed = new DOMParser().parseFromString(html3, "text/html");
-    const replaceWithSpan = (selector, style) => {
-      parsed.body.querySelectorAll(selector).forEach((element) => {
-        const span = parsed.createElement("span");
-        span.setAttribute("style", style);
-        span.append(...Array.from(element.childNodes));
-        element.replaceWith(span);
-      });
-    };
-    replaceWithSpan("strong, b", "font-weight:700");
-    replaceWithSpan("em, i", "font-style:italic");
-    replaceWithSpan("code", "font-family:monospace");
-    replaceWithSpan("s, del", "text-decoration:line-through");
-    parsed.body.querySelectorAll("br").forEach(
-      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
-    );
-    return parsed.body.innerHTML;
   }
   function metadataTextCarrierHtml2(payload, text3) {
     const encoded = encodePayloadForHtml(JSON.stringify(payload));

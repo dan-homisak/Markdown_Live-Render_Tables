@@ -53,6 +53,11 @@ import {
   setPendingCutToken,
 } from "./table/tableRangeSelection";
 import { syncTableSelectionOverlay } from "./table/tableSelectionOverlay";
+import {
+  OFFICE_RICH_CELL_ALLOWED_ATTR,
+  OFFICE_RICH_CELL_ALLOWED_TAGS,
+  officeCompatibleRichHtml,
+} from "./officeClipboardHtml";
 
 interface ClipboardReadData {
   privatePayload?: string;
@@ -1457,7 +1462,7 @@ function renderClipboardProse(markdown: string, rich: boolean): string {
     },
   );
   if (rich) {
-    return excelSafeRichInline(rendered);
+    return officeCompatibleRichHtml(rendered);
   }
   const parsed = new DOMParser().parseFromString(rendered, "text/html");
   parsed.body
@@ -1566,46 +1571,13 @@ function tableRowRichValues(rawCells: string[]): string[] {
         markdownCellToDisplayText(raw).trim(),
       ),
       {
-        ALLOWED_TAGS: [
-          "a",
-          "b",
-          "strong",
-          "i",
-          "em",
-          "u",
-          "s",
-          "del",
-          "code",
-          "br",
-          "sub",
-          "sup",
-        ],
-        ALLOWED_ATTR: ["href", "title"],
+        ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
+        ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
         ALLOW_UNKNOWN_PROTOCOLS: false,
       },
     );
-    return excelSafeRichInline(sanitized);
+    return officeCompatibleRichHtml(sanitized);
   });
-}
-
-function excelSafeRichInline(html: string): string {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  const replaceWithSpan = (selector: string, style: string): void => {
-    parsed.body.querySelectorAll<HTMLElement>(selector).forEach((element) => {
-      const span = parsed.createElement("span");
-      span.setAttribute("style", style);
-      span.append(...Array.from(element.childNodes));
-      element.replaceWith(span);
-    });
-  };
-  replaceWithSpan("strong, b", "font-weight:700");
-  replaceWithSpan("em, i", "font-style:italic");
-  replaceWithSpan("code", "font-family:monospace");
-  replaceWithSpan("s, del", "text-decoration:line-through");
-  parsed.body.querySelectorAll("br").forEach((br) =>
-    br.setAttribute("style", "mso-data-placement:same-cell"),
-  );
-  return parsed.body.innerHTML;
 }
 
 function visibleElementText(element: Element): string {
