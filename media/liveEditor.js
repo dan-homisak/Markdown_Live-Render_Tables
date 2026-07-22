@@ -24479,7 +24479,7 @@
     return value.replace(/\u00a0/g, " ");
   }
   function setCellPlainText(cell2, value) {
-    const needsSentinel = value.endsWith("\n");
+    const needsSentinel = cellValueNeedsCaretSentinel(value);
     const nodes = cell2.childNodes;
     if (!needsSentinel && nodes.length === 1 && cell2.firstChild instanceof Text) {
       if (cell2.firstChild.data !== value) {
@@ -24502,6 +24502,9 @@
       ...needsSentinel ? [cell2.ownerDocument.createElement("br")] : []
     );
   }
+  function cellValueNeedsCaretSentinel(value) {
+    return value.length === 0 || value.endsWith("\n");
+  }
   function isSimpleCellContent(cell2) {
     const nodes = cell2.childNodes;
     for (let index = 0; index < nodes.length; index++) {
@@ -24518,9 +24521,7 @@
   }
   function readSimpleCellText(cell2) {
     let text3 = "";
-    const nodes = cell2.childNodes;
-    for (let index = 0; index < nodes.length; index++) {
-      const node = nodes[index];
+    for (const node of Array.from(cell2.childNodes)) {
       if (node instanceof Text) {
         text3 += node.data;
       }
@@ -24529,17 +24530,14 @@
   }
   function getCellCaretOffset(cell2) {
     const selection = cell2.ownerDocument.defaultView?.getSelection();
-    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell2)) {
+    if (!selection || selection.rangeCount === 0 || !isNodeInside(selection.anchorNode, cell2) || !isNodeInside(selection.focusNode, cell2)) {
       return readCellDisplayValue(cell2).length;
     }
-    const range = selection.getRangeAt(0).cloneRange();
-    const measuringRange = cell2.ownerDocument.createRange();
-    measuringRange.selectNodeContents(cell2);
-    measuringRange.setEnd(range.endContainer, range.endOffset);
-    const offset = measuringRange.toString().replace(/\u00a0/g, " ").length;
-    range.detach();
-    measuringRange.detach();
-    return offset;
+    return getCellNodeOffset(
+      cell2,
+      selection.focusNode,
+      selection.focusOffset
+    );
   }
   function getCellSelectionOffsets(cell2) {
     const selection = cell2.ownerDocument.defaultView?.getSelection();
@@ -24556,58 +24554,162 @@
     };
   }
   function setCellCaretOffset(cell2, offset) {
+    setCellSelectionOffsets(cell2, offset, offset);
+  }
+  function setCellSelectionOffsets(cell2, anchor, head) {
     const selection = cell2.ownerDocument.defaultView?.getSelection();
     if (!selection) {
       return;
     }
-    const walker = cell2.ownerDocument.createTreeWalker(
+    const valueLength = readCellDisplayValue(cell2).length;
+    const anchorPoint = getCellTextPosition(
       cell2,
-      NodeFilter.SHOW_TEXT
+      Math.max(0, Math.min(valueLength, anchor))
     );
-    let remainingOffset = Math.max(0, offset);
-    let textNode = walker.nextNode();
-    while (textNode) {
-      const length = textNode.textContent?.length ?? 0;
-      if (remainingOffset <= length) {
-        const range = cell2.ownerDocument.createRange();
-        range.setStart(textNode, remainingOffset);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        range.detach();
-        return;
-      }
-      remainingOffset -= length;
-      textNode = walker.nextNode();
+    const headPoint = getCellTextPosition(
+      cell2,
+      Math.max(0, Math.min(valueLength, head))
+    );
+    if (!anchorPoint || !headPoint) {
+      setCellSelectionAtEnd(cell2);
+      return;
     }
-    focusCellAtEnd(cell2);
-  }
-  function focusCellAtEnd(cell2) {
-    cell2.focus();
-    const selection = cell2.ownerDocument.defaultView?.getSelection();
-    if (!selection) {
+    if (typeof selection.setBaseAndExtent === "function") {
+      selection.setBaseAndExtent(
+        anchorPoint.node,
+        anchorPoint.offset,
+        headPoint.node,
+        headPoint.offset
+      );
       return;
     }
     const range = cell2.ownerDocument.createRange();
-    range.selectNodeContents(cell2);
-    range.collapse(false);
+    const forward = anchor <= head;
+    const start = forward ? anchorPoint : headPoint;
+    const end = forward ? headPoint : anchorPoint;
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
     selection.removeAllRanges();
     selection.addRange(range);
+    range.detach();
   }
-  function isCaretAtVerticalBoundary(cell2, rowDelta) {
+  function focusCellAtStart(cell2) {
+    cell2.focus();
+    setCellCaretOffset(cell2, 0);
+  }
+  function focusCellAtEnd(cell2) {
+    cell2.focus();
+    setCellCaretOffset(cell2, readCellDisplayValue(cell2).length);
+  }
+  function moveCellSelectionToLineBoundary(cell2, side, extend2) {
     const selection = cell2.ownerDocument.defaultView?.getSelection();
-    if (!selection || selection.rangeCount === 0 || !selection.isCollapsed || !isNodeInside(selection.anchorNode, cell2)) {
+    const original = getCellSelectionOffsets(cell2);
+    if (!selection || !original || typeof selection.modify !== "function") {
       return false;
     }
-    const caretRect = getCaretRect(selection.getRangeAt(0));
-    const lineBounds = getCellLineBounds(cell2);
-    if (!caretRect || !lineBounds) {
-      return true;
+    try {
+      selection.modify(
+        extend2 ? "extend" : "move",
+        side === "start" ? "backward" : "forward",
+        "lineboundary"
+      );
+      if (getCellSelectionOffsets(cell2)) {
+        return true;
+      }
+    } catch {
     }
-    const styles = getComputedStyle(cell2);
-    const parsedLineHeight = parseFloat(styles.lineHeight);
-    const tolerance = Number.isFinite(parsedLineHeight) ? Math.max(2, parsedLineHeight * 0.25) : 3;
-    return rowDelta < 0 ? caretRect.top <= lineBounds.firstTop + tolerance : caretRect.bottom >= lineBounds.lastBottom - tolerance;
+    cell2.focus({ preventScroll: true });
+    setCellSelectionOffsets(cell2, original.anchor, original.head);
+    return false;
+  }
+  function extendCellSelectionVertically(cell2, rowDelta) {
+    const selection = cell2.ownerDocument.defaultView?.getSelection();
+    const original = getCellSelectionOffsets(cell2);
+    if (!selection || !original || typeof selection.modify !== "function") {
+      return { movedWithinCell: false, preferredX: null };
+    }
+    try {
+      selection.modify(
+        "extend",
+        rowDelta < 0 ? "backward" : "forward",
+        "line"
+      );
+      const result = getCellSelectionOffsets(cell2);
+      if (result && (result.anchor !== original.anchor || result.head !== original.head)) {
+        return { movedWithinCell: true, preferredX: null };
+      }
+    } catch {
+    }
+    cell2.focus({ preventScroll: true });
+    setCellSelectionOffsets(cell2, original.anchor, original.head);
+    return { movedWithinCell: false, preferredX: null };
+  }
+  function moveCellCaretVertically(cell2, rowDelta) {
+    const selection = cell2.ownerDocument.defaultView?.getSelection();
+    const original = getCellSelectionOffsets(cell2);
+    if (!selection || !original || typeof selection.modify !== "function") {
+      return { movedWithinCell: false, preferredX: null };
+    }
+    const preferredX = getCollapsedCaretX(cell2, selection);
+    try {
+      selection.modify(
+        "move",
+        rowDelta < 0 ? "backward" : "forward",
+        "line"
+      );
+      const result = getCellSelectionOffsets(cell2);
+      if (result && (result.anchor !== original.anchor || result.head !== original.head)) {
+        return { movedWithinCell: true, preferredX };
+      }
+    } catch {
+    }
+    cell2.focus({ preventScroll: true });
+    setCellSelectionOffsets(cell2, original.anchor, original.head);
+    return { movedWithinCell: false, preferredX };
+  }
+  function focusCellAtVerticalEdge(cell2, rowDelta, preferredX = null) {
+    if (rowDelta > 0) {
+      focusCellAtStart(cell2);
+    } else {
+      focusCellAtEnd(cell2);
+    }
+    if (preferredX === null || !Number.isFinite(preferredX)) {
+      return;
+    }
+    const caretPositionFromPoint = cell2.ownerDocument.caretPositionFromPoint;
+    const cellRect = cell2.getBoundingClientRect();
+    if (typeof caretPositionFromPoint !== "function" || cellRect.width <= 2) {
+      return;
+    }
+    const contents = cell2.ownerDocument.createRange();
+    contents.selectNodeContents(cell2);
+    const lineRects = contents.getClientRects();
+    const lineRect = rowDelta > 0 ? lineRects.item(0) : lineRects.item(lineRects.length - 1);
+    contents.detach();
+    if (!lineRect || lineRect.height <= 0 || lineRect.width <= 0) {
+      return;
+    }
+    const lineInset = Math.min(0.25, lineRect.width / 4);
+    const lineLeft = Math.max(cellRect.left + 1, lineRect.left + lineInset);
+    const lineRight = Math.min(cellRect.right - 1, lineRect.right - lineInset);
+    const x = Math.max(
+      lineLeft,
+      Math.min(lineRight, preferredX)
+    );
+    const y = lineRect.top + lineRect.height / 2;
+    const caret = caretPositionFromPoint.call(cell2.ownerDocument, x, y);
+    if (!caret || !isNodeInside(caret.offsetNode, cell2)) {
+      return;
+    }
+    try {
+      const range = cell2.ownerDocument.createRange();
+      range.setStart(caret.offsetNode, caret.offset);
+      range.collapse(true);
+      const selection = cell2.ownerDocument.defaultView?.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    } catch {
+    }
   }
   function requestElementAnimationFrame(element, callback) {
     const view2 = element.ownerDocument.defaultView;
@@ -24624,78 +24726,78 @@
   function isNodeInside(node, element) {
     return node === element || node !== null && element.contains(node);
   }
+  function setCellSelectionAtEnd(cell2) {
+    const selection = cell2.ownerDocument.defaultView?.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = cell2.ownerDocument.createRange();
+    range.selectNodeContents(cell2);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
   function getCellNodeOffset(cell2, node, offset) {
     if (!node) {
       return readCellDisplayValue(cell2).length;
     }
-    const measuringRange = cell2.ownerDocument.createRange();
-    measuringRange.selectNodeContents(cell2);
-    measuringRange.setEnd(node, offset);
-    const measuredOffset = measuringRange.toString().replace(/\u00a0/g, " ").length;
-    measuringRange.detach();
-    return measuredOffset;
-  }
-  function getCaretRect(range) {
-    const directRect = firstUsefulRect(range.getClientRects());
-    if (directRect) {
-      return directRect;
-    }
-    const doc2 = getNodeDocument(range.startContainer);
-    if (!doc2) {
-      return null;
-    }
-    const marker = doc2.createElement("span");
-    marker.textContent = "\u200B";
-    marker.style.display = "inline-block";
-    marker.style.width = "0";
-    marker.style.height = "1em";
-    marker.style.overflow = "hidden";
-    marker.style.padding = "0";
-    marker.style.margin = "0";
-    marker.style.border = "0";
-    const restoreRange = range.cloneRange();
-    const markerRange = range.cloneRange();
-    markerRange.insertNode(marker);
-    const markerRect = marker.getBoundingClientRect();
-    marker.remove();
-    const selection = doc2.defaultView?.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(restoreRange);
-    return markerRect.height > 0 ? markerRect : null;
-  }
-  function getNodeDocument(node) {
-    return node.nodeType === Node.DOCUMENT_NODE ? node : node.ownerDocument;
-  }
-  function getCellLineBounds(cell2) {
     const range = cell2.ownerDocument.createRange();
     range.selectNodeContents(cell2);
-    const rects = Array.from(range.getClientRects()).filter(
-      (rect) => rect.height > 0 && rect.width >= 0
-    );
+    range.setEnd(node, offset);
+    const measured = range.toString().replace(/\u00a0/g, " ").length;
     range.detach();
-    if (rects.length === 0) {
-      const cellRect = cell2.getBoundingClientRect();
-      return cellRect.height > 0 ? { firstTop: cellRect.top, lastBottom: cellRect.bottom } : null;
-    }
-    return rects.reduce(
-      (bounds, rect) => ({
-        firstTop: Math.min(bounds.firstTop, rect.top),
-        lastBottom: Math.max(bounds.lastBottom, rect.bottom)
-      }),
-      {
-        firstTop: Number.POSITIVE_INFINITY,
-        lastBottom: Number.NEGATIVE_INFINITY
-      }
-    );
+    return measured;
   }
-  function firstUsefulRect(rects) {
-    for (let index = 0; index < rects.length; index++) {
-      const rect = rects.item(index);
-      if (rect && rect.height > 0) {
-        return rect;
+  function getCellTextPosition(cell2, offset) {
+    const walker = cell2.ownerDocument.createTreeWalker(
+      cell2,
+      NodeFilter.SHOW_TEXT
+    );
+    let remaining = Math.max(0, offset);
+    let lastText = null;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!(node instanceof Text)) {
+        continue;
       }
+      lastText = node;
+      if (remaining <= node.data.length) {
+        return { node, offset: remaining };
+      }
+      remaining -= node.data.length;
     }
-    return null;
+    return lastText && remaining === 0 ? { node: lastText, offset: lastText.data.length } : null;
+  }
+  function getCollapsedCaretX(cell2, selection) {
+    if (!selection.isCollapsed || selection.rangeCount === 0) {
+      return null;
+    }
+    const caretRange = selection.getRangeAt(0);
+    const directRect = caretRange.getBoundingClientRect();
+    if (directRect.height > 0 && Number.isFinite(directRect.left)) {
+      return directRect.left;
+    }
+    const offsets = getCellSelectionOffsets(cell2);
+    const valueLength = readCellDisplayValue(cell2).length;
+    if (!offsets || valueLength === 0) {
+      return null;
+    }
+    const useLeadingEdge = offsets.head < valueLength;
+    const from = useLeadingEdge ? offsets.head : offsets.head - 1;
+    const start = getCellTextPosition(cell2, from);
+    const end = getCellTextPosition(cell2, from + 1);
+    if (!start || !end) {
+      return null;
+    }
+    const adjacentRange = cell2.ownerDocument.createRange();
+    adjacentRange.setStart(start.node, start.offset);
+    adjacentRange.setEnd(end.node, end.offset);
+    const rect = adjacentRange.getBoundingClientRect();
+    adjacentRange.detach();
+    if (rect.height <= 0 || !Number.isFinite(rect.left)) {
+      return null;
+    }
+    const isRtl = getComputedStyle(cell2).direction === "rtl";
+    return useLeadingEdge === isRtl ? rect.right : rect.left;
   }
 
   // src/editor/table/tableSelectionOverlay.ts
@@ -33012,6 +33114,18 @@
     ).join("|")}|`;
     return [sourceRows[0], delimiter2, ...sourceRows.slice(1)].join("\n");
   }
+  function gridPlainTextForCopy(payload, mode) {
+    if (mode === "plain") {
+      return serializeDelimitedGrid(
+        payload.rows.map((row) => row.map((cell2) => cell2.text)),
+        "	"
+      );
+    }
+    return payload.exactMarkdown ?? gridToMarkdown(payload.rows, payload.alignments);
+  }
+  function importedMarkdownToTableCellSource(value) {
+    return normalizeCellText(value).replace(/\|/g, "&#124;").replace(/\n/g, "<br>");
+  }
   function gridToHtml(rows, options = {}) {
     const alignments = options.alignments ?? [];
     const metadata = options.embeddedPayload ? `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute(options.embeddedPayload)}">` : "";
@@ -33322,6 +33436,76 @@
         "mlrt-table-cut-source-left"
       )
     );
+  }
+
+  // src/editor/tableBoundaryInput.ts
+  function planVisibleTableBoundary(doc2, table2, side) {
+    if (side === "before") {
+      return table2.from === 0 ? {
+        anchor: 0,
+        change: { from: 0, to: 0, insert: "\n" }
+      } : { anchor: positionBeforeTable(table2) };
+    }
+    if (table2.to === doc2.length) {
+      return {
+        anchor: table2.to + 1,
+        change: { from: table2.to, to: table2.to, insert: "\n" }
+      };
+    }
+    return { anchor: positionAfterTable(doc2, table2) };
+  }
+  function selectVisibleTableBoundary(view2, table2, side) {
+    const latestTable = getParsedTables(view2.state.doc).find(
+      (candidate) => candidate.from === table2.from
+    ) ?? table2;
+    const plan = planVisibleTableBoundary(view2.state.doc, latestTable, side);
+    if (plan.change) {
+      view2.dispatch({
+        changes: plan.change,
+        selection: EditorSelection.cursor(
+          plan.anchor,
+          side === "before" ? -1 : 1
+        ),
+        annotations: allowTableSourceChange.of(true),
+        scrollIntoView: true,
+        userEvent: "input.type"
+      });
+    } else {
+      view2.dispatch({
+        selection: EditorSelection.cursor(
+          plan.anchor,
+          side === "before" ? -1 : 1
+        ),
+        scrollIntoView: true
+      });
+    }
+    return plan.anchor;
+  }
+  function createTableBoundaryInputHandler() {
+    return EditorView.inputHandler.of((view2, from, to, text3) => {
+      if (from !== to || text3.length === 0) {
+        return false;
+      }
+      const table2 = getParsedTables(view2.state.doc).find(
+        (candidate) => candidate.from === 0 && from === candidate.from || candidate.to === view2.state.doc.length && from === candidate.to
+      );
+      if (!table2) {
+        return false;
+      }
+      const insertingBefore = table2.from === 0 && from === table2.from;
+      const insert2 = insertingBefore ? text3.endsWith("\n") ? text3 : `${text3}
+` : text3.startsWith("\n") ? text3 : `
+${text3}`;
+      const anchor = insertingBefore ? from + insert2.length - 1 : from + insert2.length;
+      view2.dispatch({
+        changes: { from, to, insert: insert2 },
+        selection: EditorSelection.cursor(anchor, insertingBefore ? -1 : 1),
+        annotations: allowTableSourceChange.of(true),
+        scrollIntoView: true,
+        userEvent: "input.type"
+      });
+      return true;
+    });
   }
 
   // src/editor/table/tableRangeSelection.ts
@@ -33876,6 +34060,9 @@
       if (event.button !== 0) {
         return;
       }
+      if (event.target instanceof Element && event.target.closest(".mlrt-clipboard-menu")) {
+        return;
+      }
       const selection = getTableRangeSelection(wrapper.ownerDocument);
       if (selection?.wrapper === wrapper && event.target instanceof Node && !wrapper.contains(event.target)) {
         clearTableRangeSelection(wrapper.ownerDocument);
@@ -33971,26 +34158,22 @@
           } else {
             clearTableRangeSelection(wrapper.ownerDocument);
             view2.focus();
-            view2.dispatch({
-              selection: EditorSelection.cursor(
-                event.shiftKey ? positionBeforeTable(latestTable) : positionAfterTable(view2.state.doc, latestTable),
-                event.shiftKey ? -1 : 1
-              ),
-              scrollIntoView: true
-            });
+            selectVisibleTableBoundary(
+              view2,
+              latestTable,
+              event.shiftKey ? "before" : "after"
+            );
           }
           return;
         }
         if (isPlainKey(event) && (event.key === "ArrowUp" && selection.head.row === 0 || event.key === "ArrowDown" && selection.head.row === latestTable.body.length)) {
-          const selectionAnchor = event.key === "ArrowUp" ? positionBeforeTable(latestTable) : view2.state.doc.lineAt(
-            positionAfterTable(view2.state.doc, latestTable)
-          ).to;
           clearTableRangeSelection(wrapper.ownerDocument);
           view2.focus();
-          view2.dispatch({
-            selection: EditorSelection.cursor(selectionAnchor, 1),
-            scrollIntoView: true
-          });
+          selectVisibleTableBoundary(
+            view2,
+            latestTable,
+            event.key === "ArrowUp" ? "before" : "after"
+          );
           return;
         }
         const delta = keyDelta(event);
@@ -34537,7 +34720,11 @@
     return address.row < lastRow ? { row: address.row + 1, column: 0 } : null;
   }
   function isSelectAll(event) {
-    return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a";
+    const ownerDocument = event.target instanceof Node ? event.target.ownerDocument : null;
+    const platform = ownerDocument?.defaultView?.navigator.platform ?? "";
+    const isApplePlatform = /Mac|iPhone|iPad|iPod/i.test(platform);
+    const primaryModifier = isApplePlatform ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    return primaryModifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a";
   }
   function isPlainKey(event) {
     return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
@@ -35315,7 +35502,7 @@
       };
     }
     const clipboard = buildDocumentClipboard(markdown2, mode === "rich");
-    const plain = clipboard.plain;
+    const plain = mode === "plain" || parseMarkdownTables(markdown2).length === 0 ? clipboard.plain : markdown2;
     if (mode === "plain") {
       return {
         plain,
@@ -35518,8 +35705,7 @@
     for (const table2 of tables2) {
       appendClipboardProseSegments(
         segments,
-        markdown2.slice(cursor, table2.from),
-        true
+        markdown2.slice(cursor, table2.from)
       );
       segments.push({ kind: "table", table: table2 });
       cursor = table2.to;
@@ -35527,15 +35713,15 @@
         cursor++;
       }
     }
-    appendClipboardProseSegments(segments, markdown2.slice(cursor), false);
+    appendClipboardProseSegments(segments, markdown2.slice(cursor));
     return segments;
   }
-  function appendClipboardProseSegments(segments, markdown2, tableFollows) {
+  function appendClipboardProseSegments(segments, markdown2) {
     if (markdown2.length === 0) {
       return;
     }
     const lines = markdown2.replace(/\r\n?/g, "\n").split("\n");
-    if (tableFollows && lines[lines.length - 1] === "") {
+    if (lines.length > 1 && lines[lines.length - 1] === "") {
       lines.pop();
     }
     let proseLines = [];
@@ -35889,11 +36075,32 @@ ${replacement}
         '[style*="mso-hide"]'
       ].join(",")
     ).forEach((element) => element.remove());
-    clone2.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
-    return normalizeText(turndown.turndown(clone2.innerHTML)).replace(/\n{2,}/g, "\n").trim();
+    const breakToken = uniqueImportToken(clone2, "LINEBREAK");
+    const slashToken = uniqueImportToken(clone2, "BACKSLASH");
+    const walker = clone2.ownerDocument.createTreeWalker(
+      clone2,
+      NodeFilter.SHOW_TEXT
+    );
+    let textNode = walker.nextNode();
+    while (textNode) {
+      textNode.nodeValue = (textNode.nodeValue ?? "").replace(/\\/g, slashToken);
+      textNode = walker.nextNode();
+    }
+    clone2.querySelectorAll("br").forEach(
+      (br) => br.replaceWith(clone2.ownerDocument.createTextNode(breakToken))
+    );
+    return normalizeText(turndown.turndown(clone2.innerHTML)).replace(/\n{2,}/g, "\n").trim().split(breakToken).join("\n").split(slashToken).join("\\");
   }
   function markdownForTableCell(value) {
-    return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+    return importedMarkdownToTableCellSource(value);
+  }
+  function uniqueImportToken(root2, label) {
+    let token = `MLRT${label}TOKENX`;
+    const source = root2.textContent ?? "";
+    while (source.includes(token)) {
+      token += "X";
+    }
+    return token;
   }
   function officeClassStyles(html3) {
     const styles = /* @__PURE__ */ new Map();
@@ -36598,6 +36805,14 @@ ${replacement}
     const line = view2.state.doc.lineAt(head);
     const tables2 = getParsedTables(view2.state.doc);
     for (const table2 of tables2) {
+      if (direction === "down" && head === table2.to) {
+        selectVisibleTableBoundary(view2, table2, "after");
+        return true;
+      }
+      if (direction === "up" && head === table2.from) {
+        selectVisibleTableBoundary(view2, table2, "before");
+        return true;
+      }
       const lineNumberAboveTable = table2.startLine;
       const afterTable = positionAfterTable(view2.state.doc, table2);
       if (direction === "down" && line.number === lineNumberAboveTable) {
@@ -36627,39 +36842,16 @@ ${replacement}
     if (!cell2) {
       return false;
     }
-    focusCellAtEnd(cell2);
+    const caret = view2.coordsAtPos(view2.state.selection.main.head);
+    focusCellAtVerticalEdge(
+      cell2,
+      target === "first" ? 1 : -1,
+      caret?.left ?? null
+    );
     return true;
   }
   function isRenderedTableCellFocused(view2) {
     return Boolean(findCell(view2.dom.ownerDocument.activeElement));
-  }
-
-  // src/editor/tableBoundaryInput.ts
-  function createTableBoundaryInputHandler() {
-    return EditorView.inputHandler.of((view2, from, to, text3) => {
-      if (from !== to || text3.length === 0) {
-        return false;
-      }
-      const table2 = getParsedTables(view2.state.doc).find(
-        (candidate) => candidate.from === 0 && from === candidate.from || candidate.to === view2.state.doc.length && from === candidate.to
-      );
-      if (!table2) {
-        return false;
-      }
-      const insertingBefore = table2.from === 0 && from === table2.from;
-      const insert2 = insertingBefore ? text3.endsWith("\n") ? text3 : `${text3}
-` : text3.startsWith("\n") ? text3 : `
-${text3}`;
-      const anchor = insertingBefore ? from + insert2.length - 1 : from + insert2.length;
-      view2.dispatch({
-        changes: { from, to, insert: insert2 },
-        selection: EditorSelection.cursor(anchor, insertingBefore ? -1 : 1),
-        annotations: allowTableSourceChange.of(true),
-        scrollIntoView: true,
-        userEvent: "input.type"
-      });
-      return true;
-    });
   }
 
   // src/editor/tableCellFocus.ts
@@ -37017,6 +37209,51 @@ ${text3}`;
     return value.replace(/\r\n?/g, "\n");
   }
 
+  // src/shared/tableKeyboardNavigation.ts
+  var TABLE_NAVIGATION_MODIFIER_KEYS = [
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12"
+  ];
+  var DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY = "F2";
+  function normalizeTableNavigationModifierKey(value, fallback = DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY) {
+    return typeof value === "string" && TABLE_NAVIGATION_MODIFIER_KEYS.includes(value) ? value : fallback;
+  }
+  function adjacentTableCell(address, direction, size) {
+    const delta = direction === "up" ? { row: -1, column: 0 } : direction === "down" ? { row: 1, column: 0 } : direction === "left" ? { row: 0, column: -1 } : { row: 0, column: 1 };
+    const target = {
+      row: address.row + delta.row,
+      column: address.column + delta.column
+    };
+    return target.row >= 0 && target.row < size.rowCount && target.column >= 0 && target.column < size.columnCount ? target : null;
+  }
+  var TableNavigationKeyState = class {
+    held = /* @__PURE__ */ new Set();
+    keyDown(key) {
+      if (TABLE_NAVIGATION_MODIFIER_KEYS.includes(key)) {
+        this.held.add(key);
+      }
+    }
+    keyUp(key) {
+      this.held.delete(key);
+    }
+    clear() {
+      this.held.clear();
+    }
+    isHeld(key) {
+      return this.held.has(key);
+    }
+  };
+
   // src/editor/table/tableCellMetadata.ts
   function syncTableSourceMetadata(dom, table2) {
     setTableWidgetTable(dom, table2);
@@ -37070,6 +37307,79 @@ ${text3}`;
         `[data-row-index="${rowIndex}"]`,
         `[data-column="${column}"]`
       ].join("")
+    );
+  }
+
+  // src/editor/tableNavigation.ts
+  var tableNavigationModifierCompartment = new Compartment();
+  var tableNavigationModifierFacet = Facet.define({
+    combine: (values2) => values2[0] ?? DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY
+  });
+  var keyStates = /* @__PURE__ */ new WeakMap();
+  function isTableNavigationModifierHeld(doc2, key) {
+    return keyStates.get(doc2)?.isHeld(key) ?? false;
+  }
+  function createTableNavigationKeyTracker() {
+    return ViewPlugin.fromClass(
+      class {
+        state = new TableNavigationKeyState();
+        doc;
+        ownerWindow;
+        onKeyDown = (event) => {
+          if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+            this.state.keyDown(event.key);
+          }
+        };
+        onKeyUp = (event) => {
+          this.state.keyUp(event.key);
+        };
+        clear = () => {
+          this.state.clear();
+        };
+        onWindowBlur = () => {
+          this.ownerWindow?.setTimeout(() => {
+            if (!this.doc.hasFocus()) {
+              this.clear();
+            }
+          }, 0);
+        };
+        onVisibilityChange = () => {
+          if (this.doc.visibilityState !== "visible") {
+            this.clear();
+          }
+        };
+        constructor(view2) {
+          this.doc = view2.dom.ownerDocument;
+          this.ownerWindow = this.doc.defaultView;
+          keyStates.set(this.doc, this.state);
+          this.doc.addEventListener("keydown", this.onKeyDown, true);
+          this.doc.addEventListener("keyup", this.onKeyUp, true);
+          this.doc.addEventListener(
+            "visibilitychange",
+            this.onVisibilityChange,
+            true
+          );
+          this.ownerWindow?.addEventListener("blur", this.onWindowBlur, true);
+          this.ownerWindow?.addEventListener("pagehide", this.clear, true);
+        }
+        destroy() {
+          this.doc.removeEventListener("keydown", this.onKeyDown, true);
+          this.doc.removeEventListener("keyup", this.onKeyUp, true);
+          this.doc.removeEventListener(
+            "visibilitychange",
+            this.onVisibilityChange,
+            true
+          );
+          this.ownerWindow?.removeEventListener(
+            "blur",
+            this.onWindowBlur,
+            true
+          );
+          this.ownerWindow?.removeEventListener("pagehide", this.clear, true);
+          this.clear();
+          keyStates.delete(this.doc);
+        }
+      }
     );
   }
 
@@ -37162,6 +37472,41 @@ ${text3}`;
       if (!cell2) {
         return;
       }
+      if (event.isComposing || event.key === "Process") {
+        return;
+      }
+      const tableNavigationModifier = view2.state.facet(
+        tableNavigationModifierFacet
+      );
+      if (event.key === tableNavigationModifier && isPlainKey2(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const directCellDirection = tableCellArrowDirection(event.key);
+      if (directCellDirection && isPlainKey2(event) && isTableNavigationModifierHeld(
+        wrapper.ownerDocument,
+        tableNavigationModifier
+      )) {
+        event.preventDefault();
+        event.stopPropagation();
+        const currentTable2 = getCurrentTable();
+        const target = resolveAdjacentGridCell(
+          cell2,
+          currentTable2,
+          directCellDirection
+        );
+        if (!target) {
+          return;
+        }
+        commitCellEdit(view2, currentTable2, cell2);
+        focusCellAfterRender(currentTable2.from, target);
+        return;
+      }
+      const verticalArrow = isUnmodifiedVerticalArrow(event);
+      const selectingVerticalArrow = isCellSelectionVerticalArrow(event);
+      const horizontalArrow = isUnmodifiedHorizontalArrow(event);
+      const selectingHorizontalArrow = isCellSelectionHorizontalArrow(event);
       const currentTable = getCurrentTable();
       const historyDirection = getCellEditHistoryDirection(event);
       if (historyDirection) {
@@ -37180,14 +37525,63 @@ ${text3}`;
         scheduleTableLayout();
         return;
       }
+      if (isMetaOnlyCellArrow(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          moveCellSelectionToLineBoundary(
+            cell2,
+            event.key === "ArrowLeft" ? "start" : "end",
+            event.shiftKey
+          );
+        } else {
+          const selection = getCellSelectionOffsets(cell2);
+          if (selection) {
+            const target = event.key === "ArrowUp" ? 0 : readCellDisplayValue(cell2).length;
+            setCellSelectionOffsets(
+              cell2,
+              event.shiftKey ? selection.anchor : target,
+              target
+            );
+          }
+        }
+        return;
+      }
+      if (isModifiedCellArrow(event)) {
+        const selection = getCellSelectionOffsets(cell2);
+        if (!selection) {
+          return;
+        }
+        const valueLength = readCellDisplayValue(cell2).length;
+        const movingOutward = (event.key === "ArrowLeft" || event.key === "ArrowUp") && selection.head === 0 || (event.key === "ArrowRight" || event.key === "ArrowDown") && selection.head === valueLength;
+        if (movingOutward) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (selection.anchor !== selection.head && !event.shiftKey) {
+            setCellCaretOffset(cell2, selection.head);
+          }
+        }
+        return;
+      }
+      if (isPrimaryModifiedCellHomeEnd(event)) {
+        const selection = getCellSelectionOffsets(cell2);
+        if (!selection) {
+          return;
+        }
+        const target = event.key === "Home" ? 0 : readCellDisplayValue(cell2).length;
+        event.preventDefault();
+        event.stopPropagation();
+        setCellSelectionOffsets(
+          cell2,
+          event.shiftKey ? selection.anchor : target,
+          target
+        );
+        return;
+      }
       if (event.key === "Enter" && isPlainKey2(event)) {
         event.preventDefault();
         event.stopPropagation();
-        commitCellEdit(view2, currentTable, cell2, {
-          selectionAnchor: positionAfterTable(view2.state.doc, currentTable)
-        });
-        cell2.blur();
-        view2.focus();
+        exitCellToBoundary(view2, currentTable, cell2, "after");
         return;
       }
       if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -37209,42 +37603,129 @@ ${text3}`;
         );
         return;
       }
-      if (isUnmodifiedVerticalArrow(event)) {
+      if (selectingVerticalArrow) {
+        event.preventDefault();
+        event.stopPropagation();
+        extendCellSelectionVertically(
+          cell2,
+          event.key === "ArrowUp" ? -1 : 1
+        );
+        return;
+      }
+      if (verticalArrow) {
         const rowDelta = event.key === "ArrowUp" ? -1 : 1;
-        if (!isCaretAtVerticalBoundary(cell2, rowDelta)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const verticalMove = moveCellCaretVertically(cell2, rowDelta);
+        if (verticalMove.movedWithinCell) {
           return;
         }
         const target = resolveVerticalCell(cell2, rowDelta);
-        event.preventDefault();
-        event.stopPropagation();
         if (target === "before-table") {
-          commitCellEdit(view2, currentTable, cell2, {
-            selectionAnchor: positionBeforeTable(currentTable)
-          });
-          cell2.blur();
-          view2.focus();
+          exitCellToBoundary(view2, currentTable, cell2, "before");
           return;
         }
         if (target === "after-table") {
-          commitCellEdit(view2, currentTable, cell2, {
-            selectionAnchor: getEndOfLineAfterTable(view2, currentTable)
-          });
-          cell2.blur();
-          view2.focus();
+          exitCellToBoundary(view2, currentTable, cell2, "after");
           return;
         }
         commitCellEdit(view2, currentTable, cell2);
-        focusCellAfterRender(currentTable.from, target);
+        focusCellAfterRender(currentTable.from, target, {
+          rowDelta,
+          preferredX: verticalMove.preferredX
+        });
         return;
+      }
+      if (selectingHorizontalArrow) {
+        const selection = getCellSelectionOffsets(cell2);
+        const valueLength = readCellDisplayValue(cell2).length;
+        const extendingPastCell = Boolean(
+          selection && (event.key === "ArrowLeft" && selection.head === 0 || event.key === "ArrowRight" && selection.head === valueLength)
+        );
+        if (extendingPastCell) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      if (horizontalArrow) {
+        const selection = getCellSelectionOffsets(cell2);
+        const valueLength = readCellDisplayValue(cell2).length;
+        const movingAcrossBoundary = Boolean(
+          selection && selection.anchor === selection.head && (event.key === "ArrowLeft" && selection.head === 0 || event.key === "ArrowRight" && selection.head === valueLength)
+        );
+        if (movingAcrossBoundary) {
+          event.preventDefault();
+          event.stopPropagation();
+          const delta = event.key === "ArrowLeft" ? -1 : 1;
+          const target = resolveRelativeCell(cell2, delta);
+          if (target === "before-table") {
+            exitCellToBoundary(view2, currentTable, cell2, "before");
+            return;
+          }
+          if (target === "after-table") {
+            exitCellToBoundary(view2, currentTable, cell2, "after");
+            return;
+          }
+          commitCellEdit(view2, currentTable, cell2);
+          focusCellAfterRender(
+            currentTable.from,
+            target,
+            void 0,
+            event.key === "ArrowRight" ? "start" : "end"
+          );
+          return;
+        }
       }
       if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
         const target = resolveRelativeCell(cell2, event.shiftKey ? -1 : 1);
+        if (target === "before-table") {
+          exitCellToBoundary(view2, currentTable, cell2, "before");
+          return;
+        }
+        if (target === "after-table") {
+          exitCellToBoundary(view2, currentTable, cell2, "after");
+          return;
+        }
         commitCellEdit(view2, currentTable, cell2);
         focusCellAfterRender(currentTable.from, target);
       }
     });
+  }
+  function resolveAdjacentGridCell(cell2, table2, direction) {
+    const rowKind = cell2.dataset.rowKind;
+    const rowIndex = Number(cell2.dataset.rowIndex ?? "0");
+    const column = Number(cell2.dataset.column ?? "0");
+    if (rowKind !== "header" && rowKind !== "body" || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(column) || column < 0) {
+      return null;
+    }
+    const target = adjacentTableCell(
+      { row: rowKind === "header" ? 0 : rowIndex + 1, column },
+      direction,
+      { rowCount: table2.body.length + 1, columnCount: table2.columnCount }
+    );
+    if (!target) {
+      return null;
+    }
+    return {
+      rowKind: target.row === 0 ? "header" : "body",
+      rowIndex: String(target.row === 0 ? 0 : target.row - 1),
+      column: String(target.column)
+    };
+  }
+  function tableCellArrowDirection(key) {
+    if (key === "ArrowUp") {
+      return "up";
+    }
+    if (key === "ArrowDown") {
+      return "down";
+    }
+    if (key === "ArrowLeft") {
+      return "left";
+    }
+    return key === "ArrowRight" ? "right" : null;
   }
   function scheduleNativeHistoryFallback(view2, table2, cell2, scheduleTableLayout) {
     setTimeout(() => {
@@ -37566,9 +38047,6 @@ ${text3}`;
       scrollIntoView: true
     });
   }
-  function getEndOfLineAfterTable(view2, table2) {
-    return view2.state.doc.lineAt(positionAfterTable(view2.state.doc, table2)).to;
-  }
   function mapPositionThroughCellEdit(position, edit) {
     if (position <= edit.from) {
       return position;
@@ -37583,7 +38061,10 @@ ${text3}`;
       cell2.closest(".mlrt-table")?.querySelectorAll(TABLE_CELL_SELECTOR) ?? []
     );
     const index = cells.indexOf(cell2);
-    const next2 = cells[index + delta] ?? cell2;
+    const next2 = cells[index + delta];
+    if (!next2) {
+      return delta < 0 ? "before-table" : "after-table";
+    }
     return {
       rowKind: next2.dataset.rowKind ?? "body",
       rowIndex: next2.dataset.rowIndex ?? "0",
@@ -37608,22 +38089,44 @@ ${text3}`;
       column: next2.dataset.column ?? "0"
     };
   }
-  function focusCellAfterRender(tableFrom, target) {
-    setTimeout(() => {
+  function focusCellAfterRender(tableFrom, target, vertical, horizontalPlacement = "end") {
+    const focusTarget = () => {
       const cell2 = queryCell2(tableFrom, target);
-      if (cell2) {
+      if (!cell2) {
+        return false;
+      }
+      if (vertical) {
+        focusCellAtVerticalEdge(
+          cell2,
+          vertical.rowDelta,
+          vertical.preferredX
+        );
+      } else if (horizontalPlacement === "start") {
+        focusCellAtStart(cell2);
+      } else {
         focusCellAtEnd(cell2);
       }
-    }, 0);
+      return true;
+    };
+    focusTarget();
+  }
+  function exitCellToBoundary(view2, table2, cell2, side) {
+    commitCellEdit(view2, table2, cell2);
+    cell2.blur();
+    view2.focus();
+    selectVisibleTableBoundary(view2, table2, side);
   }
   function focusCellAfterRenderAtOffset(tableFrom, target, caretOffset) {
-    setTimeout(() => {
+    const focusTarget = () => {
       const cell2 = queryCell2(tableFrom, target);
-      if (cell2) {
-        cell2.focus();
-        setCellCaretOffset(cell2, caretOffset);
+      if (!cell2) {
+        return false;
       }
-    }, 0);
+      cell2.focus();
+      setCellCaretOffset(cell2, caretOffset);
+      return true;
+    };
+    focusTarget();
   }
   function queryCell2(tableFrom, target) {
     const selector = [
@@ -37799,6 +38302,24 @@ ${text3}`;
   }
   function isUnmodifiedVerticalArrow(event) {
     return (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey2(event);
+  }
+  function isUnmodifiedHorizontalArrow(event) {
+    return (event.key === "ArrowLeft" || event.key === "ArrowRight") && isPlainKey2(event);
+  }
+  function isModifiedCellArrow(event) {
+    return (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight") && (event.altKey || event.ctrlKey || event.metaKey);
+  }
+  function isMetaOnlyCellArrow(event) {
+    return (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight") && event.metaKey && !event.altKey && !event.ctrlKey;
+  }
+  function isPrimaryModifiedCellHomeEnd(event) {
+    return (event.key === "Home" || event.key === "End") && (event.metaKey || event.ctrlKey) && !event.altKey;
+  }
+  function isCellSelectionVerticalArrow(event) {
+    return (event.key === "ArrowUp" || event.key === "ArrowDown") && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+  }
+  function isCellSelectionHorizontalArrow(event) {
+    return (event.key === "ArrowLeft" || event.key === "ArrowRight") && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
   }
 
   // src/editor/table/tableLayout.ts
@@ -38710,7 +39231,7 @@ ${text3}`;
     codeBlockStyle: "fenced"
   });
   richCellTurndown.use(gfm);
-  var requestedCopyModes = /* @__PURE__ */ new WeakMap();
+  var requestedMenuCopies = /* @__PURE__ */ new WeakMap();
   var armedPasteModes = /* @__PURE__ */ new WeakMap();
   var clipboardOperationVersions = /* @__PURE__ */ new WeakMap();
   function bindTableClipboard(wrapper, view2, initialTable) {
@@ -38719,15 +39240,17 @@ ${text3}`;
     const currentTable = () => getTableWidgetTable(wrapper) ?? initialTable;
     const onCopy = (event) => {
       const selection = getTableRangeSelection(doc2);
+      const requested = requestedMenuCopies.get(doc2);
+      const requestedForWrapper = requested?.wrapper === wrapper ? requested : null;
       const nativeCell = findCell(event.target) ?? findCell(doc2.activeElement);
       const hasNativeSelection = Boolean(
         nativeCell && wrapper.contains(nativeCell) && hasNativeCellSelection(nativeCell)
       );
-      if (selection?.wrapper !== wrapper && !hasNativeSelection) {
+      if (selection?.wrapper !== wrapper && !hasNativeSelection && !requestedForWrapper) {
         return;
       }
-      const requestedMode = requestedCopyModes.get(doc2);
-      const representations = representationsForCurrentSelection(
+      const requestedMode = requestedForWrapper?.mode;
+      const representations = requestedForWrapper?.representations ?? representationsForCurrentSelection(
         doc2,
         currentTable(),
         requestedMode ?? readDefaultCopyMode(doc2)
@@ -38735,7 +39258,9 @@ ${text3}`;
       if (!representations || !event.clipboardData) {
         return;
       }
-      requestedCopyModes.delete(doc2);
+      if (requestedForWrapper) {
+        requestedMenuCopies.delete(doc2);
+      }
       beginClipboardOperation(doc2);
       event.preventDefault();
       writeDataTransfer(event.clipboardData, representations);
@@ -38849,7 +39374,7 @@ ${text3}`;
         return;
       }
       if (key === "c") {
-        void copyThroughMenu(doc2, currentTable(), readDefaultCopyMode(doc2));
+        void copyThroughMenu(wrapper, currentTable(), readDefaultCopyMode(doc2));
       } else {
         void cutThroughMenu(wrapper, view2);
       }
@@ -38903,7 +39428,7 @@ ${text3}`;
           } else {
             wrapper.focus({ preventScroll: true });
           }
-          void copyThroughMenu(doc2, currentTable(), mode);
+          void copyThroughMenu(wrapper, currentTable(), mode);
         },
         onPaste: (mode) => {
           wrapper.focus({ preventScroll: true });
@@ -39002,9 +39527,9 @@ ${text3}`;
   }
   function representationsForGrid(payload, mode) {
     const rows = payload.rows.map((row) => row.map((cell2) => cell2.text));
+    const markdown2 = payload.exactMarkdown ?? gridToMarkdown(payload.rows, payload.alignments);
     const cutPayload = payload.cutToken ? { privatePayload: JSON.stringify(payload) } : {};
     if (mode === "markdown") {
-      const markdown2 = payload.exactMarkdown ?? gridToMarkdown(payload.rows, payload.alignments);
       return {
         plain: markdown2,
         markdown: markdown2,
@@ -39012,7 +39537,7 @@ ${text3}`;
         ...payload.cutToken ? { html: metadataTextCarrierHtml2(payload, markdown2) } : {}
       };
     }
-    const plain = serializeDelimitedGrid(rows, "	");
+    const plain = gridPlainTextForCopy(payload, mode);
     if (mode === "plain") {
       return {
         plain,
@@ -39098,16 +39623,17 @@ ${text3}`;
     const compositeMovePayload = pendingCompositeCut && availablePrivatePayload?.kind === "document" && availablePrivatePayload.cutToken === pendingCompositeCut.token && availablePrivatePayload.sourceDocument === pendingCompositeCut.sourceDocument && availablePrivatePayload.markdown === pendingCompositeCut.markdown && pendingCompositeCut.sourceDocument === readDocumentToken2(doc2) ? availablePrivatePayload : null;
     const movingDocumentPayload = documentMovePayload ?? compositeMovePayload;
     const interpretationPayload = movePayload ?? (mode === "auto" ? availablePrivatePayload : null);
+    const clearlyTabular = Boolean(interpretationPayload?.kind === "grid") || Boolean(data2.html && htmlContainsTable(data2.html)) || Boolean(data2.plain?.includes("	")) || Boolean(data2.csv) || clipboardContainsMarkdownTable(data2, mode);
+    if (!selection && activeCell && !clearlyTabular && !movingDocumentPayload) {
+      const text3 = singleCellPasteText(data2, mode);
+      return text3 === void 0 ? false : dispatchCellPasteInput(activeCell, text3);
+    }
     const parsed = movingDocumentPayload ? rowsForDocumentMove(movingDocumentPayload.markdown) : clipboardRows(data2, mode, interpretationPayload);
     if (!parsed) {
       if (selection?.wrapper === wrapper) {
         announce2(doc2, "Clipboard does not contain pasteable table data.");
         return true;
       }
-      return false;
-    }
-    const clearlyTabular = Boolean(interpretationPayload?.kind === "grid") || Boolean(data2.html && htmlContainsTable(data2.html)) || Boolean(data2.plain?.includes("	")) || Boolean(data2.csv) || clipboardContainsMarkdownTable(data2, mode);
-    if (!selection && activeCell && !clearlyTabular && !movingDocumentPayload) {
       return false;
     }
     const destination = selection?.wrapper === wrapper ? selectionRectangle(selection) : activeCell ? singleCellRectangle(addressFromCell(activeCell)) : null;
@@ -39425,14 +39951,17 @@ ${text3}`;
         while (rows[rowIndex][column] !== void 0) {
           column++;
         }
-        const text3 = preserveFormatting ? richCellTurndown.turndown(cell2.innerHTML).trim() : htmlCellText(cell2);
+        const text3 = htmlCellText(cell2);
+        const markdown2 = preserveFormatting ? richHtmlCellMarkdown(cell2) : void 0;
         const rowSpan = Math.max(1, cell2.rowSpan || 1);
         const columnSpan = Math.max(1, cell2.colSpan || 1);
         for (let rowOffset = 0; rowOffset < rowSpan; rowOffset++) {
           rows[rowIndex + rowOffset] ??= [];
           for (let columnOffset = 0; columnOffset < columnSpan; columnOffset++) {
+            const primaryCell = rowOffset === 0 && columnOffset === 0;
             rows[rowIndex + rowOffset][column + columnOffset] = {
-              text: rowOffset === 0 && columnOffset === 0 ? text3 : ""
+              text: primaryCell ? text3 : "",
+              ...primaryCell && markdown2 !== void 0 ? { markdown: markdown2 } : {}
             };
           }
         }
@@ -39451,8 +39980,14 @@ ${text3}`;
     );
   }
   function htmlCellText(cell2) {
+    const visibleText = htmlFragmentVisibleText(cell2.innerHTML);
+    if (visibleText !== void 0) {
+      return visibleText;
+    }
+    return (cell2.textContent ?? "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+  }
+  function richHtmlCellMarkdown(cell2) {
     const clone2 = cell2.cloneNode(true);
-    clone2.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
     clone2.querySelectorAll(
       [
         "[hidden]",
@@ -39463,7 +39998,30 @@ ${text3}`;
         '[style*="mso-hide"]'
       ].join(",")
     ).forEach((element) => element.remove());
-    return (clone2.textContent ?? "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+    const source = clone2.textContent ?? "";
+    const uniqueToken = (label) => {
+      let token = `MLRTRICHCELL${label}TOKENX`;
+      while (source.includes(token)) {
+        token += "X";
+      }
+      return token;
+    };
+    const slashToken = uniqueToken("BACKSLASH");
+    const breakToken = uniqueToken("LINEBREAK");
+    const walker = clone2.ownerDocument.createTreeWalker(
+      clone2,
+      NodeFilter.SHOW_TEXT
+    );
+    let textNode = walker.nextNode();
+    while (textNode) {
+      textNode.nodeValue = (textNode.nodeValue ?? "").replace(/\\/g, slashToken);
+      textNode = walker.nextNode();
+    }
+    clone2.querySelectorAll("br").forEach(
+      (br) => br.replaceWith(clone2.ownerDocument.createTextNode(breakToken))
+    );
+    const markdown2 = richCellTurndown.turndown(clone2.innerHTML).trim().replace(/\r\n?/g, "\n").split(breakToken).join("\n").split(slashToken).join("\\");
+    return importedMarkdownToTableCellSource(markdown2);
   }
   function parsePrivatePayload(data2) {
     if (data2.privatePayload) {
@@ -39517,18 +40075,19 @@ ${text3}`;
     const value = transfer.getData(type);
     return preserveEmpty || value.length > 0 ? value : void 0;
   }
-  async function copyThroughMenu(doc2, table2, mode) {
+  async function copyThroughMenu(wrapper, table2, mode) {
+    const doc2 = wrapper.ownerDocument;
     const representations = representationsForCurrentSelection(doc2, table2, mode);
     if (!representations) {
       announce2(doc2, "Nothing selected to copy.");
       return;
     }
-    requestedCopyModes.set(doc2, mode);
-    executeClipboardCommand(doc2, "copy");
-    if (!requestedCopyModes.has(doc2)) {
+    requestedMenuCopies.set(doc2, { wrapper, mode, representations });
+    executeClipboardCommandWithCarrier(doc2, "copy", representations.plain);
+    if (!requestedMenuCopies.has(doc2)) {
       return;
     }
-    requestedCopyModes.delete(doc2);
+    requestedMenuCopies.delete(doc2);
     const operationVersion = beginClipboardOperation(doc2);
     try {
       await writeAsyncClipboard(representations);
@@ -39568,7 +40127,7 @@ ${text3}`;
       ),
       readDefaultCopyMode(doc2)
     );
-    if (executeClipboardCommand(doc2, "cut")) {
+    if (executeClipboardCommandWithCarrier(doc2, "cut", representations.plain)) {
       return;
     }
     if (!representations.html) {
@@ -39647,8 +40206,12 @@ ${text3}`;
     }
   }
   async function writeAsyncClipboard(representations) {
-    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    if (!navigator.clipboard) {
       throw new Error("Async clipboard unavailable");
+    }
+    if (!navigator.clipboard.write || typeof ClipboardItem === "undefined") {
+      await navigator.clipboard.writeText(representations.plain);
+      return;
     }
     const data2 = {
       "text/plain": new Blob([representations.plain], { type: "text/plain" })
@@ -39656,15 +40219,32 @@ ${text3}`;
     if (representations.html) {
       data2["text/html"] = new Blob([representations.html], { type: "text/html" });
     }
-    if (representations.csv) {
+    const requiredData = { ...data2 };
+    const supports = ClipboardItem.supports;
+    if (representations.csv && supports?.("text/csv")) {
       data2["text/csv"] = new Blob([representations.csv], { type: "text/csv" });
     }
-    if (representations.markdown) {
+    if (representations.markdown && supports?.("text/markdown")) {
       data2["text/markdown"] = new Blob([representations.markdown], {
         type: "text/markdown"
       });
     }
-    await navigator.clipboard.write([new ClipboardItem(data2)]);
+    try {
+      await navigator.clipboard.write([new ClipboardItem(data2)]);
+    } catch (error2) {
+      if (Object.keys(data2).length > Object.keys(requiredData).length) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem(requiredData)]);
+          return;
+        } catch {
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(representations.plain);
+      } catch {
+        throw error2;
+      }
+    }
   }
   async function readAsyncClipboard() {
     if (!navigator.clipboard?.read) {
@@ -39847,6 +40427,44 @@ ${text3}`;
       return false;
     }
   }
+  function executeClipboardCommandWithCarrier(doc2, command, plain) {
+    const activeElement = doc2.activeElement instanceof HTMLElement ? doc2.activeElement : null;
+    const selection = doc2.defaultView?.getSelection();
+    const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange()) : [];
+    const carrier = doc2.createElement("textarea");
+    carrier.value = plain;
+    carrier.readOnly = true;
+    carrier.tabIndex = -1;
+    carrier.setAttribute("aria-hidden", "true");
+    carrier.style.cssText = [
+      "position:fixed",
+      "left:-10000px",
+      "top:0",
+      "width:1px",
+      "height:1px",
+      "opacity:0",
+      "pointer-events:none"
+    ].join(";");
+    doc2.body.append(carrier);
+    let eventDispatched = false;
+    const markDispatched = () => {
+      eventDispatched = true;
+    };
+    doc2.addEventListener(command, markDispatched, { capture: true, once: true });
+    carrier.focus({ preventScroll: true });
+    carrier.select();
+    executeClipboardCommand(doc2, command);
+    doc2.removeEventListener(command, markDispatched, true);
+    carrier.remove();
+    if (activeElement?.isConnected) {
+      activeElement.focus({ preventScroll: true });
+    }
+    if (selection && ranges.length > 0) {
+      selection.removeAllRanges();
+      ranges.forEach((range) => selection.addRange(range));
+    }
+    return eventDispatched;
+  }
   function stringsToCells(rows) {
     return rows?.map((row) => row.map((text3) => ({ text: text3 }))) ?? null;
   }
@@ -39931,6 +40549,108 @@ ${text3}`;
   }
   function htmlContainsTable(html3) {
     return /<table[\s>]/i.test(html3);
+  }
+  function singleCellPasteText(data2, mode) {
+    if ((mode === "auto" || mode === "rich") && data2.html) {
+      const htmlText = htmlFragmentVisibleText(data2.html);
+      if (htmlText !== void 0 && (htmlText.length > 0 || data2.plain === void 0)) {
+        return htmlText;
+      }
+    }
+    if (mode === "markdown") {
+      const markdown2 = data2.markdown ?? data2.plain;
+      return markdown2?.replace(/\r\n?/g, "\n");
+    }
+    return (data2.plain ?? data2.markdown)?.replace(/\r\n?/g, "\n");
+  }
+  function dispatchCellPasteInput(cell2, text3) {
+    const InputEventConstructor = cell2.ownerDocument.defaultView?.InputEvent;
+    if (!InputEventConstructor) {
+      return false;
+    }
+    const event = new InputEventConstructor("beforeinput", {
+      inputType: "insertFromPaste",
+      data: text3,
+      bubbles: true,
+      cancelable: true,
+      composed: true
+    });
+    cell2.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+  var HTML_TEXT_BLOCK_TAGS = /* @__PURE__ */ new Set([
+    "ADDRESS",
+    "ARTICLE",
+    "ASIDE",
+    "BLOCKQUOTE",
+    "DIV",
+    "FIGCAPTION",
+    "FIGURE",
+    "FOOTER",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "HEADER",
+    "LI",
+    "MAIN",
+    "NAV",
+    "OL",
+    "P",
+    "PRE",
+    "SECTION",
+    "UL"
+  ]);
+  function htmlFragmentVisibleText(html3) {
+    const sanitized = purify.sanitize(html3, {
+      FORBID_TAGS: ["script", "style", "meta", "link", "object", "embed", "iframe"],
+      FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
+    });
+    const parsed = new DOMParser().parseFromString(sanitized, "text/html");
+    if (parsed.querySelector("table")) {
+      return void 0;
+    }
+    parsed.querySelectorAll(
+      [
+        "[hidden]",
+        '[style*="display:none"]',
+        '[style*="display: none"]',
+        '[style*="visibility:hidden"]',
+        '[style*="visibility: hidden"]'
+      ].join(",")
+    ).forEach((element) => element.remove());
+    const render = (parent) => {
+      if (parent.nodeType === Node.TEXT_NODE) {
+        return { text: parent.nodeValue ?? "", block: false };
+      }
+      if (!(parent instanceof Element)) {
+        return renderChildren(parent);
+      }
+      if (parent.tagName === "BR") {
+        return { text: "\n", block: false };
+      }
+      const rendered = renderChildren(parent);
+      return {
+        text: rendered.text,
+        block: HTML_TEXT_BLOCK_TAGS.has(parent.tagName)
+      };
+    };
+    const renderChildren = (parent) => {
+      let text3 = "";
+      let previousBlock = false;
+      for (const child of Array.from(parent.childNodes)) {
+        const rendered = render(child);
+        if (text3.length > 0 && rendered.text.length > 0 && (previousBlock || rendered.block) && !text3.endsWith("\n") && !rendered.text.startsWith("\n")) {
+          text3 += "\n";
+        }
+        text3 += rendered.text;
+        previousBlock = rendered.block;
+      }
+      return { text: text3, block: false };
+    };
+    return renderChildren(parsed.body).text.replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
   }
   function createToken2() {
     return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -40110,11 +40830,15 @@ ${text3}`;
     syncTableSelectionOverlay(dom);
   }
   function patchTableRowDOM(dom, table2, sourceRow, rowKind, rowIndex) {
-    const lineCell = dom.querySelector(
-      `.mlrt-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`
+    const tableRow = rowKind === "header" ? dom.querySelector("thead tr") : dom.querySelectorAll("tbody tr")[rowIndex];
+    const lineCell = tableRow?.querySelector(
+      ".mlrt-table-source-line"
     );
     if (lineCell) {
       const sourceLineText = String(sourceRow.lineIndex + 1);
+      if (lineCell.dataset.sourceLine !== sourceLineText) {
+        lineCell.dataset.sourceLine = sourceLineText;
+      }
       if (lineCell.textContent !== sourceLineText) {
         lineCell.textContent = sourceLineText;
       }
@@ -40145,7 +40869,7 @@ ${text3}`;
       cell2.className = "mlrt-table-cell";
       cell2.contentEditable = "true";
       cell2.spellcheck = false;
-      cell2.textContent = value;
+      setCellPlainText(cell2, value);
       cell2.dataset.rowKind = options.rowKind;
       cell2.dataset.rowIndex = String(options.rowIndex);
       cell2.dataset.column = String(column);
@@ -40257,6 +40981,7 @@ ${text3}`;
       lineNumbers(),
       createEditorGeometrySync(),
       createTableCellFocusClassSync(),
+      createTableNavigationKeyTracker(),
       createTableSourceChangeFilter(),
       createTableSourceSelectionGuard({
         tableCellSelector: TABLE_CELL_SELECTOR
@@ -40264,6 +40989,9 @@ ${text3}`;
       markdown(),
       lineWrappingCompartment.of(
         options.lineWrapping ? EditorView.lineWrapping : []
+      ),
+      tableNavigationModifierCompartment.of(
+        tableNavigationModifierFacet.of(options.tableNavigationModifierKey)
       ),
       createTableDecorations()
     ];
@@ -40706,7 +41434,8 @@ ${text3}`;
       scrollBeyondLastLine: true,
       clipboardDocumentToken: createClipboardDocumentToken(),
       defaultCopyMode: "smart",
-      defaultPasteMode: "auto"
+      defaultPasteMode: "auto",
+      tableNavigationModifierKey: DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY
     };
     if (!options || typeof options !== "object") {
       return defaults;
@@ -40718,7 +41447,8 @@ ${text3}`;
         scrollBeyondLastLine: typeof optionRecord.scrollBeyondLastLine === "boolean" ? optionRecord.scrollBeyondLastLine : true,
         clipboardDocumentToken: optionRecord.clipboardDocumentToken,
         defaultCopyMode: optionRecord.defaultCopyMode,
-        defaultPasteMode: optionRecord.defaultPasteMode
+        defaultPasteMode: optionRecord.defaultPasteMode,
+        tableNavigationModifierKey: optionRecord.tableNavigationModifierKey
       },
       defaults
     );
@@ -40732,7 +41462,11 @@ ${text3}`;
       scrollBeyondLastLine: typeof record.scrollBeyondLastLine === "boolean" ? record.scrollBeyondLastLine : fallback.scrollBeyondLastLine,
       clipboardDocumentToken: typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 ? record.clipboardDocumentToken : fallback.clipboardDocumentToken,
       defaultCopyMode: defaultCopyMode === "smart" || defaultCopyMode === "rich" || defaultCopyMode === "plain" || defaultCopyMode === "markdown" ? defaultCopyMode : fallback.defaultCopyMode,
-      defaultPasteMode: defaultPasteMode === "auto" || defaultPasteMode === "rich" || defaultPasteMode === "plain" || defaultPasteMode === "markdown" ? defaultPasteMode : fallback.defaultPasteMode
+      defaultPasteMode: defaultPasteMode === "auto" || defaultPasteMode === "rich" || defaultPasteMode === "plain" || defaultPasteMode === "markdown" ? defaultPasteMode : fallback.defaultPasteMode,
+      tableNavigationModifierKey: normalizeTableNavigationModifierKey(
+        record.tableNavigationModifierKey,
+        fallback.tableNavigationModifierKey
+      )
     };
   }
   function applyClipboardOptions(options) {
@@ -40751,14 +41485,28 @@ ${text3}`;
   function updateEditorOptions(value) {
     const nextOptions = normalizeEditorOptions(value, editorOptions);
     const lineWrappingChanged = nextOptions.lineWrapping !== editorOptions.lineWrapping;
+    const tableNavigationModifierChanged = nextOptions.tableNavigationModifierKey !== editorOptions.tableNavigationModifierKey;
     editorOptions = nextOptions;
     applyDocumentEditorOptions(editorOptions);
+    const effects = [];
     if (lineWrappingChanged) {
-      view.dispatch({
-        effects: lineWrappingCompartment.reconfigure(
+      effects.push(
+        lineWrappingCompartment.reconfigure(
           editorOptions.lineWrapping ? EditorView.lineWrapping : []
         )
-      });
+      );
+    }
+    if (tableNavigationModifierChanged) {
+      effects.push(
+        tableNavigationModifierCompartment.reconfigure(
+          tableNavigationModifierFacet.of(
+            editorOptions.tableNavigationModifierKey
+          )
+        )
+      );
+    }
+    if (effects.length > 0) {
+      view.dispatch({ effects });
     }
   }
   function createClipboardDocumentToken() {
@@ -41200,7 +41948,7 @@ ${String(error2)}`;
       return false;
     }
     const record = value;
-    return typeof record.lineWrapping === "boolean" && typeof record.scrollBeyondLastLine === "boolean" && typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 && (record.defaultCopyMode === "smart" || record.defaultCopyMode === "rich" || record.defaultCopyMode === "plain" || record.defaultCopyMode === "markdown") && (record.defaultPasteMode === "auto" || record.defaultPasteMode === "rich" || record.defaultPasteMode === "plain" || record.defaultPasteMode === "markdown");
+    return typeof record.lineWrapping === "boolean" && typeof record.scrollBeyondLastLine === "boolean" && typeof record.clipboardDocumentToken === "string" && record.clipboardDocumentToken.length > 0 && (record.defaultCopyMode === "smart" || record.defaultCopyMode === "rich" || record.defaultCopyMode === "plain" || record.defaultCopyMode === "markdown") && (record.defaultPasteMode === "auto" || record.defaultPasteMode === "rich" || record.defaultPasteMode === "plain" || record.defaultPasteMode === "markdown") && normalizeTableNavigationModifierKey(record.tableNavigationModifierKey) === record.tableNavigationModifierKey;
   }
   function isTableCellCommitDetail(detail) {
     if (!detail || typeof detail !== "object") {

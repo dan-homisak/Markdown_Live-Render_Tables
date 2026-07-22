@@ -11,6 +11,7 @@ import {
   ClipboardGridPayload,
   ClipboardPasteMode,
   buildGridClearEdit,
+  importedMarkdownToTableCellSource,
   gridToMarkdown,
   MLRT_CLIPBOARD_MIME,
   MLRT_CLIPBOARD_VERSION,
@@ -1119,7 +1120,9 @@ function documentRepresentationsForMarkdown(
     };
   }
   const clipboard = buildDocumentClipboard(markdown, mode === "rich");
-  const plain = clipboard.plain;
+  const plain = mode === "plain" || parseMarkdownTables(markdown).length === 0
+    ? clipboard.plain
+    : markdown;
   if (mode === "plain") {
     return {
       plain,
@@ -1402,7 +1405,6 @@ function clipboardDocumentSegments(markdown: string): ClipboardDocumentSegment[]
     appendClipboardProseSegments(
       segments,
       markdown.slice(cursor, table.from),
-      true,
     );
     segments.push({ kind: "table", table });
     cursor = table.to;
@@ -1410,20 +1412,22 @@ function clipboardDocumentSegments(markdown: string): ClipboardDocumentSegment[]
       cursor++;
     }
   }
-  appendClipboardProseSegments(segments, markdown.slice(cursor), false);
+  appendClipboardProseSegments(segments, markdown.slice(cursor));
   return segments;
 }
 
 function appendClipboardProseSegments(
   segments: ClipboardDocumentSegment[],
   markdown: string,
-  tableFollows: boolean,
 ): void {
   if (markdown.length === 0) {
     return;
   }
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
-  if (tableFollows && lines[lines.length - 1] === "") {
+  // String#split includes one terminal sentinel after a trailing newline.
+  // That sentinel is not another blank source line; materializing it as a
+  // <p><br></p> gives Word one extra paragraph at the end of the selection.
+  if (lines.length > 1 && lines[lines.length - 1] === "") {
     lines.pop();
   }
   let proseLines: string[] = [];
@@ -1842,17 +1846,38 @@ function htmlCellToMarkdown(cell: HTMLTableCellElement): string {
       ].join(","),
     )
     .forEach((element) => element.remove());
-  clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+  const breakToken = uniqueImportToken(clone, "LINEBREAK");
+  const slashToken = uniqueImportToken(clone, "BACKSLASH");
+  const walker = clone.ownerDocument.createTreeWalker(
+    clone,
+    NodeFilter.SHOW_TEXT,
+  );
+  let textNode = walker.nextNode();
+  while (textNode) {
+    textNode.nodeValue = (textNode.nodeValue ?? "").replace(/\\/g, slashToken);
+    textNode = walker.nextNode();
+  }
+  clone.querySelectorAll("br").forEach((br) =>
+    br.replaceWith(clone.ownerDocument.createTextNode(breakToken)),
+  );
   return normalizeText(turndown.turndown(clone.innerHTML))
     .replace(/\n{2,}/g, "\n")
-    .trim();
+    .trim()
+    .split(breakToken).join("\n")
+    .split(slashToken).join("\\");
 }
 
 function markdownForTableCell(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/\|/g, "\\|")
-    .replace(/\n/g, "<br>");
+  return importedMarkdownToTableCellSource(value);
+}
+
+function uniqueImportToken(root: HTMLElement, label: string): string {
+  let token = `MLRT${label}TOKENX`;
+  const source = root.textContent ?? "";
+  while (source.includes(token)) {
+    token += "X";
+  }
+  return token;
 }
 
 function officeClassStyles(html: string): Map<string, string> {

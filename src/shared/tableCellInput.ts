@@ -142,6 +142,24 @@ export function nextGraphemeBoundary(value: string, offset: number): number {
   return value.length;
 }
 
+/**
+ * Returns every safe caret boundary in one segmentation pass. Callers that
+ * inspect an entire cell should use this instead of repeatedly asking for the
+ * next boundary, which would re-segment the same prefix for every grapheme.
+ */
+export function graphemeBoundaries(value: string): number[] {
+  const boundaries = [0];
+  for (const segment of graphemeSegmenter.segment(value)) {
+    if (segment.index > boundaries[boundaries.length - 1]) {
+      boundaries.push(segment.index);
+    }
+  }
+  if (boundaries[boundaries.length - 1] !== value.length) {
+    boundaries.push(value.length);
+  }
+  return boundaries;
+}
+
 function normalizeSelection(
   value: string,
   selection: CellTextSelection | null,

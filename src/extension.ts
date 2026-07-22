@@ -6,11 +6,18 @@ import {
   normalizeDocumentText,
 } from "./shared/documentChangeMapping";
 import { validateDocumentChangeClaim } from "./shared/documentChangeValidation";
+import {
+  DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY,
+  normalizeTableNavigationModifierKey,
+  TableNavigationModifierKey,
+} from "./shared/tableKeyboardNavigation";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 const DEBUG_SETTING = "debug";
 const DEFAULT_COPY_MODE_SETTING = "clipboard.defaultCopyMode";
 const DEFAULT_PASTE_MODE_SETTING = "clipboard.defaultPasteMode";
+const TABLE_NAVIGATION_MODIFIER_KEY_SETTING =
+  "tableNavigation.modifierKey";
 const REOPEN_ACTIVE_EDITOR_WITH_COMMAND = "reopenActiveEditorWith";
 const DEFAULT_EDITOR_ID = "default";
 
@@ -286,6 +293,10 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         if (
           event.affectsConfiguration(
             "markdownLiveRenderTables.clipboard",
+            document.uri,
+          ) ||
+          event.affectsConfiguration(
+            "markdownLiveRenderTables.tableNavigation",
             document.uri,
           ) ||
           event.affectsConfiguration("editor.wordWrap", markdownEditorScope) ||
@@ -847,6 +858,7 @@ function getEditorOptions(
   clipboardDocumentToken: string;
   defaultCopyMode: "smart" | "rich" | "plain" | "markdown";
   defaultPasteMode: "auto" | "rich" | "plain" | "markdown";
+  tableNavigationModifierKey: TableNavigationModifierKey;
 } {
   const editorConfig = vscode.workspace.getConfiguration("editor", {
     uri: documentUri,
@@ -864,6 +876,12 @@ function getEditorOptions(
       true,
     ),
     clipboardDocumentToken,
+    tableNavigationModifierKey: normalizeTableNavigationModifierKey(
+      extensionConfig.get<string>(
+        TABLE_NAVIGATION_MODIFIER_KEY_SETTING,
+        DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY,
+      ),
+    ),
     defaultCopyMode: readEnumSetting(
       extensionConfig.get<string>(DEFAULT_COPY_MODE_SETTING, "smart"),
       ["smart", "rich", "plain", "markdown"] as const,

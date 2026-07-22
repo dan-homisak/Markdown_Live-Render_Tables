@@ -2,6 +2,7 @@ import {
   ChangeSet,
   EditorSelection,
   EditorState,
+  StateEffect,
   Transaction,
 } from "@codemirror/state";
 import { EditorView, ViewUpdate } from "@codemirror/view";
@@ -9,6 +10,10 @@ import {
   createLiveEditorExtensions,
   lineWrappingCompartment,
 } from "../editor/liveEditorExtensions";
+import {
+  tableNavigationModifierCompartment,
+  tableNavigationModifierFacet,
+} from "../editor/tableNavigation";
 import {
   tableCellCommitSequenceAnnotation,
   TableCellCommitRestore,
@@ -26,6 +31,11 @@ import {
   ClipboardCopyMode,
   ClipboardPasteMode,
 } from "../shared/clipboardModel";
+import {
+  DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY,
+  normalizeTableNavigationModifierKey,
+  TableNavigationModifierKey,
+} from "../shared/tableKeyboardNavigation";
 import {
   installDocumentClipboard,
   syncDocumentRangeSelection,
@@ -125,6 +135,7 @@ interface EditorOptions {
   clipboardDocumentToken: string;
   defaultCopyMode: ClipboardCopyMode;
   defaultPasteMode: ClipboardPasteMode;
+  tableNavigationModifierKey: TableNavigationModifierKey;
 }
 
 const vscode = acquireVsCodeApi();
@@ -704,6 +715,7 @@ function readEditorOptions(): EditorOptions {
     clipboardDocumentToken: createClipboardDocumentToken(),
     defaultCopyMode: "smart",
     defaultPasteMode: "auto",
+    tableNavigationModifierKey: DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY,
   };
   if (!options || typeof options !== "object") {
     return defaults;
@@ -723,6 +735,7 @@ function readEditorOptions(): EditorOptions {
       clipboardDocumentToken: optionRecord.clipboardDocumentToken,
       defaultCopyMode: optionRecord.defaultCopyMode,
       defaultPasteMode: optionRecord.defaultPasteMode,
+      tableNavigationModifierKey: optionRecord.tableNavigationModifierKey,
     },
     defaults,
   );
@@ -766,6 +779,10 @@ function normalizeEditorOptions(
       defaultPasteMode === "markdown"
         ? defaultPasteMode
         : fallback.defaultPasteMode,
+    tableNavigationModifierKey: normalizeTableNavigationModifierKey(
+      record.tableNavigationModifierKey,
+      fallback.tableNavigationModifierKey,
+    ),
   };
 }
 
@@ -790,14 +807,30 @@ function updateEditorOptions(value: unknown): void {
   const nextOptions = normalizeEditorOptions(value, editorOptions);
   const lineWrappingChanged =
     nextOptions.lineWrapping !== editorOptions.lineWrapping;
+  const tableNavigationModifierChanged =
+    nextOptions.tableNavigationModifierKey !==
+    editorOptions.tableNavigationModifierKey;
   editorOptions = nextOptions;
   applyDocumentEditorOptions(editorOptions);
+  const effects: StateEffect<unknown>[] = [];
   if (lineWrappingChanged) {
-    view.dispatch({
-      effects: lineWrappingCompartment.reconfigure(
+    effects.push(
+      lineWrappingCompartment.reconfigure(
         editorOptions.lineWrapping ? EditorView.lineWrapping : [],
       ),
-    });
+    );
+  }
+  if (tableNavigationModifierChanged) {
+    effects.push(
+      tableNavigationModifierCompartment.reconfigure(
+        tableNavigationModifierFacet.of(
+          editorOptions.tableNavigationModifierKey,
+        ),
+      ),
+    );
+  }
+  if (effects.length > 0) {
+    view.dispatch({ effects });
   }
 }
 
@@ -1394,7 +1427,9 @@ function isEditorOptions(value: unknown): value is EditorOptions {
     (record.defaultPasteMode === "auto" ||
       record.defaultPasteMode === "rich" ||
       record.defaultPasteMode === "plain" ||
-      record.defaultPasteMode === "markdown")
+      record.defaultPasteMode === "markdown") &&
+    normalizeTableNavigationModifierKey(record.tableNavigationModifierKey) ===
+      record.tableNavigationModifierKey
   );
 }
 

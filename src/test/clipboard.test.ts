@@ -3,8 +3,11 @@ import {
   buildGridClearEdit,
   buildGridPasteEdit,
   ClipboardCell,
+  ClipboardGridPayload,
+  gridPlainTextForCopy,
   gridToHtml,
   gridToMarkdown,
+  importedMarkdownToTableCellSource,
   MLRT_CLIPBOARD_VERSION,
   parseClipboardPayload,
   parseDelimitedGrid,
@@ -101,6 +104,32 @@ assert.equal(
     "| --- | ---: |",
     "| 😀 | line<br>two |",
   ].join("\n"),
+);
+const portableGridPayload: ClipboardGridPayload = {
+  version: MLRT_CLIPBOARD_VERSION,
+  kind: "grid" as const,
+  sourceDocument: "file:///fixture.md",
+  rows: markdownCells,
+  alignments: ["left", "right"],
+  includesHeader: false,
+};
+assert.equal(
+  gridPlainTextForCopy(portableGridPayload, "smart"),
+  gridToMarkdown(markdownCells, ["left", "right"]),
+  "Smart copy gives plain-text Markdown consumers a valid pipe table",
+);
+assert.equal(
+  gridPlainTextForCopy(portableGridPayload, "plain"),
+  serializeDelimitedGrid(
+    markdownCells.map((row) => row.map((cell) => cell.text)),
+    "\t",
+  ),
+  "explicit Plain Text remains tab-delimited",
+);
+assert.equal(
+  importedMarkdownToTableCellSource("A | B | C\nnext C:\\Temp"),
+  "A &#124; B &#124; C<br>next C:\\Temp",
+  "external table cells use invisible pipe entities without doubling slashes",
 );
 const html = gridToHtml(markdownCells, {
   embeddedPayload: "payload<&\"",

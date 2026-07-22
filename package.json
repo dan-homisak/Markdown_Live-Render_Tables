@@ -2,7 +2,7 @@
   "name": "markdown-live-render-tables",
   "displayName": "Markdown Live Editor",
   "description": "A VS Code extension for editing markdown in a live rendered editor.",
-  "version": "0.1.121",
+  "version": "0.1.138",
   "publisher": "dan-homisak",
   "license": "MIT",
   "engines": {
@@ -41,6 +41,26 @@
           "default": false,
           "description": "Write live editor cursor, focus, and source edit diagnostics to the Markdown Live Editor output channel."
         },
+        "markdownLiveRenderTables.tableNavigation.modifierKey": {
+          "type": "string",
+          "scope": "window",
+          "enum": [
+            "F1",
+            "F2",
+            "F3",
+            "F4",
+            "F5",
+            "F6",
+            "F7",
+            "F8",
+            "F9",
+            "F10",
+            "F11",
+            "F12"
+          ],
+          "default": "F2",
+          "markdownDescription": "The function key to hold while pressing an unmodified arrow key to move directly to an adjacent rendered table cell. The caret is placed at the end of the destination cell. This applies only while editing a table cell."
+        },
         "markdownLiveRenderTables.clipboard.defaultCopyMode": {
           "type": "string",
           "enum": [
@@ -50,7 +70,7 @@
             "markdown"
           ],
           "default": "smart",
-          "description": "Default representation used by Copy in the Markdown Live Editor. Smart publishes clean HTML and tabular text with a lossless internal payload."
+          "description": "Default representation used by Copy in the Markdown Live Editor. Smart publishes clean HTML, a Markdown table fallback for plain-text consumers, and a lossless internal payload."
         },
         "markdownLiveRenderTables.clipboard.defaultPasteMode": {
           "type": "string",
@@ -100,9 +120,10 @@
     "qa:screenshot": "npm run compile && node scripts/render-live-editor-harness.mjs --screenshot",
     "qa:clipboard": "npm run compile && node scripts/edh-visual-check.mjs",
     "qa:editing": "npm run compile && node scripts/edh-visual-check.mjs --editing-reliability-only",
+    "qa:keyboard": "npm run compile && node scripts/edh-visual-check.mjs --keyboard-navigation-only",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node ./dist/test/smoke.test.js && node ./dist/test/clipboard.test.js && node ./dist/test/selection.test.js && node ./dist/test/sourceProtection.test.js && node ./dist/test/tableCellInput.test.js && node ./dist/test/documentChangeValidation.test.js && node ./dist/test/tableParserReliability.test.js && node ./dist/test/tableEditingReliability.test.js",
+    "test": "node ./dist/test/smoke.test.js && node ./dist/test/clipboard.test.js && node ./dist/test/selection.test.js && node ./dist/test/sourceProtection.test.js && node ./dist/test/tableCellInput.test.js && node ./dist/test/tableKeyboardNavigation.test.js && node ./dist/test/documentChangeValidation.test.js && node ./dist/test/tableParserReliability.test.js && node ./dist/test/tableEditingReliability.test.js",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {

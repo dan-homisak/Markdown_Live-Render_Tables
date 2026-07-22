@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   CellBeforeInputDecision,
   computeCellBeforeInputDecision,
+  graphemeBoundaries,
   nextGraphemeBoundary,
   previousGraphemeBoundary,
 } from "../shared/tableCellInput";
@@ -48,6 +49,13 @@ for (const grapheme of ["😀", "👩‍💻", "🇺🇸", "e\u0301"]) {
     `Delete must delete the whole ${JSON.stringify(grapheme)} grapheme`,
   );
 }
+
+assert.deepEqual(
+  graphemeBoundaries("A😀👩‍💻e\u0301B"),
+  [0, 1, 3, 8, 10, 11],
+  "whole-cell grapheme scans expose each safe caret boundary once",
+);
+assert.deepEqual(graphemeBoundaries(""), [0]);
 
 assert.deepEqual(
   applied(

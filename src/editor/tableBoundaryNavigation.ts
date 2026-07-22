@@ -5,9 +5,10 @@ import {
   ParsedTable,
   positionAfterTable,
 } from "../shared/tableModel";
-import { findCell, focusCellAtEnd } from "./table/cellSelection";
+import { findCell, focusCellAtVerticalEdge } from "./table/cellSelection";
 import { TABLE_CELL_SELECTOR } from "./table/cellSelection";
 import { TABLE_WIDGET_SELECTOR } from "./table/tableWidgetState";
+import { selectVisibleTableBoundary } from "./tableBoundaryInput";
 
 /**
  * Arrow-key handoff between the source editor and rendered tables.
@@ -42,6 +43,14 @@ function focusTableAcrossBoundary(
   const line = view.state.doc.lineAt(head);
   const tables = getParsedTables(view.state.doc);
   for (const table of tables) {
+    if (direction === "down" && head === table.to) {
+      selectVisibleTableBoundary(view, table, "after");
+      return true;
+    }
+    if (direction === "up" && head === table.from) {
+      selectVisibleTableBoundary(view, table, "before");
+      return true;
+    }
     // table.startLine is 0-based, line.number is 1-based, so the line
     // directly above the table has line.number === table.startLine.
     const lineNumberAboveTable = table.startLine;
@@ -80,7 +89,12 @@ function focusRenderedTableCell(
     return false;
   }
 
-  focusCellAtEnd(cell);
+  const caret = view.coordsAtPos(view.state.selection.main.head);
+  focusCellAtVerticalEdge(
+    cell,
+    target === "first" ? 1 : -1,
+    caret?.left ?? null,
+  );
   return true;
 }
 

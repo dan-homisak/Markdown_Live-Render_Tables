@@ -12,8 +12,10 @@ import {
   ClipboardCopyMode,
   ClipboardGridPayload,
   ClipboardPasteMode,
+  gridPlainTextForCopy,
   gridToHtml,
   gridToMarkdown,
+  importedMarkdownToTableCellSource,
   MLRT_CLIPBOARD_MIME,
   MlrtClipboardPayload,
   parseClipboardPayload,
@@ -93,7 +95,13 @@ interface ClipboardReadData {
   plain?: string;
 }
 
-const requestedCopyModes = new WeakMap<Document, ClipboardCopyMode>();
+interface RequestedMenuCopy {
+  wrapper: HTMLElement;
+  mode: ClipboardCopyMode;
+  representations: ClipboardRepresentations;
+}
+
+const requestedMenuCopies = new WeakMap<Document, RequestedMenuCopy>();
 const armedPasteModes = new WeakMap<Document, ClipboardPasteMode>();
 const clipboardOperationVersions = new WeakMap<Document, number>();
 
@@ -109,25 +117,36 @@ export function bindTableClipboard(
 
   const onCopy = (event: ClipboardEvent): void => {
     const selection = getTableRangeSelection(doc);
+    const requested = requestedMenuCopies.get(doc);
+    const requestedForWrapper = requested?.wrapper === wrapper
+      ? requested
+      : null;
     const nativeCell = findCell(event.target) ?? findCell(doc.activeElement);
     const hasNativeSelection = Boolean(
       nativeCell &&
         wrapper.contains(nativeCell) &&
         hasNativeCellSelection(nativeCell),
     );
-    if (selection?.wrapper !== wrapper && !hasNativeSelection) {
+    if (
+      selection?.wrapper !== wrapper &&
+      !hasNativeSelection &&
+      !requestedForWrapper
+    ) {
       return;
     }
-    const requestedMode = requestedCopyModes.get(doc);
-    const representations = representationsForCurrentSelection(
-      doc,
-      currentTable(),
-      requestedMode ?? readDefaultCopyMode(doc),
-    );
+    const requestedMode = requestedForWrapper?.mode;
+    const representations = requestedForWrapper?.representations ??
+      representationsForCurrentSelection(
+        doc,
+        currentTable(),
+        requestedMode ?? readDefaultCopyMode(doc),
+      );
     if (!representations || !event.clipboardData) {
       return;
     }
-    requestedCopyModes.delete(doc);
+    if (requestedForWrapper) {
+      requestedMenuCopies.delete(doc);
+    }
     beginClipboardOperation(doc);
     event.preventDefault();
     writeDataTransfer(event.clipboardData, representations);
@@ -261,7 +280,7 @@ export function bindTableClipboard(
       return;
     }
     if (key === "c") {
-      void copyThroughMenu(doc, currentTable(), readDefaultCopyMode(doc));
+      void copyThroughMenu(wrapper, currentTable(), readDefaultCopyMode(doc));
     } else {
       void cutThroughMenu(wrapper, view);
     }
@@ -324,7 +343,7 @@ export function bindTableClipboard(
         } else {
           wrapper.focus({ preventScroll: true });
         }
-        void copyThroughMenu(doc, currentTable(), mode);
+        void copyThroughMenu(wrapper, currentTable(), mode);
       },
       onPaste: (mode) => {
         wrapper.focus({ preventScroll: true });
@@ -444,12 +463,12 @@ function representationsForGrid(
   mode: ClipboardCopyMode,
 ): ClipboardRepresentations {
   const rows = payload.rows.map((row) => row.map((cell) => cell.text));
+  const markdown = payload.exactMarkdown ??
+    gridToMarkdown(payload.rows, payload.alignments);
   const cutPayload = payload.cutToken
     ? { privatePayload: JSON.stringify(payload) }
     : {};
   if (mode === "markdown") {
-    const markdown = payload.exactMarkdown ??
-      gridToMarkdown(payload.rows, payload.alignments);
     return {
       plain: markdown,
       markdown,
@@ -459,7 +478,7 @@ function representationsForGrid(
         : {}),
     };
   }
-  const plain = serializeDelimitedGrid(rows, "\t");
+  const plain = gridPlainTextForCopy(payload, mode);
   if (mode === "plain") {
     return {
       plain,
@@ -597,16 +616,6 @@ function pasteClipboardData(
     documentMovePayload ?? compositeMovePayload;
   const interpretationPayload =
     movePayload ?? (mode === "auto" ? availablePrivatePayload : null);
-  const parsed = movingDocumentPayload
-    ? rowsForDocumentMove(movingDocumentPayload.markdown)
-    : clipboardRows(data, mode, interpretationPayload);
-  if (!parsed) {
-    if (selection?.wrapper === wrapper) {
-      announce(doc, "Clipboard does not contain pasteable table data.");
-      return true;
-    }
-    return false;
-  }
   const clearlyTabular =
     Boolean(interpretationPayload?.kind === "grid") ||
     Boolean(data.html && htmlContainsTable(data.html)) ||
@@ -619,9 +628,21 @@ function pasteClipboardData(
     !clearlyTabular &&
     !movingDocumentPayload
   ) {
+    const text = singleCellPasteText(data, mode);
+    return text === undefined
+      ? false
+      : dispatchCellPasteInput(activeCell, text);
+  }
+  const parsed = movingDocumentPayload
+    ? rowsForDocumentMove(movingDocumentPayload.markdown)
+    : clipboardRows(data, mode, interpretationPayload);
+  if (!parsed) {
+    if (selection?.wrapper === wrapper) {
+      announce(doc, "Clipboard does not contain pasteable table data.");
+      return true;
+    }
     return false;
   }
-
   const destination = selection?.wrapper === wrapper
     ? selectionRectangle(selection)
     : activeCell
@@ -1038,16 +1059,19 @@ function rowsFromHtmlTable(
       while (rows[rowIndex][column] !== undefined) {
         column++;
       }
-      const text = preserveFormatting
-        ? richCellTurndown.turndown(cell.innerHTML).trim()
-        : htmlCellText(cell);
+      const text = htmlCellText(cell);
+      const markdown = preserveFormatting
+        ? richHtmlCellMarkdown(cell)
+        : undefined;
       const rowSpan = Math.max(1, cell.rowSpan || 1);
       const columnSpan = Math.max(1, cell.colSpan || 1);
       for (let rowOffset = 0; rowOffset < rowSpan; rowOffset++) {
         rows[rowIndex + rowOffset] ??= [];
         for (let columnOffset = 0; columnOffset < columnSpan; columnOffset++) {
+          const primaryCell = rowOffset === 0 && columnOffset === 0;
           rows[rowIndex + rowOffset][column + columnOffset] = {
-            text: rowOffset === 0 && columnOffset === 0 ? text : "",
+            text: primaryCell ? text : "",
+            ...(primaryCell && markdown !== undefined ? { markdown } : {}),
           };
         }
       }
@@ -1067,8 +1091,17 @@ function rowsFromHtmlTable(
 }
 
 function htmlCellText(cell: HTMLTableCellElement): string {
+  const visibleText = htmlFragmentVisibleText(cell.innerHTML);
+  if (visibleText !== undefined) {
+    return visibleText;
+  }
+  return (cell.textContent ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n");
+}
+
+function richHtmlCellMarkdown(cell: HTMLTableCellElement): string {
   const clone = cell.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   clone
     .querySelectorAll<HTMLElement>(
       [
@@ -1081,7 +1114,34 @@ function htmlCellText(cell: HTMLTableCellElement): string {
       ].join(","),
     )
     .forEach((element) => element.remove());
-  return (clone.textContent ?? "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+  const source = clone.textContent ?? "";
+  const uniqueToken = (label: string): string => {
+    let token = `MLRTRICHCELL${label}TOKENX`;
+    while (source.includes(token)) {
+      token += "X";
+    }
+    return token;
+  };
+  const slashToken = uniqueToken("BACKSLASH");
+  const breakToken = uniqueToken("LINEBREAK");
+  const walker = clone.ownerDocument.createTreeWalker(
+    clone,
+    NodeFilter.SHOW_TEXT,
+  );
+  let textNode = walker.nextNode();
+  while (textNode) {
+    textNode.nodeValue = (textNode.nodeValue ?? "").replace(/\\/g, slashToken);
+    textNode = walker.nextNode();
+  }
+  clone.querySelectorAll("br").forEach((br) =>
+    br.replaceWith(clone.ownerDocument.createTextNode(breakToken)),
+  );
+  const markdown = richCellTurndown.turndown(clone.innerHTML)
+    .trim()
+    .replace(/\r\n?/g, "\n")
+    .split(breakToken).join("\n")
+    .split(slashToken).join("\\");
+  return importedMarkdownToTableCellSource(markdown);
 }
 
 function parsePrivatePayload(data: ClipboardReadData): MlrtClipboardPayload | null {
@@ -1148,23 +1208,24 @@ function readDataTransferType(
 }
 
 async function copyThroughMenu(
-  doc: Document,
+  wrapper: HTMLElement,
   table: ParsedTable,
   mode: ClipboardCopyMode,
 ): Promise<void> {
+  const doc = wrapper.ownerDocument;
   const representations = representationsForCurrentSelection(doc, table, mode);
   if (!representations) {
     announce(doc, "Nothing selected to copy.");
     return;
   }
-  requestedCopyModes.set(doc, mode);
-  executeClipboardCommand(doc, "copy");
+  requestedMenuCopies.set(doc, { wrapper, mode, representations });
+  executeClipboardCommandWithCarrier(doc, "copy", representations.plain);
   // execCommand can report success without dispatching a copy event. The
   // request is deleted only by onCopy after it has written the chosen mode.
-  if (!requestedCopyModes.has(doc)) {
+  if (!requestedMenuCopies.has(doc)) {
     return;
   }
-  requestedCopyModes.delete(doc);
+  requestedMenuCopies.delete(doc);
   const operationVersion = beginClipboardOperation(doc);
   try {
     await writeAsyncClipboard(representations);
@@ -1208,7 +1269,7 @@ async function cutThroughMenu(
     ),
     readDefaultCopyMode(doc),
   );
-  if (executeClipboardCommand(doc, "cut")) {
+  if (executeClipboardCommandWithCarrier(doc, "cut", representations.plain)) {
     return;
   }
   if (!representations.html) {
@@ -1306,8 +1367,15 @@ async function pasteThroughMenu(
 async function writeAsyncClipboard(
   representations: ClipboardRepresentations,
 ): Promise<void> {
-  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+  if (!navigator.clipboard) {
     throw new Error("Async clipboard unavailable");
+  }
+  if (
+    !navigator.clipboard.write ||
+    typeof ClipboardItem === "undefined"
+  ) {
+    await navigator.clipboard.writeText(representations.plain);
+    return;
   }
   const data: Record<string, Blob> = {
     "text/plain": new Blob([representations.plain], { type: "text/plain" }),
@@ -1315,15 +1383,39 @@ async function writeAsyncClipboard(
   if (representations.html) {
     data["text/html"] = new Blob([representations.html], { type: "text/html" });
   }
-  if (representations.csv) {
+  const requiredData = { ...data };
+  const supports = (
+    ClipboardItem as typeof ClipboardItem & {
+      supports?: (type: string) => boolean;
+    }
+  ).supports;
+  if (representations.csv && supports?.("text/csv")) {
     data["text/csv"] = new Blob([representations.csv], { type: "text/csv" });
   }
-  if (representations.markdown) {
+  if (representations.markdown && supports?.("text/markdown")) {
     data["text/markdown"] = new Blob([representations.markdown], {
       type: "text/markdown",
     });
   }
-  await navigator.clipboard.write([new ClipboardItem(data)]);
+  try {
+    await navigator.clipboard.write([new ClipboardItem(data)]);
+  } catch (error) {
+    // ClipboardItem.supports can overstate platform support in Windows
+    // webviews. Retry without optional formats before giving up rich HTML.
+    if (Object.keys(data).length > Object.keys(requiredData).length) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem(requiredData)]);
+        return;
+      } catch {
+        // Fall through to the mandatory plain-text API below.
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(representations.plain);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 async function readAsyncClipboard(): Promise<ClipboardReadData> {
@@ -1551,6 +1643,66 @@ function executeClipboardCommand(
   }
 }
 
+/**
+ * Programmatic copy/cut on Windows needs a real DOM selection even though a
+ * table rectangle is source-backed and intentionally owns no native Range.
+ * The temporary textarea supplies that selection during the trusted menu
+ * click; capture listeners still replace its value with every requested MIME
+ * representation before the browser writes the system clipboard.
+ */
+function executeClipboardCommandWithCarrier(
+  doc: Document,
+  command: "copy" | "cut",
+  plain: string,
+): boolean {
+  const activeElement = doc.activeElement instanceof HTMLElement
+    ? doc.activeElement
+    : null;
+  const selection = doc.defaultView?.getSelection();
+  const ranges = selection
+    ? Array.from({ length: selection.rangeCount }, (_, index) =>
+        selection.getRangeAt(index).cloneRange())
+    : [];
+  const carrier = doc.createElement("textarea");
+  carrier.value = plain;
+  carrier.readOnly = true;
+  carrier.tabIndex = -1;
+  carrier.setAttribute("aria-hidden", "true");
+  carrier.style.cssText = [
+    "position:fixed",
+    "left:-10000px",
+    "top:0",
+    "width:1px",
+    "height:1px",
+    "opacity:0",
+    "pointer-events:none",
+  ].join(";");
+  doc.body.append(carrier);
+
+  let eventDispatched = false;
+  const markDispatched = (): void => {
+    eventDispatched = true;
+  };
+  doc.addEventListener(command, markDispatched, { capture: true, once: true });
+  carrier.focus({ preventScroll: true });
+  carrier.select();
+  executeClipboardCommand(doc, command);
+  doc.removeEventListener(command, markDispatched, true);
+  carrier.remove();
+
+  if (activeElement?.isConnected) {
+    activeElement.focus({ preventScroll: true });
+  }
+  if (selection && ranges.length > 0) {
+    selection.removeAllRanges();
+    ranges.forEach((range) => selection.addRange(range));
+  }
+  // Chromium can report success without dispatching a clipboard event. Only
+  // the event proves our listener populated the system clipboard; callers can
+  // otherwise use the async fallback.
+  return eventDispatched;
+}
+
 function stringsToCells(rows: string[][] | null): ClipboardCell[][] | null {
   return rows?.map((row) => row.map((text) => ({ text }))) ?? null;
 }
@@ -1699,6 +1851,128 @@ function markPendingCutSource(
 
 function htmlContainsTable(html: string): boolean {
   return /<table[\s>]/i.test(html);
+}
+
+function singleCellPasteText(
+  data: ClipboardReadData,
+  mode: ClipboardPasteMode,
+): string | undefined {
+  if ((mode === "auto" || mode === "rich") && data.html) {
+    const htmlText = htmlFragmentVisibleText(data.html);
+    if (htmlText !== undefined && (htmlText.length > 0 || data.plain === undefined)) {
+      return htmlText;
+    }
+  }
+  if (mode === "markdown") {
+    const markdown = data.markdown ?? data.plain;
+    return markdown?.replace(/\r\n?/g, "\n");
+  }
+  return (data.plain ?? data.markdown)?.replace(/\r\n?/g, "\n");
+}
+
+function dispatchCellPasteInput(cell: HTMLElement, text: string): boolean {
+  const InputEventConstructor = cell.ownerDocument.defaultView?.InputEvent;
+  if (!InputEventConstructor) {
+    return false;
+  }
+  const event = new InputEventConstructor("beforeinput", {
+    inputType: "insertFromPaste",
+    data: text,
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  });
+  cell.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
+const HTML_TEXT_BLOCK_TAGS = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "DIV",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "P",
+  "PRE",
+  "SECTION",
+  "UL",
+]);
+
+/** Visible text from an HTML fragment, retaining semantic line boundaries. */
+function htmlFragmentVisibleText(html: string): string | undefined {
+  const sanitized = DOMPurify.sanitize(html, {
+    FORBID_TAGS: ["script", "style", "meta", "link", "object", "embed", "iframe"],
+    FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"],
+  });
+  const parsed = new DOMParser().parseFromString(sanitized, "text/html");
+  if (parsed.querySelector("table")) {
+    return undefined;
+  }
+  parsed
+    .querySelectorAll<HTMLElement>(
+      [
+        "[hidden]",
+        '[style*="display:none"]',
+        '[style*="display: none"]',
+        '[style*="visibility:hidden"]',
+        '[style*="visibility: hidden"]',
+      ].join(","),
+    )
+    .forEach((element) => element.remove());
+
+  const render = (parent: Node): { text: string; block: boolean } => {
+    if (parent.nodeType === Node.TEXT_NODE) {
+      return { text: parent.nodeValue ?? "", block: false };
+    }
+    if (!(parent instanceof Element)) {
+      return renderChildren(parent);
+    }
+    if (parent.tagName === "BR") {
+      return { text: "\n", block: false };
+    }
+    const rendered = renderChildren(parent);
+    return {
+      text: rendered.text,
+      block: HTML_TEXT_BLOCK_TAGS.has(parent.tagName),
+    };
+  };
+  const renderChildren = (parent: Node): { text: string; block: boolean } => {
+    let text = "";
+    let previousBlock = false;
+    for (const child of Array.from(parent.childNodes)) {
+      const rendered = render(child);
+      if (
+        text.length > 0 &&
+        rendered.text.length > 0 &&
+        (previousBlock || rendered.block) &&
+        !text.endsWith("\n") &&
+        !rendered.text.startsWith("\n")
+      ) {
+        text += "\n";
+      }
+      text += rendered.text;
+      previousBlock = rendered.block;
+    }
+    return { text, block: false };
+  };
+
+  return renderChildren(parsed.body).text
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n");
 }
 
 function createToken(): string {

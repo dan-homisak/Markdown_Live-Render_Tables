@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { editorDragPosition } from "../editor/dragPosition";
+import { cellValueNeedsCaretSentinel } from "../editor/table/cellSelection";
+import { planVisibleTableBoundary } from "../editor/tableBoundaryInput";
 import {
   mapNormalizedDocumentChangesToHost,
   normalizeDocumentText,
@@ -203,6 +205,39 @@ assert.equal(
   positionedTable.to + 1,
 );
 assert.equal(positionBeforeTable(positionedTable), positionedTable.from - 1);
+assert.deepEqual(planVisibleTableBoundary(memoDoc, positionedTable, "before"), {
+  anchor: positionedTable.from - 1,
+});
+assert.deepEqual(planVisibleTableBoundary(memoDoc, positionedTable, "after"), {
+  anchor: positionedTable.to + 1,
+});
+
+const edgeTableSource = [
+  "| A | B |",
+  "| --- | --- |",
+  "| 1 | 2 |",
+].join("\n");
+const edgeTableDoc = {
+  length: edgeTableSource.length,
+  sliceString: (from: number, to: number) => edgeTableSource.slice(from, to),
+  toString: () => edgeTableSource,
+};
+const edgeTable = getParsedTables(edgeTableDoc)[0];
+assert.deepEqual(planVisibleTableBoundary(edgeTableDoc, edgeTable, "before"), {
+  anchor: 0,
+  change: { from: 0, to: 0, insert: "\n" },
+});
+assert.deepEqual(planVisibleTableBoundary(edgeTableDoc, edgeTable, "after"), {
+  anchor: edgeTableSource.length + 1,
+  change: {
+    from: edgeTableSource.length,
+    to: edgeTableSource.length,
+    insert: "\n",
+  },
+});
+assert.equal(cellValueNeedsCaretSentinel(""), true);
+assert.equal(cellValueNeedsCaretSentinel("line\n"), true);
+assert.equal(cellValueNeedsCaretSentinel("line"), false);
 
 const compactSizing = measureTableColumnSizing(
   parseMarkdownTables("| # | Value |\n| --- | --- |\n| 10 | B |")[0],
@@ -717,6 +752,19 @@ assert.match(extensionSource, /reopenActiveEditorWith/);
 assert.match(extensionSource, /const DEFAULT_EDITOR_ID = "default"/);
 assert.match(liveEditorSource, /doc: initialDocument/);
 assert.match(liveEditorCss, /--mlrt-selection-accent:\s*#3b9cff;/);
+assert.match(liveEditorCss, /--mlrt-text-selection-accent:\s*#0078d4;/);
+assert.match(
+  liveEditorCss,
+  /var\(--mlrt-text-selection-accent\) 86%,\s*transparent/,
+);
+assert.match(
+  liveEditorCss,
+  /@media \(forced-colors: active\)[\s\S]*--mlrt-text-selection-accent:\s*Highlight;/,
+);
+assert.match(
+  liveEditorCss,
+  /\.cm-editor[\s\S]*\.cm-content[\s\S]*\.mlrt-table-cell\[contenteditable="true"\]:focus::selection[\s\S]*background-color:\s*rgb\(0 120 212 \/ 86%\)/,
+);
 assert.match(
   liveEditorCss,
   /var\(--mlrt-selection-accent\) 13%,\s*transparent/,

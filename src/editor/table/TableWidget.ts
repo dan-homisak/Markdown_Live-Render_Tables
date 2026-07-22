@@ -259,11 +259,18 @@ function patchTableRowDOM(
   rowKind: "header" | "body",
   rowIndex: number,
 ): void {
-  const lineCell = dom.querySelector<HTMLElement>(
-    `.mlrt-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`,
+  const tableRow =
+    rowKind === "header"
+      ? dom.querySelector<HTMLTableRowElement>("thead tr")
+      : dom.querySelectorAll<HTMLTableRowElement>("tbody tr")[rowIndex];
+  const lineCell = tableRow?.querySelector<HTMLElement>(
+    ".mlrt-table-source-line",
   );
   if (lineCell) {
     const sourceLineText = String(sourceRow.lineIndex + 1);
+    if (lineCell.dataset.sourceLine !== sourceLineText) {
+      lineCell.dataset.sourceLine = sourceLineText;
+    }
     if (lineCell.textContent !== sourceLineText) {
       lineCell.textContent = sourceLineText;
     }
@@ -300,7 +307,7 @@ function appendCells(options: AppendCellsOptions): void {
     cell.className = "mlrt-table-cell";
     cell.contentEditable = "true";
     cell.spellcheck = false;
-    cell.textContent = value;
+    setCellPlainText(cell, value);
     cell.dataset.rowKind = options.rowKind;
     cell.dataset.rowIndex = String(options.rowIndex);
     cell.dataset.column = String(column);

@@ -1,15 +1,15 @@
 /**
- * DOM caret, selection, and focus utilities for rendered table cells.
+ * Native DOM selection helpers for rendered table cells.
  *
- * Cells are `contenteditable` elements that hold plain text (single text node
- * in the common case). All offsets are measured in display characters, with
- * non-breaking spaces normalized to regular spaces to match the markdown
- * source values.
+ * A cell is one plain-text editing host. Chromium remains the sole owner of
+ * caret affinity and ordinary character/line movement; these helpers only
+ * translate between DOM points and display-text offsets and contain a native
+ * vertical move when Chromium tries to leave the active cell.
  */
 
 export const TABLE_CELL_SELECTOR = ".mlrt-table-cell";
 
-/** Resolves the rendered table cell that contains an event target, if any. */
+/** Resolves the rendered table cell containing an event target, if any. */
 export function findCell(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof HTMLElement)) {
     return null;
@@ -26,16 +26,14 @@ export function readCellDisplayValue(cell: HTMLElement): string {
 }
 
 /**
- * Replaces the cell's content with plain text, reusing the existing text node
- * when possible so the browser keeps selection and IME state stable.
+ * Replaces the cell's content with plain text, reusing its text node when
+ * possible so native selection and IME state remain stable.
  *
- * A value ending in a newline gets a trailing `<br>` sentinel: in a
- * `white-space: pre-wrap` contenteditable a trailing `\n` alone renders no
- * line box, so without the sentinel the caret could never sit on the new
- * empty line (Shift+Enter at the end of a cell would appear to do nothing).
+ * Empty values and values ending in a newline get a trailing `<br>` sentinel
+ * so Chromium paints a caret line for those otherwise empty positions.
  */
 export function setCellPlainText(cell: HTMLElement, value: string): void {
-  const needsSentinel = value.endsWith("\n");
+  const needsSentinel = cellValueNeedsCaretSentinel(value);
   const nodes = cell.childNodes;
 
   if (!needsSentinel && nodes.length === 1 && cell.firstChild instanceof Text) {
@@ -68,10 +66,14 @@ export function setCellPlainText(cell: HTMLElement, value: string): void {
   );
 }
 
+/** Whether a plain-text cell value needs a DOM line-box sentinel. */
+export function cellValueNeedsCaretSentinel(value: string): boolean {
+  return value.length === 0 || value.endsWith("\n");
+}
+
 /**
  * Whether the cell contains only text nodes, optionally followed by one
- * trailing `<br>` sentinel. Anything else (e.g. HTML from a native paste)
- * falls back to `innerText` reading.
+ * trailing `<br>` sentinel.
  */
 function isSimpleCellContent(cell: HTMLElement): boolean {
   const nodes = cell.childNodes;
@@ -90,9 +92,7 @@ function isSimpleCellContent(cell: HTMLElement): boolean {
 
 function readSimpleCellText(cell: HTMLElement): string {
   let text = "";
-  const nodes = cell.childNodes;
-  for (let index = 0; index < nodes.length; index++) {
-    const node = nodes[index];
+  for (const node of Array.from(cell.childNodes)) {
     if (node instanceof Text) {
       text += node.data;
     }
@@ -106,19 +106,17 @@ export function getCellCaretOffset(cell: HTMLElement): number {
   if (
     !selection ||
     selection.rangeCount === 0 ||
-    !isNodeInside(selection.anchorNode, cell)
+    !isNodeInside(selection.anchorNode, cell) ||
+    !isNodeInside(selection.focusNode, cell)
   ) {
     return readCellDisplayValue(cell).length;
   }
 
-  const range = selection.getRangeAt(0).cloneRange();
-  const measuringRange = cell.ownerDocument.createRange();
-  measuringRange.selectNodeContents(cell);
-  measuringRange.setEnd(range.endContainer, range.endOffset);
-  const offset = measuringRange.toString().replace(/\u00a0/g, " ").length;
-  range.detach();
-  measuringRange.detach();
-  return offset;
+  return getCellNodeOffset(
+    cell,
+    selection.focusNode,
+    selection.focusOffset,
+  );
 }
 
 /** Anchor/head offsets of the current selection inside the cell, if any. */
@@ -145,87 +143,237 @@ export function getCellSelectionOffsets(
   };
 }
 
-/** Places a collapsed caret at the given text offset inside the cell. */
+/** Places a collapsed caret at the given display-text offset. */
 export function setCellCaretOffset(cell: HTMLElement, offset: number): void {
+  setCellSelectionOffsets(cell, offset, offset);
+}
+
+/** Places a native, direction-preserving selection inside one cell. */
+export function setCellSelectionOffsets(
+  cell: HTMLElement,
+  anchor: number,
+  head: number,
+): void {
   const selection = cell.ownerDocument.defaultView?.getSelection();
   if (!selection) {
     return;
   }
 
-  const walker = cell.ownerDocument.createTreeWalker(
+  const valueLength = readCellDisplayValue(cell).length;
+  const anchorPoint = getCellTextPosition(
     cell,
-    NodeFilter.SHOW_TEXT,
+    Math.max(0, Math.min(valueLength, anchor)),
   );
-  let remainingOffset = Math.max(0, offset);
-  let textNode = walker.nextNode();
-  while (textNode) {
-    const length = textNode.textContent?.length ?? 0;
-    if (remainingOffset <= length) {
-      const range = cell.ownerDocument.createRange();
-      range.setStart(textNode, remainingOffset);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      range.detach();
-      return;
-    }
-
-    remainingOffset -= length;
-    textNode = walker.nextNode();
+  const headPoint = getCellTextPosition(
+    cell,
+    Math.max(0, Math.min(valueLength, head)),
+  );
+  if (!anchorPoint || !headPoint) {
+    setCellSelectionAtEnd(cell);
+    return;
   }
 
-  focusCellAtEnd(cell);
+  if (typeof selection.setBaseAndExtent === "function") {
+    selection.setBaseAndExtent(
+      anchorPoint.node,
+      anchorPoint.offset,
+      headPoint.node,
+      headPoint.offset,
+    );
+    return;
+  }
+
+  const range = cell.ownerDocument.createRange();
+  const forward = anchor <= head;
+  const start = forward ? anchorPoint : headPoint;
+  const end = forward ? headPoint : anchorPoint;
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  range.detach();
+}
+
+/** Focuses the cell and collapses the selection to its start. */
+export function focusCellAtStart(cell: HTMLElement): void {
+  cell.focus();
+  setCellCaretOffset(cell, 0);
 }
 
 /** Focuses the cell and collapses the selection to its end. */
 export function focusCellAtEnd(cell: HTMLElement): void {
   cell.focus();
-  const selection = cell.ownerDocument.defaultView?.getSelection();
-  if (!selection) {
-    return;
-  }
-
-  const range = cell.ownerDocument.createRange();
-  range.selectNodeContents(cell);
-  range.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(range);
+  setCellCaretOffset(cell, readCellDisplayValue(cell).length);
 }
 
 /**
- * Whether the caret sits on the first (`rowDelta` -1) or last (`rowDelta` 1)
- * visual line of the cell, meaning an unmodified vertical arrow should leave
- * the cell instead of moving within wrapped text.
+ * Applies Chromium's native visual-line boundary movement while containing
+ * the result to one editing host. Escaped or failed moves are restored
+ * synchronously before another event can observe them.
  */
-export function isCaretAtVerticalBoundary(
+export function moveCellSelectionToLineBoundary(
   cell: HTMLElement,
-  rowDelta: -1 | 1,
+  side: "start" | "end",
+  extend: boolean,
 ): boolean {
   const selection = cell.ownerDocument.defaultView?.getSelection();
-  if (
-    !selection ||
-    selection.rangeCount === 0 ||
-    !selection.isCollapsed ||
-    !isNodeInside(selection.anchorNode, cell)
-  ) {
+  const original = getCellSelectionOffsets(cell);
+  if (!selection || !original || typeof selection.modify !== "function") {
     return false;
   }
 
-  const caretRect = getCaretRect(selection.getRangeAt(0));
-  const lineBounds = getCellLineBounds(cell);
-  if (!caretRect || !lineBounds) {
-    return true;
+  try {
+    selection.modify(
+      extend ? "extend" : "move",
+      side === "start" ? "backward" : "forward",
+      "lineboundary",
+    );
+    if (getCellSelectionOffsets(cell)) {
+      return true;
+    }
+  } catch {
+    // Restore the snapshot below.
   }
 
-  const styles = getComputedStyle(cell);
-  const parsedLineHeight = parseFloat(styles.lineHeight);
-  const tolerance = Number.isFinite(parsedLineHeight)
-    ? Math.max(2, parsedLineHeight * 0.25)
-    : 3;
+  cell.focus({ preventScroll: true });
+  setCellSelectionOffsets(cell, original.anchor, original.head);
+  return false;
+}
 
-  return rowDelta < 0
-    ? caretRect.top <= lineBounds.firstTop + tolerance
-    : caretRect.bottom >= lineBounds.lastBottom - tolerance;
+/**
+ * Extends the selection by one native visual line, accepting the operation
+ * only while both endpoints remain in this editing host. The call is
+ * synchronous, so an escaped browser selection is restored before any later
+ * key or input event can observe it.
+ */
+export function extendCellSelectionVertically(
+  cell: HTMLElement,
+  rowDelta: -1 | 1,
+): { movedWithinCell: boolean; preferredX: null } {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  const original = getCellSelectionOffsets(cell);
+  if (!selection || !original || typeof selection.modify !== "function") {
+    return { movedWithinCell: false, preferredX: null };
+  }
+
+  try {
+    selection.modify(
+      "extend",
+      rowDelta < 0 ? "backward" : "forward",
+      "line",
+    );
+    const result = getCellSelectionOffsets(cell);
+    if (
+      result &&
+      (result.anchor !== original.anchor || result.head !== original.head)
+    ) {
+      return { movedWithinCell: true, preferredX: null };
+    }
+  } catch {
+    // Restore the snapshot below.
+  }
+
+  cell.focus({ preventScroll: true });
+  setCellSelectionOffsets(cell, original.anchor, original.head);
+  return { movedWithinCell: false, preferredX: null };
+}
+
+/**
+ * Moves by one native visual line. A result that leaves this editing host—or
+ * an unchanged result at its vertical edge—is restored and reported to the
+ * caller as a cell-boundary move.
+ */
+export function moveCellCaretVertically(
+  cell: HTMLElement,
+  rowDelta: -1 | 1,
+): { movedWithinCell: boolean; preferredX: number | null } {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  const original = getCellSelectionOffsets(cell);
+  if (!selection || !original || typeof selection.modify !== "function") {
+    return { movedWithinCell: false, preferredX: null };
+  }
+  const preferredX = getCollapsedCaretX(cell, selection);
+
+  try {
+    selection.modify(
+      "move",
+      rowDelta < 0 ? "backward" : "forward",
+      "line",
+    );
+    const result = getCellSelectionOffsets(cell);
+    if (
+      result &&
+      (result.anchor !== original.anchor || result.head !== original.head)
+    ) {
+      return { movedWithinCell: true, preferredX };
+    }
+  } catch {
+    // Restore the snapshot below.
+  }
+
+  cell.focus({ preventScroll: true });
+  setCellSelectionOffsets(cell, original.anchor, original.head);
+  return { movedWithinCell: false, preferredX };
+}
+
+/**
+ * Focuses a deterministic logical edge when entering a cell vertically.
+ * Downward entry uses the start; upward entry uses the end.
+ */
+export function focusCellAtVerticalEdge(
+  cell: HTMLElement,
+  rowDelta: -1 | 1,
+  preferredX: number | null = null,
+): void {
+  if (rowDelta > 0) {
+    focusCellAtStart(cell);
+  } else {
+    focusCellAtEnd(cell);
+  }
+
+  if (preferredX === null || !Number.isFinite(preferredX)) {
+    return;
+  }
+  const caretPositionFromPoint = cell.ownerDocument.caretPositionFromPoint;
+  const cellRect = cell.getBoundingClientRect();
+  if (typeof caretPositionFromPoint !== "function" || cellRect.width <= 2) {
+    return;
+  }
+
+  const contents = cell.ownerDocument.createRange();
+  contents.selectNodeContents(cell);
+  const lineRects = contents.getClientRects();
+  const lineRect = rowDelta > 0
+    ? lineRects.item(0)
+    : lineRects.item(lineRects.length - 1);
+  contents.detach();
+  if (!lineRect || lineRect.height <= 0 || lineRect.width <= 0) {
+    return;
+  }
+
+  const lineInset = Math.min(0.25, lineRect.width / 4);
+  const lineLeft = Math.max(cellRect.left + 1, lineRect.left + lineInset);
+  const lineRight = Math.min(cellRect.right - 1, lineRect.right - lineInset);
+  const x = Math.max(
+    lineLeft,
+    Math.min(lineRight, preferredX),
+  );
+  const y = lineRect.top + lineRect.height / 2;
+  const caret = caretPositionFromPoint.call(cell.ownerDocument, x, y);
+  if (!caret || !isNodeInside(caret.offsetNode, cell)) {
+    return;
+  }
+
+  try {
+    const range = cell.ownerDocument.createRange();
+    range.setStart(caret.offsetNode, caret.offset);
+    range.collapse(true);
+    const selection = cell.ownerDocument.defaultView?.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  } catch {
+    // Keep the deterministic start/end fallback established above.
+  }
 }
 
 /** requestAnimationFrame bound to the element's owner window. */
@@ -249,12 +397,23 @@ export function cancelElementAnimationFrame(
     view.cancelAnimationFrame(frame);
     return;
   }
-
   cancelAnimationFrame(frame);
 }
 
 function isNodeInside(node: Node | null, element: HTMLElement): boolean {
   return node === element || (node !== null && element.contains(node));
+}
+
+function setCellSelectionAtEnd(cell: HTMLElement): void {
+  const selection = cell.ownerDocument.defaultView?.getSelection();
+  if (!selection) {
+    return;
+  }
+  const range = cell.ownerDocument.createRange();
+  range.selectNodeContents(cell);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function getCellNodeOffset(
@@ -265,97 +424,74 @@ function getCellNodeOffset(
   if (!node) {
     return readCellDisplayValue(cell).length;
   }
-
-  const measuringRange = cell.ownerDocument.createRange();
-  measuringRange.selectNodeContents(cell);
-  measuringRange.setEnd(node, offset);
-  const measuredOffset = measuringRange
-    .toString()
-    .replace(/\u00a0/g, " ").length;
-  measuringRange.detach();
-  return measuredOffset;
+  const range = cell.ownerDocument.createRange();
+  range.selectNodeContents(cell);
+  range.setEnd(node, offset);
+  const measured = range.toString().replace(/\u00a0/g, " ").length;
+  range.detach();
+  return measured;
 }
 
-/**
- * Client rect for a collapsed caret range. Empty text positions (start of an
- * empty line) report no rects, so a zero-width marker is inserted briefly to
- * measure the caret location, then the original selection is restored.
- */
-function getCaretRect(range: Range): DOMRect | null {
-  const directRect = firstUsefulRect(range.getClientRects());
-  if (directRect) {
-    return directRect;
+function getCellTextPosition(
+  cell: HTMLElement,
+  offset: number,
+): { node: Text; offset: number } | null {
+  const walker = cell.ownerDocument.createTreeWalker(
+    cell,
+    NodeFilter.SHOW_TEXT,
+  );
+  let remaining = Math.max(0, offset);
+  let lastText: Text | null = null;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!(node instanceof Text)) {
+      continue;
+    }
+    lastText = node;
+    if (remaining <= node.data.length) {
+      return { node, offset: remaining };
+    }
+    remaining -= node.data.length;
   }
+  return lastText && remaining === 0
+    ? { node: lastText, offset: lastText.data.length }
+    : null;
+}
 
-  const doc = getNodeDocument(range.startContainer);
-  if (!doc) {
+function getCollapsedCaretX(
+  cell: HTMLElement,
+  selection: Selection,
+): number | null {
+  if (!selection.isCollapsed || selection.rangeCount === 0) {
     return null;
   }
 
-  const marker = doc.createElement("span");
-  marker.textContent = "\u200b";
-  marker.style.display = "inline-block";
-  marker.style.width = "0";
-  marker.style.height = "1em";
-  marker.style.overflow = "hidden";
-  marker.style.padding = "0";
-  marker.style.margin = "0";
-  marker.style.border = "0";
-
-  const restoreRange = range.cloneRange();
-  const markerRange = range.cloneRange();
-  markerRange.insertNode(marker);
-  const markerRect = marker.getBoundingClientRect();
-  marker.remove();
-
-  const selection = doc.defaultView?.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(restoreRange);
-
-  return markerRect.height > 0 ? markerRect : null;
-}
-
-function getNodeDocument(node: Node): Document | null {
-  return node.nodeType === Node.DOCUMENT_NODE
-    ? (node as Document)
-    : node.ownerDocument;
-}
-
-function getCellLineBounds(
-  cell: HTMLElement,
-): { firstTop: number; lastBottom: number } | null {
-  const range = cell.ownerDocument.createRange();
-  range.selectNodeContents(cell);
-  const rects = Array.from(range.getClientRects()).filter(
-    (rect) => rect.height > 0 && rect.width >= 0,
-  );
-  range.detach();
-  if (rects.length === 0) {
-    const cellRect = cell.getBoundingClientRect();
-    return cellRect.height > 0
-      ? { firstTop: cellRect.top, lastBottom: cellRect.bottom }
-      : null;
+  const caretRange = selection.getRangeAt(0);
+  const directRect = caretRange.getBoundingClientRect();
+  if (directRect.height > 0 && Number.isFinite(directRect.left)) {
+    return directRect.left;
   }
 
-  return rects.reduce(
-    (bounds, rect) => ({
-      firstTop: Math.min(bounds.firstTop, rect.top),
-      lastBottom: Math.max(bounds.lastBottom, rect.bottom),
-    }),
-    {
-      firstTop: Number.POSITIVE_INFINITY,
-      lastBottom: Number.NEGATIVE_INFINITY,
-    },
-  );
-}
-
-function firstUsefulRect(rects: DOMRectList): DOMRect | null {
-  for (let index = 0; index < rects.length; index++) {
-    const rect = rects.item(index);
-    if (rect && rect.height > 0) {
-      return rect;
-    }
+  const offsets = getCellSelectionOffsets(cell);
+  const valueLength = readCellDisplayValue(cell).length;
+  if (!offsets || valueLength === 0) {
+    return null;
+  }
+  const useLeadingEdge = offsets.head < valueLength;
+  const from = useLeadingEdge ? offsets.head : offsets.head - 1;
+  const start = getCellTextPosition(cell, from);
+  const end = getCellTextPosition(cell, from + 1);
+  if (!start || !end) {
+    return null;
+  }
+  const adjacentRange = cell.ownerDocument.createRange();
+  adjacentRange.setStart(start.node, start.offset);
+  adjacentRange.setEnd(end.node, end.offset);
+  const rect = adjacentRange.getBoundingClientRect();
+  adjacentRange.detach();
+  if (rect.height <= 0 || !Number.isFinite(rect.left)) {
+    return null;
   }
 
-  return null;
+  const isRtl = getComputedStyle(cell).direction === "rtl";
+  return useLeadingEdge === isRtl ? rect.right : rect.left;
 }

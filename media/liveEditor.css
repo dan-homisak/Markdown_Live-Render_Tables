@@ -41,9 +41,16 @@ body,
   /* A cool, high-clarity blue keeps table selection recognizably native to
      this editor while remaining distinct from its subdued inner grid. */
   --mlrt-selection-accent: #3b9cff;
-  /* Character selection follows VS Code's editor selection color. Keep this
-     separate from the deliberately quieter rectangular table-region fill. */
-  --mlrt-text-selection-fill: color-mix(in srgb, Highlight 86%, transparent);
+  /* CSS's `Highlight` system color resolves differently on macOS and Windows.
+     Use the Windows selection blue explicitly so character selection is the
+     same on both platforms; forced-colors mode opts back into the system token
+     below so accessibility themes keep control. */
+  --mlrt-text-selection-accent: #0078d4;
+  --mlrt-text-selection-fill: color-mix(
+    in srgb,
+    var(--mlrt-text-selection-accent) 86%,
+    transparent
+  );
   --mlrt-selection-fill: color-mix(
     in srgb,
     var(--mlrt-selection-accent) 13%,
@@ -67,6 +74,18 @@ body,
   min-height: 0;
   background: var(--vscode-editor-background, #1e1e1e);
   color: var(--vscode-editor-foreground, #d4d4d4);
+}
+
+@media (forced-colors: active) {
+  .cm-editor {
+    --mlrt-text-selection-accent: Highlight;
+  }
+
+  .cm-editor
+    .cm-content
+    .mlrt-table-cell[contenteditable="true"]:focus::selection {
+    background-color: Highlight !important;
+  }
 }
 
 .cm-selectionBackground {
@@ -355,8 +374,14 @@ body,
 /* Text editing inside one cell remains a native DOM selection. Give that
    browser-owned range the same character-level treatment as prose so it can
    never be mistaken for rectangular cell selection. */
-.mlrt-table-cell::selection {
-  background: var(--mlrt-text-selection-fill) !important;
+.cm-editor
+  .cm-content
+  .mlrt-table-cell[contenteditable="true"]:focus::selection {
+  /* CodeMirror's highest-precedence native-selection guard applies the CSS
+     system `Highlight` color to focused descendants. This deliberately more
+     specific rule keeps the literal in sync with the 86% Windows-blue mix
+     above, so the result cannot vary by operating system. */
+  background-color: rgb(0 120 212 / 86%) !important;
 }
 
 /* CodeMirror keeps a real DOM selection behind its custom paint so typing,
@@ -365,7 +390,7 @@ body,
    suppress only the browser paint there; the spatial cell overlay below is
    the single visible selection surface. */
 .mlrt-table-widget.mlrt-document-selection-mode ::selection {
-  background: transparent !important;
+  background-color: transparent !important;
   color: inherit !important;
 }
 

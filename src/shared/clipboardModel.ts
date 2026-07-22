@@ -266,6 +266,40 @@ export function gridToMarkdown(
   return [sourceRows[0], delimiter, ...sourceRows.slice(1)].join("\n");
 }
 
+/**
+ * Public plain-text fallback for a copied grid.
+ *
+ * Smart/Rich clipboard consumers such as Word and Excel use the HTML table,
+ * while source editors generally consume only `text/plain`. Publishing
+ * Markdown here therefore keeps the table intact in stock Markdown editors;
+ * explicit Plain Text remains the tab-delimited worksheet representation.
+ */
+export function gridPlainTextForCopy(
+  payload: ClipboardGridPayload,
+  mode: ClipboardCopyMode,
+): string {
+  if (mode === "plain") {
+    return serializeDelimitedGrid(
+      payload.rows.map((row) => row.map((cell) => cell.text)),
+      "\t",
+    );
+  }
+  return payload.exactMarkdown ??
+    gridToMarkdown(payload.rows, payload.alignments);
+}
+
+/**
+ * Places Markdown produced from an external HTML cell safely inside a pipe
+ * table without changing its literal backslashes. Entity-encoding pipes is
+ * the repository's canonical representation and, unlike `\|`, does not leave
+ * visible escape slashes in the live cell editor.
+ */
+export function importedMarkdownToTableCellSource(value: string): string {
+  return normalizeCellText(value)
+    .replace(/\|/g, "&#124;")
+    .replace(/\n/g, "<br>");
+}
+
 export function gridToHtml(
   rows: readonly (readonly ClipboardCell[])[],
   options: {

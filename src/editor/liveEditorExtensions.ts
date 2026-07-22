@@ -12,6 +12,9 @@ import {
   createTableSourceChangeFilter,
   createTableSourceSelectionGuard,
 } from "../shared/tableSourceProtection";
+import {
+  TableNavigationModifierKey,
+} from "../shared/tableKeyboardNavigation";
 import { createEditorGeometrySync } from "./editorGeometrySync";
 import { createEditorTheme } from "./editorTheme";
 import { createDocumentSelectionInputHandler } from "./documentClipboard";
@@ -21,9 +24,15 @@ import { createTableBoundaryArrowNavigation } from "./tableBoundaryNavigation";
 import { createTableBoundaryInputHandler } from "./tableBoundaryInput";
 import { createTableCellFocusClassSync } from "./tableCellFocus";
 import { createTableDecorations } from "./tableDecorations";
+import {
+  createTableNavigationKeyTracker,
+  tableNavigationModifierCompartment,
+  tableNavigationModifierFacet,
+} from "./tableNavigation";
 
 export interface LiveEditorOptions {
   lineWrapping: boolean;
+  tableNavigationModifierKey: TableNavigationModifierKey;
 }
 
 export const lineWrappingCompartment = new Compartment();
@@ -59,6 +68,7 @@ export function createLiveEditorExtensions(
     lineNumbers(),
     createEditorGeometrySync(),
     createTableCellFocusClassSync(),
+    createTableNavigationKeyTracker(),
     createTableSourceChangeFilter(),
     createTableSourceSelectionGuard({
       tableCellSelector: TABLE_CELL_SELECTOR,
@@ -66,6 +76,9 @@ export function createLiveEditorExtensions(
     markdown(),
     lineWrappingCompartment.of(
       options.lineWrapping ? EditorView.lineWrapping : [],
+    ),
+    tableNavigationModifierCompartment.of(
+      tableNavigationModifierFacet.of(options.tableNavigationModifierKey),
     ),
     createTableDecorations(),
   ];

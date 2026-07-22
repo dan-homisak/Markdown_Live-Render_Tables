@@ -4,7 +4,7 @@
 // live CodeMirror/table geometry in the same workbench window.
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,10 @@ import { WebSocket } from "undici";
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
+);
+const standardMarkdownTableFixture = await readFile(
+  path.join(repoRoot, "standard-markdown-in-table-fixture.md"),
+  "utf8",
 );
 const codeBin = "/Applications/Visual Studio Code.app/Contents/MacOS/Electron";
 const port = 9400 + Math.floor(Math.random() * 400);
@@ -25,6 +29,10 @@ const editingReliabilityOnlyComplete = Symbol(
 );
 const emptyDeleteOnlyComplete = Symbol("empty-delete-only-complete");
 const wrappedSelectionOnlyComplete = Symbol("wrapped-selection-only-complete");
+const arrowNavigationOnlyComplete = Symbol("arrow-navigation-only-complete");
+const keyboardNavigationOnlyComplete = Symbol(
+  "keyboard-navigation-only-complete",
+);
 await mkdir(qaDir, { recursive: true });
 const fixturePath = path.join(userDataDir, "TestTable.md");
 await writeFile(
@@ -304,6 +312,54 @@ try {
       `Selection fixture capture failed: ${JSON.stringify(initialSelectionFixture)}`,
     );
   }
+  if (process.argv.includes("--arrow-navigation-only")) {
+    const arrowNavigation = await evaluateJson(
+      liveClient,
+      tableArrowNavigationExpression(),
+    );
+    assertTableArrowNavigation(arrowNavigation);
+    console.log("TABLE ARROW NAVIGATION CHECK:", arrowNavigation);
+    const crossRowNavigation = await evaluateJson(
+      liveClient,
+      tableCrossRowArrowRegressionExpression(true),
+    );
+    assertTableCrossRowArrowRegression(crossRowNavigation);
+    console.log("TABLE CROSS-ROW ARROW REGRESSION CHECK:", crossRowNavigation);
+    const exactFixtureNavigation = await evaluateJson(
+      liveClient,
+      tableExactFixtureArrowRegressionExpression(true),
+    );
+    assertTableExactFixtureArrowRegression(exactFixtureNavigation);
+    console.log("TABLE EXACT-FIXTURE ARROW REGRESSION CHECK:", exactFixtureNavigation);
+    await captureWorkbenchScreenshot(
+      wb,
+      path.join(qaDir, "edh-arrow-down-before-bold.png"),
+    );
+    const exactFixtureUpNavigation = await evaluateJson(
+      liveClient,
+      tableExactFixtureArrowRegressionExpression(true, "up"),
+    );
+    assertTableExactFixtureArrowRegression(exactFixtureUpNavigation);
+    console.log("TABLE EXACT-FIXTURE UP REGRESSION CHECK:", exactFixtureUpNavigation);
+    await captureWorkbenchScreenshot(
+      wb,
+      path.join(qaDir, "edh-arrow-up-from-left-edge.png"),
+    );
+    throw arrowNavigationOnlyComplete;
+  }
+  if (process.argv.includes("--keyboard-navigation-only")) {
+    const isolatedHost = await evaluateJson(
+      liveClient,
+      setTestHostIsolationExpression(true),
+    );
+    assertTestHostIsolation(isolatedHost, true);
+    await runTrustedKeyboardNavigationCheck(liveClient);
+    await captureWorkbenchScreenshot(
+      wb,
+      path.join(qaDir, "edh-keyboard-navigation.png"),
+    );
+    throw keyboardNavigationOnlyComplete;
+  }
   if (process.argv.includes("--mixed-input-only")) {
     await runMixedTypedInputUndoCheck(liveClient);
     await runMixedImeImmediateUndoCheck(liveClient);
@@ -564,6 +620,10 @@ try {
     sameCellNativeSelectionResultExpression(),
   );
   assertSameCellNativeSelection(sameCellSelection, sameCellSetup.expectedText);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-cell-character-selection.png"),
+  );
   assertTextSelectionColorTreatment(proseReleased, sameCellSelection);
   console.log("SAME-CELL NATIVE CHARACTER SELECTION CHECK:", sameCellSelection);
   await evaluateJson(liveClient, clearSelectionStateExpression());
@@ -687,6 +747,12 @@ try {
   );
   assertTableRichCopyFallback(richCopyFallback);
   console.log("TABLE RICH COPY FALLBACK CHECK:", richCopyFallback);
+  const menuCopyCarrier = await evaluateJson(
+    liveClient,
+    tableMenuCopyCarrierExpression(),
+  );
+  assertTableMenuCopyCarrier(menuCopyCarrier);
+  console.log("TABLE MENU COPY CARRIER CHECK:", menuCopyCarrier);
   const tablePointerSetup = await evaluateJson(
     liveClient,
     tablePointerSelectionSetupExpression(),
@@ -1753,12 +1819,34 @@ try {
   const enterExit = await evaluateJson(liveClient, tableEnterExitExpression());
   assertTableEnterExit(enterExit);
   console.log("TABLE ENTER EXIT CHECK:", enterExit);
+  await captureWorkbenchScreenshot(
+    wb,
+    path.join(qaDir, "edh-enter-after-table.png"),
+  );
+  const tableOnlyEnterExit = await evaluateJson(
+    liveClient,
+    tableOnlyEnterExitExpression(),
+  );
+  assertTableOnlyEnterExit(tableOnlyEnterExit);
+  console.log("TABLE-ONLY ENTER EXIT CHECK:", tableOnlyEnterExit);
   const arrowNavigation = await evaluateJson(
     liveClient,
     tableArrowNavigationExpression(),
   );
   assertTableArrowNavigation(arrowNavigation);
   console.log("TABLE ARROW NAVIGATION CHECK:", arrowNavigation);
+  const crossRowNavigation = await evaluateJson(
+    liveClient,
+    tableCrossRowArrowRegressionExpression(),
+  );
+  assertTableCrossRowArrowRegression(crossRowNavigation);
+  console.log("TABLE CROSS-ROW ARROW REGRESSION CHECK:", crossRowNavigation);
+  const exactFixtureNavigation = await evaluateJson(
+    liveClient,
+    tableExactFixtureArrowRegressionExpression(),
+  );
+  assertTableExactFixtureArrowRegression(exactFixtureNavigation);
+  console.log("TABLE EXACT-FIXTURE ARROW REGRESSION CHECK:", exactFixtureNavigation);
   const selectionGeometry = await evaluateJson(
     liveClient,
     tableSelectionGeometryExpression(),
@@ -1768,10 +1856,6 @@ try {
   await captureWorkbenchScreenshot(
     wb,
     path.join(qaDir, "edh-table-selection-geometry.png"),
-  );
-  await captureWorkbenchScreenshot(
-    wb,
-    path.join(qaDir, "edh-enter-after-table.png"),
   );
   const documentEndSetup = await evaluateJson(
     liveClient,
@@ -1891,7 +1975,9 @@ try {
     error !== mixedInputOnlyComplete &&
     error !== editingReliabilityOnlyComplete &&
     error !== emptyDeleteOnlyComplete &&
-    error !== wrappedSelectionOnlyComplete
+    error !== wrappedSelectionOnlyComplete &&
+    error !== arrowNavigationOnlyComplete &&
+    error !== keyboardNavigationOnlyComplete
   ) {
     throw error;
   }
@@ -1963,7 +2049,9 @@ async function evaluateJson(client, expression) {
   }
   const value = result.result?.result?.value;
   if (typeof value !== "string") {
-    throw new Error(`Expected JSON string from evaluation, got ${JSON.stringify(value)}`);
+    throw new Error(
+      `Expected JSON string from evaluation, got ${JSON.stringify(value)}: ${JSON.stringify(result)}`,
+    );
   }
   return value ? JSON.parse(value) : null;
 }
@@ -3768,6 +3856,8 @@ function tableClipboardSelectionExpression() {
     key(wrapper, 'ArrowRight', { shiftKey: true });
     await wait();
 
+    const previousCopyMode = root.documentElement.dataset.mlrtDefaultCopyMode;
+    root.documentElement.dataset.mlrtDefaultCopyMode = 'smart';
     const transfer = new root.defaultView.DataTransfer();
     const copyEvent = new root.defaultView.ClipboardEvent('copy', {
       clipboardData: transfer, bubbles: true, cancelable: true,
@@ -3776,6 +3866,34 @@ function tableClipboardSelectionExpression() {
     const smartPlain = transfer.getData('text/plain');
     const smartHtml = transfer.getData('text/html');
     const privateData = transfer.getData('application/x-markdown-live-editor+json');
+    root.documentElement.dataset.mlrtDefaultCopyMode = 'rich';
+    const richTransfer = new root.defaultView.DataTransfer();
+    wrapper.dispatchEvent(new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: richTransfer, bubbles: true, cancelable: true,
+    }));
+    const richPlain = richTransfer.getData('text/plain');
+    root.documentElement.dataset.mlrtDefaultCopyMode = 'plain';
+    const plainTransfer = new root.defaultView.DataTransfer();
+    wrapper.dispatchEvent(new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: plainTransfer, bubbles: true, cancelable: true,
+    }));
+    const explicitPlain = plainTransfer.getData('text/plain');
+    if (previousCopyMode === undefined) {
+      delete root.documentElement.dataset.mlrtDefaultCopyMode;
+    } else {
+      root.documentElement.dataset.mlrtDefaultCopyMode = previousCopyMode;
+    }
+    const isPipeMarkdown = (value) => {
+      const lines = value.replace(/\\r\\n?/g, '\\n').split('\\n');
+      if (lines.length < 2 || !lines[0].startsWith('|') || !lines[0].endsWith('|') ||
+          !lines[1].startsWith('|') || !lines[1].endsWith('|')) {
+        return false;
+      }
+      const cells = lines[0].slice(1, -1).split('|');
+      const delimiters = lines[1].slice(1, -1).split('|').map((value) => value.trim());
+      return cells.length === delimiters.length &&
+        delimiters.every((value) => /^:?-{3,}:?$/.test(value));
+    };
 
     cell.focus();
     key(cell, 'Escape');
@@ -3786,7 +3904,7 @@ function tableClipboardSelectionExpression() {
     }));
     const cutDidNotChangeSource = view.state.doc.toString() === beforeDoc;
     const hasPendingCutClass = wrapper.classList.contains('mlrt-table-cut-pending');
-    const moveSourceText = cell.innerText;
+    const moveSourceText = cell.textContent;
     const moveDestination = wrapper.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
     if (moveDestination) {
       moveDestination.focus();
@@ -3799,7 +3917,7 @@ function tableClipboardSelectionExpression() {
     const afterMoveWrapper = root.querySelector('.mlrt-table-widget');
     const movedSource = afterMoveWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
     const movedDestination = afterMoveWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]');
-    const moveCompleted = (movedSource?.innerText ?? '') === '' && movedDestination?.innerText === moveSourceText;
+    const moveCompleted = (movedSource?.textContent ?? '') === '' && movedDestination?.textContent === moveSourceText;
 
     root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
       data: { type: 'setDocument', text: beforeDoc, revision: 999039, debug: false },
@@ -3825,20 +3943,67 @@ function tableClipboardSelectionExpression() {
     await wait();
     const htmlWrapper = root.querySelector('.mlrt-table-widget');
     const htmlCell = htmlWrapper?.querySelector('.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]');
+    const htmlSlash = String.fromCharCode(92);
+    const previousPasteMode = root.documentElement.dataset.mlrtDefaultPasteMode;
+    root.documentElement.dataset.mlrtDefaultPasteMode = 'rich';
     if (htmlWrapper && htmlCell) {
       htmlCell.focus();
       key(htmlCell, 'Escape');
       const htmlTransfer = new root.defaultView.DataTransfer();
-      htmlTransfer.setData('text/html', '<table><tr><td>Visible 42<span style="display:none">FormulaSecret</span></td><td>Word</td></tr><tr><td rowspan="2">Merged</td><td>Second</td></tr><tr><td>Third</td></tr></table>');
+      htmlTransfer.setData('text/html', '<table><tr><td>Visible 42 | A<br>Line C:' + htmlSlash + 'Temp<span style="display:none">FormulaSecret</span></td><td>Word</td></tr><tr><td rowspan="2">Merged</td><td>Second</td></tr><tr><td>Third</td></tr></table>');
       htmlTransfer.setData('text/plain', 'Visible 42\\tWord\\r\\nMerged\\tSecond\\r\\n\\tThird');
       htmlWrapper.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
         clipboardData: htmlTransfer, bubbles: true, cancelable: true,
       }));
       await wait();
     }
+    if (previousPasteMode === undefined) {
+      delete root.documentElement.dataset.mlrtDefaultPasteMode;
+    } else {
+      root.documentElement.dataset.mlrtDefaultPasteMode = previousPasteMode;
+    }
     const afterHtmlPaste = view.state.doc.toString();
     const htmlPasteApplied = ['Visible 42', 'Word', 'Merged', 'Second', 'Third'].every((value) => afterHtmlPaste.includes(value));
     const hiddenOfficeTextExcluded = !afterHtmlPaste.includes('FormulaSecret');
+    const richHtmlSpecialSourcePreserved =
+      afterHtmlPaste.includes('Visible 42 &#124; A<br>Line C:' + htmlSlash + 'Temp') &&
+      !afterHtmlPaste.includes('C:' + htmlSlash + htmlSlash + 'Temp');
+    const richHtmlSpecialCell = root.querySelector(
+      '.mlrt-table-widget .mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]'
+    );
+    const richHtmlSpecialVisiblePreserved = richHtmlSpecialCell?.textContent ===
+      'Visible 42 | A\\nLine C:' + htmlSlash + 'Temp';
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 9990401, debug: false },
+    }));
+    await wait();
+    const directWrapper = root.querySelector('.mlrt-table-widget');
+    const directCell = directWrapper?.querySelector(
+      '.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]'
+    );
+    if (directCell) {
+      directCell.focus();
+      const directRange = root.createRange();
+      directRange.selectNodeContents(directCell);
+      const directSelection = root.defaultView.getSelection();
+      directSelection.removeAllRanges();
+      directSelection.addRange(directRange);
+      const directTransfer = new root.defaultView.DataTransfer();
+      directTransfer.setData('text/html', '<span>one<br>two</span>');
+      directTransfer.setData('text/plain', 'one two');
+      directCell.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
+        clipboardData: directTransfer, bubbles: true, cancelable: true,
+      }));
+      await wait();
+    }
+    const afterDirectHtmlPaste = view.state.doc.toString();
+    const directHtmlBreakCell = root.querySelector(
+      '.mlrt-table-widget .mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]'
+    );
+    const directHtmlBreakPaste =
+      afterDirectHtmlPaste.includes('| one<br>two |') &&
+      directHtmlBreakCell?.textContent === 'one\\ntwo';
 
     root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
       data: { type: 'setDocument', text: beforeDoc, revision: 999041, debug: false },
@@ -3878,6 +4043,11 @@ function tableClipboardSelectionExpression() {
       wrapperFocused,
       smartHasTabs: smartPlain.includes('\\t'),
       smartHasPipes: smartPlain.includes('|'),
+      smartIsPipeMarkdown: isPipeMarkdown(smartPlain),
+      richIsPipeMarkdown: isPipeMarkdown(richPlain),
+      richHasTabs: richPlain.includes('\\t'),
+      plainHasTabs: explicitPlain.includes('\\t'),
+      plainHasPipes: explicitPlain.includes('|'),
       smartHasHtmlTable: smartHtml.includes('<table'),
       hasPrivateData: privateData.length > 0,
       cutDidNotChangeSource,
@@ -3886,6 +4056,9 @@ function tableClipboardSelectionExpression() {
       pasteApplied,
       htmlPasteApplied,
       hiddenOfficeTextExcluded,
+      richHtmlSpecialSourcePreserved,
+      richHtmlSpecialVisiblePreserved,
+      directHtmlBreakPaste,
       restoredDoc: view.state.doc.toString() === beforeDoc,
       multiCellCutSelectedCount: restoredWrapper?.querySelectorAll('.mlrt-table-cell-selected').length ?? 0,
       multiCellCutOverlayPreserved: Boolean(cutOverlay && cutGrid && cutFrame),
@@ -4915,6 +5088,8 @@ function sameCellNativeSelectionResultExpression() {
       overlayCount: root?.querySelectorAll('.mlrt-table-selection-overlay').length ?? -1,
       nativeSelectionBackground: nativeSelectionStyle?.backgroundColor ?? null,
       nativeSelectionForeground: nativeSelectionStyle?.color ?? null,
+      selectionAccent:
+        root.defaultView.getComputedStyle(active).getPropertyValue('--mlrt-text-selection-accent').trim(),
     });
   })()`;
 }
@@ -5970,6 +6145,7 @@ function partialMixedSelectionCopyExpression() {
       markdown: payload?.markdown ?? '',
       plainHasSelectedShort: plain.includes('Short') && plain.includes('short cell.'),
       plainHasTabs: plain.includes('\t'),
+      plainHasPipes: plain.includes('|'),
       htmlHasTable: html.includes('<table'),
       excludesUnselectedTest: !plain.includes('test') && !(payload?.markdown ?? '').includes('test'),
       excludesUnselectedThirdColumn: !(payload?.markdown ?? '').includes('|  |  | test |'),
@@ -7066,7 +7242,13 @@ function tableRichCopyFallbackExpression() {
     let writtenItems = null;
     let writeCalls = 0;
     class MockClipboardItem {
+      static supports(type) {
+        return type === 'text/plain' || type === 'text/html';
+      }
       constructor(data) {
+        if (Object.keys(data).some((type) => !MockClipboardItem.supports(type))) {
+          throw new Error('unsupported optional clipboard format');
+        }
         this.data = data;
         this.types = Object.keys(data);
       }
@@ -7110,6 +7292,8 @@ function tableRichCopyFallbackExpression() {
         ok: true,
         writeCalls,
         types: item?.types ?? [],
+        optionalFormatsExcluded:
+          !item?.types.includes('text/csv') && !item?.types.includes('text/markdown'),
         htmlHasTable: html.includes('<table'),
         htmlHasRichFormatting:
           /<span style="font-weight:700">bold text<\\/span>/i.test(html) &&
@@ -7125,6 +7309,7 @@ function tableRichCopyFallbackExpression() {
           mixedLink?.getAttribute('href') === 'https://example.com',
         htmlHasAnchor: /<a(?:\\s|>)/i.test(html),
         plainHasTabs: plain.includes('\\t'),
+        plainHasPipes: plain.includes('|'),
         status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
       });
     } catch (error) {
@@ -7144,6 +7329,119 @@ function tableRichCopyFallbackExpression() {
         Object.defineProperty(win, 'ClipboardItem', clipboardItemDescriptor);
       } else {
         delete win.ClipboardItem;
+      }
+    }
+  })()`;
+}
+
+function tableMenuCopyCarrierExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table-widget'));
+    const wrapper = root?.querySelector('.mlrt-table-widget');
+    const cell = wrapper?.querySelector('.mlrt-table-cell-selected');
+    if (!root || !wrapper || !cell) {
+      return JSON.stringify({ ok: false, reason: 'missing carrier-copy targets' });
+    }
+    root.querySelector('.mlrt-clipboard-menu')?.remove();
+    const selectedBefore = wrapper.querySelectorAll('.mlrt-table-cell-selected').length;
+    const rect = cell.getBoundingClientRect();
+    cell.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 2, buttons: 2, pointerId: 94,
+      clientX: rect.left + 6, clientY: rect.top + 6,
+    }));
+    cell.dispatchEvent(new root.defaultView.MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: rect.left + 6, clientY: rect.top + 6,
+    }));
+    const copyButton = root.querySelector(
+      '.mlrt-clipboard-menu button[data-action="copy-smart"]'
+    );
+    if (!copyButton) {
+      return JSON.stringify({ ok: false, reason: 'missing smart-copy action' });
+    }
+    const execDescriptor = Object.getOwnPropertyDescriptor(root, 'execCommand');
+    let carrierSelected = false;
+    let eventPrevented = false;
+    let copiedPlain = '';
+    let copiedHtml = '';
+    let copiedPrivate = '';
+    let carrierValue = '';
+    try {
+      Object.defineProperty(root, 'execCommand', {
+        configurable: true,
+        value: (command) => {
+          if (command !== 'copy') return false;
+          const carrier = root.activeElement;
+          carrierValue = carrier?.value ?? '';
+          carrierSelected = Boolean(
+            carrier instanceof root.defaultView.HTMLTextAreaElement &&
+            carrier.getAttribute('aria-hidden') === 'true' &&
+            carrier.selectionStart === 0 &&
+            carrier.selectionEnd === carrier.value.length &&
+            carrier.value.length > 0
+          );
+          const transfer = new root.defaultView.DataTransfer();
+          const event = new root.defaultView.ClipboardEvent('copy', {
+            clipboardData: transfer, bubbles: true, cancelable: true,
+          });
+          carrier.dispatchEvent(event);
+          eventPrevented = event.defaultPrevented;
+          copiedPlain = transfer.getData('text/plain');
+          copiedHtml = transfer.getData('text/html');
+          copiedPrivate = transfer.getData('application/x-markdown-live-editor+json');
+          return eventPrevented;
+        },
+      });
+      const copyRect = copyButton.getBoundingClientRect();
+      const copyX = copyRect.left + Math.min(8, copyRect.width / 2);
+      const copyY = copyRect.top + Math.min(8, copyRect.height / 2);
+      copyButton.dispatchEvent(new root.defaultView.PointerEvent('pointerdown', {
+        bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 95,
+        clientX: copyX, clientY: copyY,
+      }));
+      copyButton.dispatchEvent(new root.defaultView.MouseEvent('mousedown', {
+        bubbles: true, cancelable: true, button: 0, buttons: 1,
+        clientX: copyX, clientY: copyY,
+      }));
+      copyButton.dispatchEvent(new root.defaultView.PointerEvent('pointerup', {
+        bubbles: true, cancelable: true, button: 0, buttons: 0, pointerId: 95,
+        clientX: copyX, clientY: copyY,
+      }));
+      copyButton.dispatchEvent(new root.defaultView.MouseEvent('mouseup', {
+        bubbles: true, cancelable: true, button: 0, buttons: 0,
+        clientX: copyX, clientY: copyY,
+      }));
+      copyButton.dispatchEvent(new root.defaultView.MouseEvent('click', {
+        bubbles: true, cancelable: true, button: 0,
+        clientX: copyX, clientY: copyY,
+      }));
+      await new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+        root.defaultView.requestAnimationFrame(done)
+      ));
+      return JSON.stringify({
+        ok: true,
+        selectedBefore,
+        selectedAfter: wrapper.querySelectorAll('.mlrt-table-cell-selected').length,
+        carrierSelected,
+        carrierRemoved: !root.querySelector('textarea[aria-hidden="true"]'),
+        focusRestored: root.activeElement === wrapper,
+        eventPrevented,
+        carrierMatchesPlain: carrierValue === copiedPlain,
+        plainHasPipeTable: copiedPlain.includes('|') && !copiedPlain.includes('\\t'),
+        htmlHasTable: copiedHtml.includes('<table'),
+        hasPrivateData: copiedPrivate.length > 0,
+        status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
+      });
+    } catch (error) {
+      return JSON.stringify({ ok: false, reason: String(error) });
+    } finally {
+      if (execDescriptor) {
+        Object.defineProperty(root, 'execCommand', execDescriptor);
+      } else {
+        delete root.execCommand;
       }
     }
   })()`;
@@ -7231,6 +7529,7 @@ function documentClipboardExpression() {
       clipboardData: richTransfer, bubbles: true, cancelable: true,
     }));
     const richHtml = richTransfer.getData('text/html');
+    const richPlain = richTransfer.getData('text/plain');
     const richText = new root.defaultView.DOMParser()
       .parseFromString(richHtml, 'text/html').body.textContent ?? '';
 
@@ -7276,16 +7575,33 @@ function documentClipboardExpression() {
     view.focus();
     view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
     const pasteTransfer = new root.defaultView.DataTransfer();
-    pasteTransfer.setData('text/html', '<h2>Imported Heading</h2><ul><li>Imported item</li></ul><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>');
+    const importedSlash = String.fromCharCode(92);
+    const previousPasteMode = root.documentElement.dataset.mlrtDefaultPasteMode;
+    root.documentElement.dataset.mlrtDefaultPasteMode = 'rich';
+    pasteTransfer.setData('text/html', '<h2>Imported Heading</h2><ul><li>Imported item</li></ul><table><tr><th>A | B | C<br>Line 2 C:' + importedSlash + 'Temp</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>');
     pasteTransfer.setData('text/plain', 'Imported Heading\\nImported item\\nA\\tB\\n1\\t2');
     view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('paste', {
       clipboardData: pasteTransfer, bubbles: true, cancelable: true,
     }));
+    if (previousPasteMode === undefined) {
+      delete root.documentElement.dataset.mlrtDefaultPasteMode;
+    } else {
+      root.documentElement.dataset.mlrtDefaultPasteMode = previousPasteMode;
+    }
     await wait();
     const afterPaste = view.state.doc.toString();
     const importedHeading = afterPaste.includes('Imported Heading') && !afterPaste.includes('<h2');
     const importedList = afterPaste.includes('-   Imported item') || afterPaste.includes('- Imported item');
-    const importedTable = afterPaste.includes('| A | B |') && afterPaste.includes('| 1 | 2 |');
+    const importedTable = afterPaste.includes('| A &#124; B &#124; C<br>Line 2 C:' + importedSlash + 'Temp | B |') &&
+      afterPaste.includes('| 1 | 2 |');
+    const importedSpecialSourcePreserved =
+      afterPaste.includes('A &#124; B &#124; C<br>Line 2 C:' + importedSlash + 'Temp') &&
+      !afterPaste.includes('C:' + importedSlash + importedSlash + 'Temp');
+    const importedSpecialCell = root.querySelector(
+      '.mlrt-table-widget .mlrt-table-cell[data-row-kind="header"][data-column="0"]'
+    );
+    const importedSpecialVisiblePreserved = importedSpecialCell?.textContent ===
+      'A | B | C\\nLine 2 C:' + importedSlash + 'Temp';
 
     view.focus();
     view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
@@ -7303,6 +7619,43 @@ function documentClipboardExpression() {
       afterExcelPaste.includes('| **Key** | **Value** |') &&
       afterExcelPaste.includes('| Long | Visible **bold** |') &&
       afterExcelPaste.includes('After');
+
+    const trailingTableMarkdown = [
+      'Ending prose',
+      '',
+      '| A | B |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+      '',
+      '',
+    ].join('\\n');
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: trailingTableMarkdown, revision: 999044, debug: false },
+    }));
+    await wait();
+    view.focus();
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    root.documentElement.dataset.mlrtDefaultCopyMode = 'smart';
+    const trailingTransfer = new root.defaultView.DataTransfer();
+    view.contentDOM.dispatchEvent(new root.defaultView.ClipboardEvent('copy', {
+      clipboardData: trailingTransfer, bubbles: true, cancelable: true,
+    }));
+    const trailingDocument = new root.defaultView.DOMParser().parseFromString(
+      trailingTransfer.getData('text/html'),
+      'text/html',
+    );
+    const trailingFlow = trailingDocument.querySelector('[data-mlrt-clipboard-layout="document"]');
+    const trailingChildren = Array.from(trailingFlow?.children ?? []);
+    const trailingTableIndex = trailingChildren.findLastIndex((element) => element.matches('table'));
+    const trailingAfterTable = trailingTableIndex >= 0
+      ? trailingChildren.slice(trailingTableIndex + 1)
+      : [];
+    const trailingBlankParagraphCount = trailingAfterTable.filter((element) =>
+      element.matches('[data-mlrt-blank-line="true"]')
+    ).length;
+    const trailingTableHasNoExtraParagraph =
+      trailingBlankParagraphCount === 1 &&
+      trailingAfterTable.length === trailingBlankParagraphCount;
 
     root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
       data: { type: 'setDocument', text: beforeDoc, revision: 999042, debug: false },
@@ -7330,7 +7683,8 @@ function documentClipboardExpression() {
       richPreservesLinkLabel: richText.includes('a link'),
       richUsesInlineLink: /<a href="https:\\/\\/example.com"[^>]*>link<\\/a>/i.test(richHtml),
       richPreservesMixedLinkTarget: /href="https:\\/\\/example.com"/i.test(richHtml),
-      smartLeakedPipeTable: smartPlain.includes('| Key |') || smartPlain.includes('| Value |'),
+      smartPlainHasPipeTable: smartPlain.includes('| Key |') || smartPlain.includes('| Value |'),
+      richPlainHasPipeTable: richPlain.includes('| Key |') || richPlain.includes('| Value |'),
       privateKind,
       markdownHasPipeTable: markdownPlain.includes('| Key |') || markdownPlain.includes('| Value |'),
       cutDeferred,
@@ -7339,7 +7693,11 @@ function documentClipboardExpression() {
       importedHeading,
       importedList,
       importedTable,
+      importedSpecialSourcePreserved,
+      importedSpecialVisiblePreserved,
       excelRoundTripNoRawHtml,
+      trailingBlankParagraphCount,
+      trailingTableHasNoExtraParagraph,
       restoredDoc: view.state.doc.toString() === beforeDoc,
     });
   })()`;
@@ -7462,6 +7820,7 @@ function clipboardMoveRegressionExpression() {
             clipboardDocumentToken: originalDocumentToken,
             defaultCopyMode: 'plain',
             defaultPasteMode: 'markdown',
+            tableNavigationModifierKey: 'F2',
           },
         },
       }));
@@ -7487,6 +7846,7 @@ function clipboardMoveRegressionExpression() {
             clipboardDocumentToken: originalDocumentToken,
             defaultCopyMode: originalCopyMode,
             defaultPasteMode: originalPasteMode,
+            tableNavigationModifierKey: 'F2',
           },
         },
       }));
@@ -7739,6 +8099,7 @@ function clipboardMoveRegressionExpression() {
             clipboardDocumentToken: originalDocumentToken,
             defaultCopyMode: originalCopyMode,
             defaultPasteMode: originalPasteMode,
+            tableNavigationModifierKey: 'F2',
           },
         },
       }));
@@ -7905,8 +8266,18 @@ function tableTrustedDeleteSetupExpression() {
         hasView: Boolean(view),
       });
     }
-    const text = cell.firstChild;
-    if (!text || text.nodeType !== root.defaultView.Node.TEXT_NODE) {
+    cell.focus();
+    const walker = root.createTreeWalker(
+      cell,
+      root.defaultView.NodeFilter.SHOW_TEXT,
+    );
+    let text = null;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if ((node.textContent ?? '').length > 0) {
+        text = node;
+      }
+    }
+    if (!text) {
       return JSON.stringify({ ok: false, reason: 'missing trusted delete text node' });
     }
     const range = root.createRange();
@@ -7915,13 +8286,25 @@ function tableTrustedDeleteSetupExpression() {
     const selection = root.defaultView.getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
-    cell.focus();
-    cell.dispatchEvent(new root.defaultView.InputEvent('beforeinput', {
+    const selectedBeforeDelete = selection.toString();
+    const cellUserSelect = root.defaultView.getComputedStyle(cell).userSelect;
+    const pendingDrag = Boolean(cell.closest('.mlrt-document-drag-pending'));
+    const rangeCountBeforeDelete = selection.rangeCount;
+    const selectionCollapsedBeforeDelete = selection.isCollapsed;
+    const selectionAnchorInCell = selection.anchorNode
+      ? cell.contains(selection.anchorNode)
+      : false;
+    const selectionFocusInCell = selection.focusNode
+      ? cell.contains(selection.focusNode)
+      : false;
+    const deleteEvent = new root.defaultView.InputEvent('beforeinput', {
       bubbles: true,
       cancelable: true,
       inputType: 'deleteContentBackward',
       data: null,
-    }));
+    });
+    const deleteDispatchResult = cell.dispatchEvent(deleteEvent);
+    const textImmediatelyAfterDelete = cell.textContent;
     await new Promise((done) => {
       root.defaultView.requestAnimationFrame(() => {
         root.defaultView.requestAnimationFrame(done);
@@ -7935,6 +8318,17 @@ function tableTrustedDeleteSetupExpression() {
       ok: true,
       afterDeleteText: nextCell?.innerText ?? null,
       afterDeleteDocDiffers: view.state.doc.toString() !== root.defaultView.__MLRT_TRUSTED_UNDO_STATE__?.beforeDoc,
+      selectedBeforeDelete,
+      cellUserSelect,
+      pendingDrag,
+      rangeCountBeforeDelete,
+      selectionCollapsedBeforeDelete,
+      selectionAnchorInCell,
+      selectionFocusInCell,
+      activeElementClass: root.activeElement?.className ?? null,
+      deleteDispatchResult,
+      deleteDefaultPrevented: deleteEvent.defaultPrevented,
+      textImmediatelyAfterDelete,
     });
   })()`;
 }
@@ -8626,7 +9020,9 @@ function tableCellFocusExpression() {
         resolve(JSON.stringify({ ok: false, reason: 'missing live root' }));
         return;
       }
-      const cell = root.querySelector('.mlrt-table-cell[data-row-kind="body"][data-column="1"]');
+      const cell = Array.from(root.querySelectorAll('.mlrt-table-cell')).find(
+        (candidate) => candidate.textContent === '' && candidate.querySelector('br')
+      );
       const editor = root.querySelector('.cm-editor');
       const activeLine = root.querySelector('.cm-activeLine');
       if (!cell || !editor || !activeLine) {
@@ -8635,8 +9031,8 @@ function tableCellFocusExpression() {
       }
       const range = root.createRange();
       cell.focus();
-      range.selectNodeContents(cell);
-      range.collapse(false);
+      range.setStart(cell.firstChild ?? cell, 0);
+      range.collapse(true);
       const selection = root.defaultView.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
@@ -8645,6 +9041,14 @@ function tableCellFocusExpression() {
           activeElementClass: root.activeElement?.className ?? null,
           editorHasTableFocusClass: editor.classList.contains('mlrt-table-cell-focused'),
           activeLineBackground: root.defaultView.getComputedStyle(activeLine).backgroundColor,
+          emptyCell: cell.textContent === '',
+          hasEmptyCaretSentinel:
+            cell.firstChild?.nodeType === root.defaultView.Node.TEXT_NODE &&
+            cell.lastChild instanceof root.defaultView.HTMLBRElement,
+          selectionInsideEmptyCell:
+            selection?.isCollapsed && cell.contains(selection.anchorNode),
+          caretColor: root.defaultView.getComputedStyle(cell).caretColor,
+          cellHeight: cell.getBoundingClientRect().height,
         }));
       }, 100);
     });
@@ -8798,6 +9202,77 @@ function tableEnterExitExpression() {
   })`;
 }
 
+function tableOnlyEnterExitExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) return JSON.stringify({ ok: false, reason: 'missing live editor' });
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    const captureFirstTableSourceLines = () => {
+      const wrapper = root.querySelector('.mlrt-table-widget');
+      return Array.from(wrapper?.querySelectorAll('.mlrt-table-source-line') ?? []).map((line) => ({
+        rowKind: line.closest('thead') ? 'header' : 'body',
+        sourceLine: line.getAttribute('data-source-line'),
+        text: line.textContent?.trim() ?? '',
+      }));
+    };
+    const beforeDoc = view.state.doc.toString();
+    const beforeSourceLines = captureFirstTableSourceLines();
+    const tableOnly = ['| A | B |', '| --- | --- |', '| 1 | 2 |'].join('\\n');
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: tableOnly, revision: 999701, debug: false },
+    }));
+    await wait();
+    const cell = root.querySelector(
+      '.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="1"]'
+    );
+    if (!cell) {
+      return JSON.stringify({ ok: false, reason: 'missing table-only cell' });
+    }
+    cell.focus();
+    const range = root.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    const nativeSelection = root.defaultView.getSelection();
+    nativeSelection.removeAllRanges();
+    nativeSelection.addRange(range);
+    cell.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true,
+    }));
+    await wait();
+    const after = view.state.doc.toString();
+    const selection = view.state.selection.main;
+    const cursor = root.querySelector('.cm-cursor')?.getBoundingClientRect();
+    const result = {
+      ok: true,
+      insertedSingleBoundaryNewline: after === tableOnly + '\\n',
+      selectionAtDocumentEnd:
+        selection.empty && selection.head === after.length,
+      selectionOnBlankLine:
+        view.state.doc.lineAt(selection.head).text === '',
+      editorFocused: root.activeElement === view.contentDOM,
+      caretVisible: Boolean(cursor && cursor.height > 0 && cursor.width >= 0),
+    };
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: beforeDoc, revision: 999702, debug: false },
+    }));
+    await wait();
+    await wait();
+    await new Promise((done) => root.defaultView.setTimeout(done, 100));
+    result.restoredDoc = view.state.doc.toString() === beforeDoc;
+    result.restoredSourceLines = captureFirstTableSourceLines();
+    result.restoredSourceLinesMatch =
+      beforeSourceLines.some((line) => line.rowKind === 'body') &&
+      JSON.stringify(result.restoredSourceLines) === JSON.stringify(beforeSourceLines);
+    return JSON.stringify(result);
+  })()`;
+}
+
 function tableArrowNavigationExpression() {
   return `new Promise((resolve) => {
     const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
@@ -8817,43 +9292,205 @@ function tableArrowNavigationExpression() {
       resolve(JSON.stringify({ ok: false, reason: 'missing CodeMirror view' }));
       return;
     }
+    const resolveNavigationError = (event) => {
+      resolve(JSON.stringify({
+        ok: false,
+        reason: event?.error?.stack ?? event?.reason?.stack ?? event?.message ?? String(event?.reason ?? event),
+      }));
+    };
+    root.defaultView.addEventListener('error', resolveNavigationError, { once: true });
+    root.defaultView.addEventListener('unhandledrejection', resolveNavigationError, { once: true });
     const key = (target, keyName) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
       key: keyName,
       code: keyName,
       bubbles: true,
       cancelable: true,
     }));
-    const isSelectionAtEnd = (cell) => {
+    const selectionOffset = (cell) => {
       const selection = root.defaultView.getSelection();
       if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
-        return false;
+        return null;
       }
-      const range = selection.getRangeAt(0);
-      const expected = root.createRange();
-      expected.selectNodeContents(cell);
-      expected.collapse(false);
-      return range.compareBoundaryPoints(root.defaultView.Range.START_TO_START, expected) === 0;
+      const measured = root.createRange();
+      measured.selectNodeContents(cell);
+      measured.setEnd(selection.anchorNode, selection.anchorOffset);
+      return measured.toString().length;
+    };
+    const isSelectionAtEnd = (cell) =>
+      selectionOffset(cell) === (cell.textContent ?? '').length;
+    const isSelectionAtStart = (cell) => {
+      return selectionOffset(cell) === 0;
+    };
+    const selectionVisualEdge = (cell) => {
+      const selection = root.defaultView.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+        return { first: false, last: false };
+      }
+      const caretRange = selection.getRangeAt(0).cloneRange();
+      let caretRect = Array.from(caretRange.getClientRects()).find((rect) => rect.height > 0) ?? null;
+      const anchor = selection.anchorNode;
+      const affinityRects = [];
+      if (!caretRect && anchor?.nodeType === root.defaultView.Node.TEXT_NODE) {
+        const textLength = anchor.textContent?.length ?? 0;
+        const probe = root.createRange();
+        if (selection.anchorOffset < textLength) {
+          probe.setStart(anchor, selection.anchorOffset);
+          probe.setEnd(anchor, selection.anchorOffset + 1);
+        } else if (selection.anchorOffset > 0) {
+          probe.setStart(anchor, selection.anchorOffset - 1);
+          probe.setEnd(anchor, selection.anchorOffset);
+        }
+        caretRect = Array.from(probe.getClientRects()).find((rect) => rect.height > 0) ?? null;
+      }
+      if (anchor?.nodeType === root.defaultView.Node.TEXT_NODE) {
+        const textLength = anchor.textContent?.length ?? 0;
+        if (selection.anchorOffset > 0) {
+          const beforeProbe = root.createRange();
+          beforeProbe.setStart(anchor, selection.anchorOffset - 1);
+          beforeProbe.setEnd(anchor, selection.anchorOffset);
+          const beforeRect = Array.from(beforeProbe.getClientRects()).find((rect) => rect.height > 0) ?? null;
+          if (beforeRect) affinityRects.push(beforeRect);
+        }
+        if (selection.anchorOffset < textLength) {
+          const afterProbe = root.createRange();
+          afterProbe.setStart(anchor, selection.anchorOffset);
+          afterProbe.setEnd(anchor, selection.anchorOffset + 1);
+          const afterRect = Array.from(afterProbe.getClientRects()).find((rect) => rect.height > 0) ?? null;
+          if (afterRect) affinityRects.push(afterRect);
+        }
+      }
+      const contents = root.createRange();
+      contents.selectNodeContents(cell);
+      const lineRects = Array.from(contents.getClientRects()).filter((rect) => rect.height > 0);
+      if (!caretRect || lineRects.length === 0) {
+        return { first: false, last: false };
+      }
+      const firstTop = Math.min(...lineRects.map((rect) => rect.top));
+      const lastTop = Math.max(...lineRects.map((rect) => rect.top));
+      const candidateRects = [caretRect, ...affinityRects].filter(Boolean);
+      return {
+        first: candidateRects.some((rect) => Math.abs(rect.top - firstTop) <= 1),
+        last: candidateRects.some((rect) => Math.abs(rect.top - lastTop) <= 1),
+      };
     };
     const activeCellDetails = () => {
       const active = root.activeElement;
       if (!(active instanceof root.defaultView.HTMLElement) || !active.classList.contains('mlrt-table-cell')) {
         return null;
       }
+      const visualEdge = selectionVisualEdge(active);
       return {
         rowKind: active.getAttribute('data-row-kind'),
         rowIndex: active.getAttribute('data-row-index'),
         column: active.getAttribute('data-column'),
         text: active.textContent,
+        selectionAtStart: isSelectionAtStart(active),
         selectionAtEnd: isSelectionAtEnd(active),
+        selectionOnFirstVisualLine: visualEdge.first,
+        selectionOnLastVisualLine: visualEdge.last,
       };
     };
     const setCellSelection = (cell, atEnd) => {
       const range = root.createRange();
-      range.selectNodeContents(cell);
-      range.collapse(!atEnd);
+      const walker = root.createTreeWalker(
+        cell,
+        root.defaultView.NodeFilter.SHOW_TEXT,
+      );
+      let firstText = null;
+      let lastText = null;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        firstText ??= node;
+        lastText = node;
+      }
+      const text = atEnd ? lastText : firstText;
+      if (text) {
+        range.setStart(text, atEnd ? (text.textContent?.length ?? 0) : 0);
+        range.collapse(true);
+      } else {
+        range.selectNodeContents(cell);
+        range.collapse(!atEnd);
+      }
       const selection = root.defaultView.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
+    };
+    const setCellSelectionOffset = (cell, offset) => {
+      const walker = root.createTreeWalker(
+        cell,
+        root.defaultView.NodeFilter.SHOW_TEXT,
+      );
+      let remaining = Math.max(0, offset);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const length = node.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const range = root.createRange();
+          range.setStart(node, remaining);
+          range.collapse(true);
+          const selection = root.defaultView.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return;
+        }
+        remaining -= length;
+      }
+      setCellSelection(cell, true);
+    };
+    const caretBox = () => {
+      const active = root.activeElement;
+      if (active?.classList?.contains('mlrt-table-cell-visual-caret')) {
+        const activeRect = active.getBoundingClientRect();
+        const left = Number.parseFloat(
+          active.style.getPropertyValue('--mlrt-table-visual-caret-left'),
+        );
+        const top = Number.parseFloat(
+          active.style.getPropertyValue('--mlrt-table-visual-caret-top'),
+        );
+        if (Number.isFinite(left) && Number.isFinite(top)) {
+          return { left: activeRect.left + left, top: activeRect.top + top };
+        }
+      }
+      const selection = root.defaultView.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+        return null;
+      }
+      const range = selection.getRangeAt(0);
+      let rect = Array.from(range.getClientRects()).find((candidate) => candidate.height > 0) ?? null;
+      const node = selection.anchorNode;
+      if (!rect && node?.nodeType === root.defaultView.Node.TEXT_NODE) {
+        const probe = root.createRange();
+        const length = node.textContent?.length ?? 0;
+        if (selection.anchorOffset < length) {
+          probe.setStart(node, selection.anchorOffset);
+          probe.setEnd(node, selection.anchorOffset + 1);
+        } else if (selection.anchorOffset > 0) {
+          probe.setStart(node, selection.anchorOffset - 1);
+          probe.setEnd(node, selection.anchorOffset);
+        }
+        rect = Array.from(probe.getClientRects()).find((candidate) => candidate.height > 0) ?? null;
+      }
+      return rect ? { left: rect.left, top: rect.top } : null;
+    };
+    const characterBox = (cell, from, to = from + 1) => {
+      const node = cell.firstChild;
+      if (!node || node.nodeType !== root.defaultView.Node.TEXT_NODE) {
+        return null;
+      }
+      const length = node.textContent?.length ?? 0;
+      if (from < 0 || to <= from || to > length) {
+        return null;
+      }
+      const range = root.createRange();
+      range.setStart(node, from);
+      range.setEnd(node, to);
+      const rect = Array.from(range.getClientRects()).find((candidate) => candidate.height > 0) ?? null;
+      return rect ? { left: rect.left, top: rect.top } : null;
+    };
+    const isGraphemeBoundary = (value, offset) => {
+      const boundaries = new Set([value.length]);
+      for (const segment of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)) {
+        boundaries.add(segment.index);
+      }
+      return boundaries.has(offset);
     };
     const before = view.state.doc.toString();
     const wrapper = root.querySelector('.mlrt-table-widget');
@@ -8875,7 +9512,7 @@ function tableArrowNavigationExpression() {
     const afterTableLineNumber = view.state.doc.lineAt(afterTablePosition).number;
     view.focus();
     view.dispatch({ selection: { anchor: view.state.doc.line(beforeTableLineNumber).from } });
-    key(view.contentDOM, 'ArrowDown');
+    const fromBeforeDownPrevented = !key(view.contentDOM, 'ArrowDown');
     setTimeout(() => {
       const fromBeforeTableLine = activeCellDetails();
       view.focus();
@@ -8884,9 +9521,124 @@ function tableArrowNavigationExpression() {
       setTimeout(() => {
         const fromAfterTableLine = activeCellDetails();
         const activeCell = root.activeElement;
+        setCellSelection(activeCell, true);
+        const insideUpTextLength = (activeCell.textContent ?? '').length;
+        const insideUpLineHeight = root.defaultView.getComputedStyle(activeCell).lineHeight;
+        const insideUpStartBox = caretBox();
+        const insideUpPrevented = !key(activeCell, 'ArrowUp');
+        const insideUpBox = caretBox();
+        const insideUpOffset = selectionOffset(activeCell);
+        const insideUpLineTops = Array.from((() => {
+          const range = root.createRange();
+          range.selectNodeContents(activeCell);
+          return range.getClientRects();
+        })()).filter((rect) => rect.height > 0).map((rect) => rect.top);
+        const insideUpVisualCaret = {
+          active: activeCell.classList.contains('mlrt-table-cell-visual-caret'),
+          left: activeCell.style.getPropertyValue('--mlrt-table-visual-caret-left'),
+          top: activeCell.style.getPropertyValue('--mlrt-table-visual-caret-top'),
+        };
+        const insideUpColumnDelta = insideUpStartBox && insideUpBox
+          ? Math.abs(insideUpStartBox.left - insideUpBox.left)
+          : null;
+        const insideUpMovedOneVisualLine = Boolean(
+          insideUpStartBox &&
+          insideUpBox &&
+          insideUpBox.top < insideUpStartBox.top - 1 &&
+          Math.abs(insideUpStartBox.top - insideUpBox.top - 18) <= 1
+        );
+        const insideUpPreservedColumn =
+          insideUpColumnDelta !== null && insideUpColumnDelta <= 12;
+        const stayedInCellAfterInsideUp = root.activeElement === activeCell;
         setCellSelection(activeCell, false);
-        const insideDownAllowed = key(activeCell, 'ArrowDown');
+        key(activeCell, 'ArrowRight');
+        const insideDownPrevented = !key(activeCell, 'ArrowDown');
         const stayedInCellAfterInsideDown = root.activeElement === activeCell;
+        const originalCellText = activeCell.textContent ?? '';
+        const goalLine = 'abcdefghijABCDEFGHIJ👩‍💻klmnopqrstuvwxé012345';
+        const goalText = goalLine + '\\nx\\n' + goalLine;
+        activeCell.textContent = goalText;
+        const goalStartOffset = goalLine.indexOf('012345') + 3;
+        setCellSelectionOffset(activeCell, goalStartOffset);
+        key(activeCell, 'ArrowRight');
+        const goalStartBox = caretBox();
+        const goalFirstDownPrevented = !key(activeCell, 'ArrowDown');
+        const goalShortLineBox = caretBox();
+        const goalShortLineOffset = selectionOffset(activeCell);
+        const goalSecondDownPrevented = !key(activeCell, 'ArrowDown');
+        const goalThirdLineBox = caretBox();
+        const goalThirdLineOffset = selectionOffset(activeCell);
+        const goalColumnDelta = goalStartBox && goalThirdLineBox
+          ? Math.abs(goalStartBox.left - goalThirdLineBox.left)
+          : null;
+        const goalColumnPreserved = Boolean(
+          goalStartBox &&
+          goalShortLineBox &&
+          goalThirdLineBox &&
+          goalShortLineBox.top > goalStartBox.top + 1 &&
+          goalThirdLineBox.top > goalShortLineBox.top + 1 &&
+          goalShortLineBox.left < goalStartBox.left - 20 &&
+          goalColumnDelta <= 12
+        );
+        const goalOffsetsAreGraphemeBoundaries =
+          goalShortLineOffset !== null &&
+          goalThirdLineOffset !== null &&
+          isGraphemeBoundary(goalText, goalShortLineOffset) &&
+          isGraphemeBoundary(goalText, goalThirdLineOffset);
+        const shortLineEndOffset = goalLine.length + 2;
+        setCellSelectionOffset(activeCell, goalLine.length);
+        key(activeCell, 'ArrowRight');
+        key(activeCell, 'ArrowLeft');
+        const endOfFirstLineDownPrevented = !key(activeCell, 'ArrowDown');
+        const endOfFirstLineDownOffset = selectionOffset(activeCell);
+        const endOfFirstLineDownBox = caretBox();
+        setCellSelection(activeCell, true);
+        const endOfLastLineUpPrevented = !key(activeCell, 'ArrowUp');
+        const endOfLastLineUpOffset = selectionOffset(activeCell);
+        const endOfLastLineUpBox = caretBox();
+        const shortLineEdgeNavigationCorrect = Boolean(
+          endOfFirstLineDownPrevented &&
+          endOfLastLineUpPrevented &&
+          endOfFirstLineDownOffset === shortLineEndOffset &&
+          endOfLastLineUpOffset === shortLineEndOffset &&
+          endOfFirstLineDownBox &&
+          endOfLastLineUpBox &&
+          Math.abs(endOfFirstLineDownBox.left - endOfLastLineUpBox.left) <= 1 &&
+          Math.abs(endOfFirstLineDownBox.top - endOfLastLineUpBox.top) <= 1
+        );
+        activeCell.textContent = 'a'.repeat(240);
+        const probeFirstBox = characterBox(activeCell, 0);
+        let emojiWrapBoundary = null;
+        if (probeFirstBox) {
+          for (let offset = 1; offset < 240; offset++) {
+            const box = characterBox(activeCell, offset);
+            if (box && box.top > probeFirstBox.top + 1) {
+              emojiWrapBoundary = offset;
+              break;
+            }
+          }
+        }
+        const emoji = '👩‍💻';
+        const emojiWrapText = emojiWrapBoundary === null
+          ? ''
+          : 'a'.repeat(emojiWrapBoundary) + emoji + 'a'.repeat(80);
+        if (emojiWrapBoundary !== null) {
+          activeCell.textContent = emojiWrapText;
+          setCellSelectionOffset(activeCell, 0);
+          key(activeCell, 'ArrowRight');
+          key(activeCell, 'ArrowDown');
+        }
+        const emojiCaretOffset = emojiWrapBoundary === null
+          ? null
+          : selectionOffset(activeCell);
+        const emojiWrapAffinityResolved =
+          emojiWrapBoundary !== null &&
+          (emojiCaretOffset === emojiWrapBoundary ||
+            emojiCaretOffset === emojiWrapBoundary + emoji.length);
+        const emojiCaretIsGraphemeBoundary =
+          emojiCaretOffset !== null &&
+          isGraphemeBoundary(emojiWrapText, emojiCaretOffset);
+        activeCell.textContent = originalCellText;
         setCellSelection(activeCell, true);
         const exitDownAllowed = key(activeCell, 'ArrowDown');
         setTimeout(() => {
@@ -8896,10 +9648,45 @@ function tableArrowNavigationExpression() {
           const afterDownLine = view.state.doc.lineAt(afterTablePosition);
           resolve(JSON.stringify({
             ok: true,
+            fromBeforeDownPrevented,
             fromBeforeTableLine,
             fromAfterTableLine,
-            insideDownAllowed,
+            insideUpPrevented,
+            insideUpTextLength,
+            insideUpLineHeight,
+            insideUpStartBox,
+            insideUpBox,
+            insideUpOffset,
+            insideUpLineTops,
+            insideUpVisualCaret,
+            insideUpColumnDelta,
+            insideUpMovedOneVisualLine,
+            insideUpPreservedColumn,
+            stayedInCellAfterInsideUp,
+            insideDownPrevented,
             stayedInCellAfterInsideDown,
+            goalFirstDownPrevented,
+            goalSecondDownPrevented,
+            goalStartBox,
+            goalShortLineBox,
+            goalThirdLineBox,
+            goalShortLineOffset,
+            goalThirdLineOffset,
+            goalColumnDelta,
+            goalColumnPreserved,
+            goalOffsetsAreGraphemeBoundaries,
+            shortLineEndOffset,
+            endOfFirstLineDownPrevented,
+            endOfFirstLineDownOffset,
+            endOfFirstLineDownBox,
+            endOfLastLineUpPrevented,
+            endOfLastLineUpOffset,
+            endOfLastLineUpBox,
+            shortLineEdgeNavigationCorrect,
+            emojiWrapBoundary,
+            emojiCaretOffset,
+            emojiWrapAffinityResolved,
+            emojiCaretIsGraphemeBoundary,
             exitDownPrevented: !exitDownAllowed,
             afterDownActiveClass: root.activeElement?.className ?? null,
             afterDownGutterText: activeLineGutter?.textContent ?? null,
@@ -8914,10 +9701,518 @@ function tableArrowNavigationExpression() {
   })`;
 }
 
+function tableCrossRowArrowRegressionExpression(leaveRegressionFocus = false) {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) {
+      return JSON.stringify({ ok: false, reason: 'missing live editor' });
+    }
+    const before = view.state.doc.toString();
+    const longLine = 'abcdefghijABCDEFGHIJ0123456789';
+    const fixture = [
+      ...Array(68).fill(''),
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      '| ' + longLine + ' |  |  |',
+      '| x<br>' + longLine + ' |  |  |',
+    ].join('\\n');
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    const key = (target, keyName) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: keyName,
+      code: keyName,
+      bubbles: true,
+      cancelable: true,
+    }));
+    const cellOnSourceLine = (line, column) => {
+      const source = root.querySelector('.mlrt-table-source-line[data-source-line="' + line + '"]');
+      return source?.parentElement?.querySelector('.mlrt-table-cell[data-column="' + column + '"]') ?? null;
+    };
+    const setAtEnd = (cell) => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const selectionOffset = (cell) => {
+      const selection = root.defaultView.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed ||
+          !cell.contains(selection.anchorNode)) {
+        return null;
+      }
+      const measured = root.createRange();
+      measured.selectNodeContents(cell);
+      measured.setEnd(selection.anchorNode, selection.anchorOffset);
+      return measured.toString().length;
+    };
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: fixture, revision: 999811, debug: false },
+    }));
+    await wait();
+    await wait();
+    const line71Cell = cellOnSourceLine(71, 0);
+    const line72Cell = cellOnSourceLine(72, 0);
+    if (!line71Cell || !line72Cell) {
+      return JSON.stringify({ ok: false, reason: 'missing line 71/72 cells' });
+    }
+
+    line71Cell.focus();
+    setAtEnd(line71Cell);
+    const downPrevented = !key(line71Cell, 'ArrowDown');
+    await new Promise((done) => root.defaultView.setTimeout(done, 100));
+    const afterDownCell = root.activeElement;
+    const afterDownOffset = afterDownCell === line72Cell
+      ? selectionOffset(line72Cell)
+      : null;
+
+    line72Cell.focus();
+    setAtEnd(line72Cell);
+    const upPrevented = !key(line72Cell, 'ArrowUp');
+    const afterUpOffset = selectionOffset(line72Cell);
+    const stayedInLine72Cell = root.activeElement === line72Cell;
+    const expectedShortLineEnd = 1;
+    const result = {
+      ok: true,
+      sourceLine71Text: line71Cell.textContent,
+      sourceLine72Text: line72Cell.textContent,
+      downPrevented,
+      afterDownSourceLine: afterDownCell?.parentElement
+        ?.querySelector('.mlrt-table-source-line')?.getAttribute('data-source-line') ?? null,
+      afterDownOffset,
+      upPrevented,
+      afterUpOffset,
+      stayedInLine72Cell,
+      expectedShortLineEnd,
+      downLandedAtShortLineEnd: afterDownOffset === expectedShortLineEnd,
+      upLandedAtShortLineEnd: afterUpOffset === expectedShortLineEnd,
+    };
+
+    if (!${leaveRegressionFocus ? "true" : "false"}) {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: { type: 'setDocument', text: before, revision: 999812, debug: false },
+      }));
+      await wait();
+      result.restoredDoc = view.state.doc.toString() === before;
+    } else {
+      result.restoredDoc = true;
+    }
+    return JSON.stringify(result);
+  })()`;
+}
+
+function tableExactFixtureArrowRegressionExpression(
+  leaveRegressionFocus = false,
+  captureDirection = "down",
+) {
+  const fixtureJson = JSON.stringify(standardMarkdownTableFixture);
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.querySelector('.mlrt-table'));
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) {
+      return JSON.stringify({ ok: false, reason: 'missing live editor' });
+    }
+    const before = view.state.doc.toString();
+    const wait = () => new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    const key = (target, keyName) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keydown', {
+      key: keyName,
+      code: keyName,
+      bubbles: true,
+      cancelable: true,
+    }));
+    const keyUp = (target, keyName) => target.dispatchEvent(new root.defaultView.KeyboardEvent('keyup', {
+      key: keyName,
+      code: keyName,
+      bubbles: true,
+      cancelable: true,
+    }));
+    const cellOnSourceLine = (line, column) => {
+      const source = root.querySelector('.mlrt-table-source-line[data-source-line="' + line + '"]');
+      return source?.parentElement?.querySelector('.mlrt-table-cell[data-column="' + column + '"]') ?? null;
+    };
+    const setAtEnd = (cell) => {
+      const range = root.createRange();
+      range.selectNodeContents(cell);
+      range.collapse(false);
+      const selection = root.defaultView.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const setAtOffset = (cell, targetOffset) => {
+      const walker = root.createTreeWalker(
+        cell,
+        root.defaultView.NodeFilter.SHOW_TEXT,
+      );
+      let remaining = targetOffset;
+      for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+        const length = current.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const range = root.createRange();
+          range.setStart(current, remaining);
+          range.collapse(true);
+          const selection = root.defaultView.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        remaining -= length;
+      }
+      return false;
+    };
+    const caretDetails = (cell) => {
+      const selection = root.defaultView.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed ||
+          !(selection.anchorNode === cell || cell.contains(selection.anchorNode))) {
+        return null;
+      }
+      const measured = root.createRange();
+      measured.selectNodeContents(cell);
+      measured.setEnd(selection.anchorNode, selection.anchorOffset);
+      const offset = measured.toString().length;
+      const text = cell.textContent ?? '';
+      const positionAt = (targetOffset) => {
+        const walker = root.createTreeWalker(
+          cell,
+          root.defaultView.NodeFilter.SHOW_TEXT,
+        );
+        let remaining = targetOffset;
+        let last = null;
+        for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+          last = current;
+          const length = current.textContent?.length ?? 0;
+          if (remaining <= length) return { node: current, offset: remaining };
+          remaining -= length;
+        }
+        return last && remaining === 0
+          ? { node: last, offset: last.textContent?.length ?? 0 }
+          : null;
+      };
+      const box = (from, to) => {
+        if (from < 0 || to <= from || to > text.length) return null;
+        const start = positionAt(from);
+        const end = positionAt(to);
+        if (!start || !end) return null;
+        const probe = root.createRange();
+        probe.setStart(start.node, start.offset);
+        probe.setEnd(end.node, end.offset);
+        const rects = Array.from(probe.getClientRects()).filter((rect) => rect.height > 0);
+        const rect = rects.at(-1) ?? null;
+        return rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
+      };
+      const contents = root.createRange();
+      contents.selectNodeContents(cell);
+      const lineRects = Array.from(contents.getClientRects()).filter((rect) => rect.height > 0);
+      const lineBoxes = [];
+      for (const rect of lineRects) {
+        const existing = lineBoxes.find((box) => Math.abs(box.top - rect.top) <= 0.5);
+        if (existing) {
+          existing.left = Math.min(existing.left, rect.left);
+          existing.right = Math.max(existing.right, rect.right);
+          existing.bottom = Math.max(existing.bottom, rect.bottom);
+        } else {
+          lineBoxes.push({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom });
+        }
+      }
+      const visualCaretStyle = root.defaultView.getComputedStyle(cell, '::after');
+      return {
+        offset,
+        beforeText: text.slice(Math.max(0, offset - 12), offset),
+        afterText: text.slice(offset, offset + 12),
+        previousBox: offset > 0 ? box(offset - 1, offset) : null,
+        nextBox: offset < text.length ? box(offset, offset + 1) : null,
+        lineTops: [...new Set(lineRects.map((rect) => rect.top))],
+        lineBoxes,
+        hasVisualCaretAffinity: cell.classList.contains('mlrt-table-cell-visual-caret'),
+        nativeCaretColor: root.defaultView.getComputedStyle(cell).caretColor,
+        visualCaret: {
+          content: visualCaretStyle.content,
+          left: visualCaretStyle.left,
+          top: visualCaretStyle.top,
+          width: visualCaretStyle.width,
+          height: visualCaretStyle.height,
+          backgroundColor: visualCaretStyle.backgroundColor,
+        },
+        cell: (() => {
+          const rect = cell.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+        })(),
+      };
+    };
+
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: ${fixtureJson}, revision: 999821, debug: false },
+    }));
+    await wait();
+    await wait();
+    await new Promise((done) => root.defaultView.setTimeout(done, 100));
+    const line71Cell = cellOnSourceLine(71, 2);
+    let line72Cell = cellOnSourceLine(72, 2);
+    if (!line71Cell || !line72Cell) {
+      return JSON.stringify({ ok: false, reason: 'missing exact line 71/72 third cells' });
+    }
+    const exactTable = line71Cell.closest('.mlrt-table');
+    const exactColumn = exactTable?.querySelectorAll('.mlrt-table-sized-col')?.[2];
+    const naturalCellWidth = line71Cell.getBoundingClientRect().width;
+    const naturalTableWidth = exactTable?.getBoundingClientRect().width ?? 0;
+    const applyForcedWidth = async (forcedCellWidth) => {
+      if (!exactTable || !exactColumn) return;
+      exactColumn.style.setProperty('width', forcedCellWidth + 'px', 'important');
+      exactTable.style.setProperty(
+        'width',
+        naturalTableWidth + forcedCellWidth - naturalCellWidth + 'px',
+        'important',
+      );
+      exactTable.style.setProperty(
+        'min-width',
+        naturalTableWidth + forcedCellWidth - naturalCellWidth + 'px',
+        'important',
+      );
+      await wait();
+    };
+    const widthCases = [];
+    let selectedForcedWidth = 428;
+    for (let forcedWidth = 260; forcedWidth <= 540; forcedWidth += 8) {
+      await applyForcedWidth(forcedWidth);
+      line71Cell.focus();
+      setAtEnd(line71Cell);
+      key(line71Cell, 'ArrowDown');
+      await new Promise((done) => root.defaultView.setTimeout(done, 25));
+      line72Cell = cellOnSourceLine(72, 2);
+      const details = line72Cell ? caretDetails(line72Cell) : null;
+      widthCases.push({
+        forcedWidth,
+        actualWidth: line71Cell.getBoundingClientRect().width,
+        offset: details?.offset ?? null,
+        beforeText: details?.beforeText ?? null,
+        afterText: details?.afterText ?? null,
+        hasVisualCaretAffinity: details?.hasVisualCaretAffinity ?? false,
+        nativeCaretColor: details?.nativeCaretColor ?? null,
+        visualCaret: details?.visualCaret ?? null,
+      });
+      if (
+        details?.offset === 35 &&
+        details?.afterText?.startsWith(' **bold text')
+      ) {
+        selectedForcedWidth = forcedWidth;
+        break;
+      }
+    }
+    if (
+      ${leaveRegressionFocus ? "true" : "false"} &&
+      ${JSON.stringify(captureDirection)} === 'up'
+    ) {
+      const wideUpCases = [];
+      let selectedWideWidth = null;
+      let beforeUp = null;
+      let afterUp = null;
+      let afterSecondUp = null;
+      let afterRight = null;
+      let afterLeftToLineStart = null;
+      let afterLeftThenDown = null;
+      let afterLeftThenUp = null;
+      let captureAfterSecondUp = null;
+      let upPrevented = false;
+      let secondUpPrevented = false;
+      let rightDefaultAllowed = false;
+      for (let forcedWidth = 280; forcedWidth <= 520; forcedWidth += 1) {
+        await applyForcedWidth(forcedWidth);
+        line71Cell.focus();
+        setAtEnd(line71Cell);
+        const candidateBefore = caretDetails(line71Cell);
+        if (candidateBefore?.lineBoxes?.length !== 4) continue;
+        const lastLine = candidateBefore.lineBoxes.at(-1);
+        const precedingLine = candidateBefore.lineBoxes.at(-2);
+        if (!lastLine || !precedingLine || lastLine.right <= precedingLine.right + 3) {
+          continue;
+        }
+        const candidatePrevented = !key(line71Cell, 'ArrowUp');
+        const candidateAfter = caretDetails(line71Cell);
+        const candidateSecondPrevented = !key(line71Cell, 'ArrowUp');
+        const candidateAfterSecond = caretDetails(line71Cell);
+        const candidateRightDefaultAllowed = key(line71Cell, 'ArrowRight');
+        const selection = root.defaultView.getSelection();
+        selection?.modify('move', 'forward', 'character');
+        const candidateAfterRight = caretDetails(line71Cell);
+
+        // Preserve the earlier wrap-space regression state for its assertions;
+        // the left-edge sequence below intentionally becomes the screenshot
+        // state for this run.
+        line71Cell.focus();
+        setAtEnd(line71Cell);
+        key(line71Cell, 'ArrowUp');
+        key(line71Cell, 'ArrowUp');
+        const candidateCapture = caretDetails(line71Cell);
+
+        const moveLeftToLineStart = async () => {
+          const targetOffset = candidateAfterRight?.offset ?? 0;
+          const startOffset = targetOffset + 8;
+          if (!setAtOffset(line71Cell, startOffset)) return null;
+          for (let offset = startOffset; offset > targetOffset; offset -= 1) {
+            key(line71Cell, 'ArrowLeft');
+            root.defaultView.getSelection()?.modify('move', 'backward', 'character');
+            keyUp(line71Cell, 'ArrowLeft');
+            await new Promise((done) => root.defaultView.setTimeout(done, 0));
+          }
+          return caretDetails(line71Cell);
+        };
+        const candidateAfterLeftToLineStart = await moveLeftToLineStart();
+        const leftThenDownPrevented = !key(line71Cell, 'ArrowDown');
+        const candidateAfterLeftThenDown = caretDetails(line71Cell);
+        const candidateBeforeLeftThenUp = await moveLeftToLineStart();
+        const leftThenUpPrevented = !key(line71Cell, 'ArrowUp');
+        const candidateAfterLeftThenUp = caretDetails(line71Cell);
+        wideUpCases.push({
+          forcedWidth,
+          actualWidth: line71Cell.getBoundingClientRect().width,
+          beforeUp: candidateBefore,
+          afterUp: candidateAfter,
+          afterSecondUp: candidateAfterSecond,
+          afterRight: candidateAfterRight,
+          afterLeftToLineStart: candidateAfterLeftToLineStart,
+          afterLeftThenDown: candidateAfterLeftThenDown,
+          beforeLeftThenUp: candidateBeforeLeftThenUp,
+          afterLeftThenUp: candidateAfterLeftThenUp,
+          leftThenDownPrevented,
+          leftThenUpPrevented,
+          captureAfterSecondUp: candidateCapture,
+          upPrevented: candidatePrevented,
+          secondUpPrevented: candidateSecondPrevented,
+          rightDefaultAllowed: candidateRightDefaultAllowed,
+        });
+        selectedWideWidth = forcedWidth;
+        beforeUp = candidateBefore;
+        afterUp = candidateAfter;
+        upPrevented = candidatePrevented;
+        afterSecondUp = candidateAfterSecond;
+        afterRight = candidateAfterRight;
+        afterLeftToLineStart = candidateAfterLeftToLineStart;
+        afterLeftThenDown = candidateAfterLeftThenDown;
+        afterLeftThenUp = candidateAfterLeftThenUp;
+        captureAfterSecondUp = candidateCapture;
+        secondUpPrevented = candidateSecondPrevented;
+        rightDefaultAllowed = candidateRightDefaultAllowed;
+        upPrevented = candidatePrevented && leftThenDownPrevented && leftThenUpPrevented;
+        break;
+      }
+      if (selectedWideWidth === null) {
+        return JSON.stringify({
+          ok: false,
+          reason: 'could not produce four visual lines in line 71 third cell',
+          wideUpCases,
+        });
+      }
+      line71Cell.scrollIntoView({ block: 'center', inline: 'center' });
+      await wait();
+      return JSON.stringify({
+        ok: true,
+        captureOnly: 'up-from-ul',
+        line71EndsWithUl: (line71Cell.textContent ?? '').endsWith('</ul>'),
+        naturalCellWidth,
+        testedCellWidth: line71Cell.getBoundingClientRect().width,
+        selectedForcedWidth: selectedWideWidth,
+        wideUpCases,
+        upPrevented,
+        beforeUp,
+        afterUp,
+        afterSecondUp,
+        afterRight,
+        afterLeftToLineStart,
+        afterLeftThenDown,
+        afterLeftThenUp,
+        captureAfterSecondUp,
+        secondUpPrevented,
+        rightDefaultAllowed,
+        stayedInLine71Cell: root.activeElement === line71Cell,
+        restoredDoc: true,
+      });
+    }
+    if (${leaveRegressionFocus ? "true" : "false"}) {
+      return JSON.stringify({
+        ok: true,
+        captureOnly: 'down-before-bold',
+        line71EndsWithUl: (line71Cell.textContent ?? '').endsWith('</ul>'),
+        line72ContainsBoldText: (line72Cell?.textContent ?? '').includes('**bold text**'),
+        naturalCellWidth,
+        testedCellWidth: line71Cell.getBoundingClientRect().width,
+        selectedForcedWidth,
+        widthCases,
+        afterDown: widthCases.at(-1) ?? null,
+        enteredLine72Cell: root.activeElement === line72Cell,
+        restoredDoc: true,
+      });
+    }
+    await applyForcedWidth(selectedForcedWidth);
+    line71Cell.scrollIntoView({ block: 'center', inline: 'center' });
+    await wait();
+
+    line71Cell.focus();
+    setAtEnd(line71Cell);
+    const beforeUp = caretDetails(line71Cell);
+    const upPrevented = !key(line71Cell, 'ArrowUp');
+    const afterUp = caretDetails(line71Cell);
+    const stayedInLine71Cell = root.activeElement === line71Cell;
+
+    line71Cell.focus();
+    setAtEnd(line71Cell);
+    const beforeDown = caretDetails(line71Cell);
+    const downPrevented = !key(line71Cell, 'ArrowDown');
+    await new Promise((done) => root.defaultView.setTimeout(done, 100));
+    line72Cell = cellOnSourceLine(72, 2);
+    const afterDown = line72Cell ? caretDetails(line72Cell) : null;
+    const enteredLine72Cell = root.activeElement === line72Cell;
+    const result = {
+      ok: true,
+      line71EndsWithUl: (line71Cell.textContent ?? '').endsWith('</ul>'),
+      line72ContainsBoldText: (line72Cell?.textContent ?? '').includes('**bold text**'),
+      naturalCellWidth,
+      testedCellWidth: line71Cell.getBoundingClientRect().width,
+      selectedForcedWidth,
+      widthCases,
+      upPrevented,
+      beforeUp,
+      afterUp,
+      stayedInLine71Cell,
+      downPrevented,
+      beforeDown,
+      afterDown,
+      enteredLine72Cell,
+    };
+
+    if (!${leaveRegressionFocus ? "true" : "false"}) {
+      root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+        data: { type: 'setDocument', text: before, revision: 999822, debug: false },
+      }));
+      await wait();
+      result.restoredDoc = view.state.doc.toString() === before;
+    } else {
+      result.restoredDoc = true;
+    }
+    return JSON.stringify(result);
+  })()`;
+}
+
 function assertTableCellFocus(result) {
   if (
     !result?.editorHasTableFocusClass ||
-    result.activeLineBackground !== "rgba(0, 0, 0, 0)"
+    result.activeLineBackground !== "rgba(0, 0, 0, 0)" ||
+    !result.emptyCell ||
+    !result.hasEmptyCaretSentinel ||
+    !result.selectionInsideEmptyCell ||
+    result.caretColor === "rgba(0, 0, 0, 0)" ||
+    result.caretColor === "transparent" ||
+    !(result.cellHeight > 0)
   ) {
     throw new Error(
       `Table cell focus check failed: expected hidden active line, got ${JSON.stringify(
@@ -9187,8 +10482,13 @@ function assertTableClipboardSelection(result) {
     !result.selectedArrowDownEscaped ||
     !result.outsideClickCleared ||
     !result.wrapperFocused ||
-    !result.smartHasTabs ||
-    result.smartHasPipes ||
+    result.smartHasTabs ||
+    !result.smartHasPipes ||
+    !result.smartIsPipeMarkdown ||
+    !result.richIsPipeMarkdown ||
+    result.richHasTabs ||
+    !result.plainHasTabs ||
+    result.plainHasPipes ||
     !result.smartHasHtmlTable ||
     !result.hasPrivateData ||
     !result.cutDidNotChangeSource ||
@@ -9197,6 +10497,9 @@ function assertTableClipboardSelection(result) {
     !result.pasteApplied ||
     !result.htmlPasteApplied ||
     !result.hiddenOfficeTextExcluded ||
+    !result.richHtmlSpecialSourcePreserved ||
+    !result.richHtmlSpecialVisiblePreserved ||
+    !result.directHtmlBreakPaste ||
     !result.restoredDoc ||
     result.multiCellCutSelectedCount !== 2 ||
     !result.multiCellCutOverlayPreserved ||
@@ -9272,8 +10575,8 @@ function assertTableTrustedCopy(result) {
   if (
     !result?.ok ||
     !result.seen ||
-    !result.plainHasTabs ||
-    result.plainHasPipes ||
+    result.plainHasTabs ||
+    !result.plainHasPipes ||
     !result.htmlHasTable ||
     !result.hasPrivateData
   ) {
@@ -9342,28 +10645,51 @@ function assertProseSelectionColorConsistency(focused, unfocused) {
 
 function assertTextSelectionColorTreatment(prose, cell) {
   const proseBackgrounds = prose?.markBackgrounds ?? [];
-  const proseAlpha = selectionColorAlpha(proseBackgrounds[0]);
-  const cellAlpha = selectionColorAlpha(cell?.nativeSelectionBackground);
+  const expected = [0, 120, 212, 0.86];
+  const proseColor = selectionColorRgba(proseBackgrounds[0]);
+  const cellColor = selectionColorRgba(cell?.nativeSelectionBackground);
+  const matchesExpected = (color) =>
+    color?.every((component, index) =>
+      Math.abs(component - expected[index]) <= (index === 3 ? 0.01 : 1)
+    );
   if (
     proseBackgrounds.length < 1 ||
     proseBackgrounds.some(selectionColorIsTransparent) ||
     selectionColorIsTransparent(cell?.nativeSelectionBackground) ||
-    !Number.isFinite(proseAlpha) ||
-    !Number.isFinite(cellAlpha) ||
-    proseAlpha >= cellAlpha
+    !matchesExpected(proseColor) ||
+    !matchesExpected(cellColor) ||
+    cell.selectionAccent.toLowerCase() !== "#0078d4"
   ) {
     throw new Error(
-      `Prose selection should remain visible but slightly softer than native cell selection: ${JSON.stringify({ prose, cell })}`,
+      `Prose and cell text selection should share the Windows blue on every platform: ${JSON.stringify({ prose, cell })}`,
     );
   }
 }
 
-function selectionColorAlpha(value) {
-  if (typeof value !== "string") return Number.NaN;
-  const slashMatch = value.match(/\/\s*([0-9.]+)\s*\)$/);
-  if (slashMatch) return Number.parseFloat(slashMatch[1]);
-  const rgbaMatch = value.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)$/);
-  return rgbaMatch ? Number.parseFloat(rgbaMatch[1]) : 1;
+function selectionColorRgba(value) {
+  if (typeof value !== "string") return null;
+  const srgb = value.match(
+    /^color\(srgb\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)(?:\s*\/\s*([0-9.]+))?\)$/,
+  );
+  if (srgb) {
+    return [
+      Number.parseFloat(srgb[1]) * 255,
+      Number.parseFloat(srgb[2]) * 255,
+      Number.parseFloat(srgb[3]) * 255,
+      srgb[4] === undefined ? 1 : Number.parseFloat(srgb[4]),
+    ];
+  }
+  const rgba = value.match(
+    /^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+))?\s*\)$/,
+  );
+  return rgba
+    ? [
+        Number.parseFloat(rgba[1]),
+        Number.parseFloat(rgba[2]),
+        Number.parseFloat(rgba[3]),
+        rgba[4] === undefined ? 1 : Number.parseFloat(rgba[4]),
+      ]
+    : null;
 }
 
 function assertMultilineProseSelection(setup, result) {
@@ -9600,6 +10926,1173 @@ function assertSameCellNativeSelection(result, expectedText) {
   }
 }
 
+async function runTrustedKeyboardNavigationCheck(client) {
+  const arrows = {
+    left: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+    up: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+    right: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+    down: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  };
+  const f2 = { key: "F2", code: "F2", windowsVirtualKeyCode: 113 };
+  const f8 = { key: "F8", code: "F8", windowsVirtualKeyCode: 119 };
+  const setup = async (target, captureBaseline = false) => {
+    const result = await evaluateJson(
+      client,
+      keyboardNavigationSetupExpression(target, captureBaseline),
+    );
+    assertKeyboardNavigation(
+      `setup ${target.rowKind}/${target.rowIndex}/${target.column}`,
+      result,
+      (candidate) => candidate.cellTextLength >= 0,
+    );
+    return result;
+  };
+  const state = () => evaluateJson(client, keyboardNavigationStateExpression());
+  const assertCell = (label, result, expected) => {
+    assertKeyboardNavigation(label, result, (candidate) => {
+      const active = candidate.activeCell;
+      return Boolean(
+        active &&
+          active.rowKind === expected.rowKind &&
+          active.rowIndex === expected.rowIndex &&
+          active.column === expected.column &&
+          (expected.anchor === undefined ||
+            candidate.selectionAnchor === expected.anchor) &&
+          (expected.head === undefined ||
+            candidate.selectionHead === expected.head) &&
+          (expected.collapsed === undefined ||
+            candidate.nativeSelectionCollapsed === expected.collapsed) &&
+          (expected.inside === undefined ||
+            candidate.nativeSelectionInsideCell === expected.inside) &&
+          (expected.text === undefined || active.text === expected.text) &&
+          (expected.sourceUnchanged === undefined ||
+            candidate.sourceUnchanged === expected.sourceUnchanged)
+      );
+    });
+  };
+  const heldArrowWalk = async (label, arrow, steps) => {
+    let current = null;
+    for (const [index, expected] of steps.entries()) {
+      await dispatchTrustedKeyDown(client, {
+        ...arrow,
+        autoRepeat: index > 0,
+      });
+      current = await state();
+      assertCell(`${label} ${index + 1}`, current, {
+        ...expected,
+        anchor: expected.head,
+        collapsed: true,
+        inside: true,
+        sourceUnchanged: true,
+      });
+    }
+    await dispatchTrustedKeyUp(client, arrow);
+    const expected = steps.at(-1);
+    current = await state();
+    assertCell(`${label} keyup`, current, {
+      ...expected,
+      anchor: expected.head,
+      collapsed: true,
+      inside: true,
+      sourceUnchanged: true,
+    });
+    return current;
+  };
+  const checkpoints = {};
+
+  await setup(
+    { rowKind: "body", rowIndex: 1, column: 1, anchor: 2, head: 2 },
+    true,
+  );
+  await dispatchTrustedEditingKey(client, arrows.right);
+  let result = await state();
+  assertCell("native ArrowRight", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: 3,
+    head: 3,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  checkpoints.nativeCharacter = result.selectionHead;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 1, anchor: 2, head: 2 });
+  await dispatchTrustedEditingKey(client, { ...arrows.right, modifiers: 8 });
+  result = await state();
+  assertCell("native Shift+ArrowRight", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: 2,
+    head: 3,
+    collapsed: false,
+    sourceUnchanged: true,
+  });
+  assertKeyboardNavigation(
+    "native Shift+ArrowRight selected text",
+    result,
+    (candidate) => candidate.selectedText.length === 1,
+  );
+  await dispatchTrustedEditingKey(client, arrows.left);
+  result = await state();
+  assertCell("ArrowLeft collapses a native selection", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: 2,
+    head: 2,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  checkpoints.nativeSelection = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 1, anchor: 2, head: 2 });
+  await dispatchTrustedEditingKey(client, { ...arrows.right, modifiers: 1 });
+  result = await state();
+  assertCell("native Option+ArrowRight", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  assertKeyboardNavigation(
+    "native Option+ArrowRight word movement",
+    result,
+    (candidate) =>
+      candidate.selectionHead > 2 &&
+      candidate.selectionHead <= candidate.activeCell.text.length,
+  );
+  await setup({ rowKind: "body", rowIndex: 1, column: 1, anchor: 0, head: 0 });
+  await dispatchTrustedEditingKey(client, { ...arrows.right, modifiers: 1 | 8 });
+  result = await state();
+  assertCell("native Option+Shift+ArrowRight", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: 0,
+    collapsed: false,
+    sourceUnchanged: true,
+  });
+  assertKeyboardNavigation(
+    "native word selection remains in its cell",
+    result,
+    (candidate) =>
+      candidate.nativeSelectionInsideCell &&
+      candidate.selectionHead > 0 &&
+      candidate.selectionHead <= candidate.activeCell.text.length,
+  );
+  checkpoints.wordNavigation = result.selectionHead;
+
+  const optionBoundarySetup = await setup({
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: Number.MAX_SAFE_INTEGER,
+    head: Number.MAX_SAFE_INTEGER,
+  });
+  await dispatchTrustedEditingKey(client, { ...arrows.right, modifiers: 1 });
+  result = await state();
+  assertCell("Option+ArrowRight stops at the cell boundary", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: optionBoundarySetup.cellTextLength,
+    head: optionBoundarySetup.cellTextLength,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+
+  for (const selectionCase of [
+    { label: "modified Left collapses backward selection at its head", arrow: arrows.left, anchor: 4, head: 0 },
+    { label: "modified Right collapses forward selection at its head", arrow: arrows.right, anchor: 1, head: 5 },
+  ]) {
+    await setup({
+      rowKind: "body",
+      rowIndex: 1,
+      column: 0,
+      anchor: selectionCase.anchor,
+      head: selectionCase.head,
+    });
+    await dispatchTrustedKey(client, { ...selectionCase.arrow, modifiers: 1 });
+    result = await state();
+    assertCell(selectionCase.label, result, {
+      rowKind: "body",
+      rowIndex: 1,
+      column: 0,
+      anchor: selectionCase.head,
+      head: selectionCase.head,
+      collapsed: true,
+      inside: true,
+      sourceUnchanged: true,
+    });
+  }
+  checkpoints.modifiedSelectionCollapse = true;
+
+  for (const [label, arrow, target] of [
+    ["Command+ArrowLeft", arrows.left, 0],
+    ["Command+ArrowRight", arrows.right, 5],
+    ["Command+ArrowUp", arrows.up, 0],
+    ["Command+ArrowDown", arrows.down, 5],
+  ]) {
+    await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+    await dispatchTrustedKey(client, { ...arrow, modifiers: 4 });
+    result = await state();
+    assertCell(label, result, {
+      rowKind: "body", rowIndex: 1, column: 0,
+      anchor: target, head: target, collapsed: true,
+      inside: true, sourceUnchanged: true,
+    });
+  }
+  checkpoints.commandCellEdges = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 3, head: 3 });
+  await dispatchTrustedEditingKey(client, {
+    key: "a",
+    code: "KeyA",
+    windowsVirtualKeyCode: 65,
+    modifiers: 2,
+  });
+  result = await state();
+  assertCell("macOS Control+A is not repurposed as table Select All", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: 3,
+    head: 3,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  assertKeyboardNavigation(
+    "Control+A does not enter table selection",
+    result,
+    (candidate) =>
+      candidate.tableSelectedCells === 0 &&
+      candidate.documentSelectedCells === 0,
+  );
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedEditingKey(client, {
+    key: "a",
+    code: "KeyA",
+    windowsVirtualKeyCode: 65,
+    modifiers: 4,
+  });
+  result = await state();
+  assertCell("Command+A selects the active cell text first", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: 0,
+    head: 5,
+    collapsed: false,
+    sourceUnchanged: true,
+  });
+  assertKeyboardNavigation(
+    "Command+A cell selection text",
+    result,
+    (candidate) =>
+      candidate.selectedText === "Short" &&
+      candidate.tableSelectedCells === 0,
+  );
+  checkpoints.platformSelection = true;
+
+  const wrappedSetup = await setup({
+    tableIndex: 0,
+    rowKind: "body",
+    rowIndex: 0,
+    column: 1,
+    anchor: 10,
+    head: 10,
+  });
+  await dispatchTrustedEditingKey(client, { ...arrows.down, modifiers: 8 });
+  result = await state();
+  assertKeyboardNavigation(
+    "Shift+ArrowDown extends by one visual line inside a wrapped cell",
+    result,
+    (candidate) =>
+      candidate.activeTableFrom === wrappedSetup.tableFrom &&
+      candidate.activeCell?.rowKind === "body" &&
+      candidate.activeCell?.rowIndex === 0 &&
+      candidate.activeCell?.column === 1 &&
+      candidate.selectionAnchor === 10 &&
+      candidate.selectionHead > 10 &&
+      !candidate.nativeSelectionCollapsed &&
+      candidate.nativeSelectionInsideCell &&
+      candidate.sourceUnchanged,
+  );
+  const wrappedDownHead = result.selectionHead;
+  await dispatchTrustedEditingKey(client, { ...arrows.up, modifiers: 8 });
+  result = await state();
+  assertKeyboardNavigation(
+    "Shift+ArrowUp contracts the wrapped-cell selection",
+    result,
+    (candidate) =>
+      candidate.activeTableFrom === wrappedSetup.tableFrom &&
+      candidate.selectionAnchor === 10 &&
+      candidate.selectionHead < wrappedDownHead &&
+      candidate.nativeSelectionInsideCell &&
+      candidate.sourceUnchanged,
+  );
+  checkpoints.wrappedSelection = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 3, head: 3 });
+  await dispatchTrustedEditingKey(client, {
+    key: "Home",
+    code: "Home",
+    windowsVirtualKeyCode: 36,
+  });
+  result = await state();
+  assertCell("Home", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: 0,
+    head: 0,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedEditingKey(client, {
+    key: "End",
+    code: "End",
+    windowsVirtualKeyCode: 35,
+    modifiers: 8,
+  });
+  result = await state();
+  assertCell("Shift+End", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: 2,
+    head: 5,
+    collapsed: false,
+    sourceUnchanged: true,
+  });
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedEditingKey(client, {
+    key: "End",
+    code: "End",
+    windowsVirtualKeyCode: 35,
+    modifiers: 4,
+  });
+  result = await state();
+  assertCell("Command+End", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: 5,
+    head: 5,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  checkpoints.homeEnd = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 5, head: 5 });
+  await dispatchTrustedEditingKey(client, arrows.right);
+  result = await state();
+  assertCell("ordinary ArrowRight enters the next cell at its start", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 1,
+    anchor: 0,
+    head: 0,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  checkpoints.ordinaryCellBoundary = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 4, head: 4 });
+  await heldArrowWalk("held ArrowRight", arrows.right, [
+    { rowKind: "body", rowIndex: 1, column: 0, head: 5 },
+    { rowKind: "body", rowIndex: 1, column: 1, head: 0 },
+    { rowKind: "body", rowIndex: 1, column: 1, head: 1 },
+  ]);
+  await heldArrowWalk("held ArrowLeft", arrows.left, [
+    { rowKind: "body", rowIndex: 1, column: 1, head: 0 },
+    { rowKind: "body", rowIndex: 1, column: 0, head: 5 },
+    { rowKind: "body", rowIndex: 1, column: 0, head: 4 },
+  ]);
+  checkpoints.heldCharacterWalk = true;
+
+  await setup({ rowKind: "body", rowIndex: 2, column: 1, anchor: 0, head: 0 });
+  await dispatchTrustedEditingKey(client, arrows.down);
+  await dispatchTrustedEditingKey(client, arrows.up);
+  const emptyCellShape = await evaluateJson(
+    client,
+    keyboardCellDomShapeExpression({
+      rowKind: "body",
+      rowIndex: 2,
+      column: 1,
+    }),
+  );
+  assertKeyboardNavigation(
+    "empty-cell caret measurement does not fragment DOM text nodes",
+    emptyCellShape,
+    (candidate) =>
+      candidate.text === "" &&
+      candidate.emptyTextNodes <= 1 &&
+      candidate.childNodes <= 2,
+  );
+  checkpoints.emptyCellDomStable = emptyCellShape.childNodes;
+
+  await setup({ rowKind: "header", rowIndex: 0, column: 0, anchor: 0, head: 0 });
+  await dispatchTrustedEditingKey(client, arrows.left);
+  result = await state();
+  assertKeyboardNavigation(
+    "ArrowLeft exits before the first table cell",
+    result,
+    (candidate) =>
+      candidate.editorFocused &&
+      !candidate.activeCell &&
+      candidate.editorAnchor === candidate.expectedBefore &&
+      candidate.editorHead === candidate.expectedBefore &&
+      candidate.sourceUnchanged,
+  );
+  checkpoints.beforeBoundary = result.editorHead;
+
+  await setup({ rowKind: "body", rowIndex: 3, column: 2, anchor: 4, head: 4 });
+  await dispatchTrustedEditingKey(client, arrows.right);
+  result = await state();
+  assertKeyboardNavigation(
+    "ArrowRight exits after the final table cell",
+    result,
+    (candidate) =>
+      candidate.editorFocused &&
+      !candidate.activeCell &&
+      candidate.editorAnchor === candidate.expectedAfter &&
+      candidate.editorHead === candidate.expectedAfter &&
+      candidate.sourceUnchanged,
+  );
+  checkpoints.afterBoundary = result.editorHead;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f2);
+  try {
+    await dispatchTrustedKey(client, arrows.right);
+    result = await state();
+    assertCell("F2+ArrowRight", result, {
+      rowKind: "body",
+      rowIndex: 1,
+      column: 1,
+      anchor: result.activeCell?.text.length,
+      head: result.activeCell?.text.length,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+    await dispatchTrustedKey(client, arrows.down);
+    result = await state();
+    assertCell("held F2+ArrowDown", result, {
+      rowKind: "body",
+      rowIndex: 2,
+      column: 1,
+      anchor: 0,
+      head: 0,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+    await dispatchTrustedKey(client, arrows.left);
+    result = await state();
+    assertCell("held F2+ArrowLeft", result, {
+      rowKind: "body",
+      rowIndex: 2,
+      column: 0,
+      anchor: 0,
+      head: 0,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+    await dispatchTrustedKey(client, arrows.up);
+    result = await state();
+    assertCell("held F2+ArrowUp", result, {
+      rowKind: "body",
+      rowIndex: 1,
+      column: 0,
+      anchor: 5,
+      head: 5,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+  } finally {
+    await dispatchTrustedKeyUp(client, f2);
+  }
+  checkpoints.defaultChord = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f2);
+  try {
+    for (const [index, column] of [1, 2, 2].entries()) {
+      await dispatchTrustedKeyDown(client, {
+        ...arrows.right,
+        autoRepeat: index > 0,
+      });
+      result = await state();
+      assertKeyboardNavigation(`held F2+Right ${index + 1}`, result, (candidate) =>
+        candidate.activeCell?.rowKind === "body" &&
+        candidate.activeCell?.rowIndex === 1 &&
+        candidate.activeCell?.column === column &&
+        candidate.selectionAnchor === candidate.activeCell.text.length &&
+        candidate.selectionHead === candidate.activeCell.text.length &&
+        candidate.nativeSelectionCollapsed &&
+        candidate.nativeSelectionInsideCell &&
+        candidate.sourceUnchanged
+      );
+    }
+    await dispatchTrustedKeyUp(client, arrows.right);
+    result = await state();
+    assertCell("direct Right keyup preserves edge no-op", result, {
+      rowKind: "body", rowIndex: 1, column: 2, anchor: 0, head: 0,
+      collapsed: true, inside: true, sourceUnchanged: true,
+    });
+  } finally {
+    await dispatchTrustedKeyUp(client, f2);
+  }
+  result = await state();
+  assertCell("F2 keyup preserves direct-navigation destination", result, {
+    rowKind: "body", rowIndex: 1, column: 2, anchor: 0, head: 0,
+    collapsed: true, inside: true, sourceUnchanged: true,
+  });
+  checkpoints.directRepeat = true;
+
+  // Real keyboard chords do not guarantee that keys are released in the same
+  // order they were pressed. After the direct-navigation modifier is released,
+  // ordinary character navigation must take effect immediately even if the
+  // original arrow key has not emitted keyup yet.
+  await setup({ rowKind: "body", rowIndex: 1, column: 1, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f2);
+  await dispatchTrustedKeyDown(client, arrows.left);
+  await dispatchTrustedKeyUp(client, f2);
+  await dispatchTrustedKeyDown(client, { ...arrows.left, autoRepeat: true });
+  result = await state();
+  const rolloverExpectedHead = Math.max(0, result.activeCell.text.length - 1);
+  assertCell("repeated ArrowLeft after releasing F2", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: rolloverExpectedHead,
+    head: rolloverExpectedHead,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  await dispatchTrustedKeyUp(client, arrows.left);
+  result = await state();
+  assertCell("late direct-arrow keyup preserves newer caret movement", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: rolloverExpectedHead,
+    head: rolloverExpectedHead,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  checkpoints.chordRollover = rolloverExpectedHead;
+
+  await setup({ rowKind: "header", rowIndex: 0, column: 0, anchor: 0, head: 2 });
+  await dispatchTrustedKeyDown(client, f2);
+  try {
+    await dispatchTrustedKey(client, arrows.left);
+    result = await state();
+    assertCell("F2+ArrowLeft grid-edge no-op", result, {
+      rowKind: "header",
+      rowIndex: 0,
+      column: 0,
+      anchor: 0,
+      head: 2,
+      collapsed: false,
+      sourceUnchanged: true,
+    });
+  } finally {
+    await dispatchTrustedKeyUp(client, f2);
+  }
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f2);
+  await dispatchTrustedKeyUp(client, f2);
+  await dispatchTrustedEditingKey(client, arrows.right);
+  result = await state();
+  assertCell("released F2 does not arm navigation", result, {
+    rowKind: "body",
+    rowIndex: 1,
+    column: 0,
+    anchor: 3,
+    head: 3,
+    collapsed: true,
+    sourceUnchanged: true,
+  });
+  const modifiedF2 = await evaluateJson(
+    client,
+    keyboardModifiedFunctionKeyExpression("F2"),
+  );
+  assertKeyboardNavigation(
+    "modified F2 remains available to standard shortcuts",
+    modifiedF2,
+    (candidate) => candidate.defaultAllowed && !candidate.defaultPrevented,
+  );
+  checkpoints.releaseAndModifiedKey = true;
+
+  const rebound = await evaluateJson(
+    client,
+    setKeyboardNavigationModifierExpression("F8"),
+  );
+  assertKeyboardNavigation(
+    "runtime F8 configuration",
+    rebound,
+    (candidate) => candidate.requestedKey === "F8",
+  );
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f8);
+  try {
+    await dispatchTrustedKey(client, arrows.right);
+    result = await state();
+    assertCell("runtime F8+ArrowRight", result, {
+      rowKind: "body",
+      rowIndex: 1,
+      column: 1,
+      anchor: result.activeCell?.text.length,
+      head: result.activeCell?.text.length,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+  } finally {
+    await dispatchTrustedKeyUp(client, f8);
+  }
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f2);
+  try {
+    await dispatchTrustedKey(client, arrows.right);
+    result = await state();
+    assertCell("old F2 is inactive after rebinding", result, {
+      rowKind: "body",
+      rowIndex: 1,
+      column: 0,
+      anchor: 3,
+      head: 3,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+  } finally {
+    await dispatchTrustedKeyUp(client, f2);
+  }
+  checkpoints.runtimeConfiguration = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f8);
+  try {
+    const blurResult = await evaluateJson(
+      client,
+      clearKeyboardNavigationOnFocusLossExpression(),
+    );
+    assertKeyboardNavigation(
+      "page lifecycle loss clears the held-key tracker",
+      blurResult,
+      (candidate) => candidate.focusLossDispatched,
+    );
+    await dispatchTrustedEditingKey(client, arrows.right);
+    result = await state();
+    assertCell("blurred F8 is no longer held", result, {
+      rowKind: "body",
+      rowIndex: 1,
+      column: 0,
+      anchor: 3,
+      head: 3,
+      collapsed: true,
+      sourceUnchanged: true,
+    });
+  } finally {
+    await dispatchTrustedKeyUp(client, f8);
+  }
+  const composing = await evaluateJson(
+    client,
+    keyboardComposingArrowExpression(),
+  );
+  assertKeyboardNavigation(
+    "IME composition arrows remain native",
+    composing,
+    (candidate) =>
+      candidate.isComposing &&
+      candidate.defaultAllowed &&
+      !candidate.defaultPrevented,
+  );
+  checkpoints.stuckKeyAndIme = true;
+
+  await setup({ rowKind: "body", rowIndex: 1, column: 0, anchor: 2, head: 2 });
+  await dispatchTrustedKeyDown(client, f8);
+  try {
+    await dispatchTrustedKeyDown(client, arrows.right);
+    await client.send("Input.insertText", { text: "!" });
+    await dispatchTrustedKeyUp(client, arrows.right);
+  } finally {
+    await dispatchTrustedKeyUp(client, f8);
+  }
+  await sleep(250);
+  result = await state();
+  assertKeyboardNavigation(
+    "typing immediately after F8+ArrowRight",
+    result,
+    (candidate) =>
+      candidate.activeCell?.rowKind === "body" &&
+      candidate.activeCell?.rowIndex === 1 &&
+      candidate.activeCell?.column === 1 &&
+      candidate.activeCell?.text.endsWith("!") &&
+      candidate.selectionHead === candidate.activeCell.text.length &&
+      candidate.nativeSelectionCollapsed &&
+      !candidate.sourceUnchanged &&
+      candidate.tableSource.includes("short cell. This is resizing the cell now!") &&
+      candidate.tableSource.includes("| Short |"),
+  );
+  checkpoints.immediateTyping = result.activeCell.text.slice(-8);
+
+  const unicodeText = "A😀B e\u0301 👩‍💻 🇺🇸 Z";
+  const unicodeBoundaries = [
+    ...new Set([
+      ...Array.from(
+        new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+          unicodeText,
+        ),
+        (segment) => segment.index,
+      ),
+      unicodeText.length,
+    ]),
+  ];
+  const unicodeFixture = await evaluateJson(
+    client,
+    keyboardUnicodeFixtureExpression(unicodeText),
+  );
+  assertKeyboardNavigation(
+    "Unicode keyboard fixture",
+    unicodeFixture,
+    (candidate) => candidate.cellText === unicodeText,
+  );
+  await setup(
+    {
+      tableIndex: 0,
+      rowKind: "body",
+      rowIndex: 0,
+      column: 0,
+      anchor: 0,
+      head: 0,
+    },
+    true,
+  );
+  for (const boundary of unicodeBoundaries.slice(1)) {
+    await dispatchTrustedKey(client, arrows.right);
+    result = await state();
+    assertCell(`Unicode ArrowRight boundary ${boundary}`, result, {
+      rowKind: "body",
+      rowIndex: 0,
+      column: 0,
+      anchor: boundary,
+      head: boundary,
+      collapsed: true,
+      text: unicodeText,
+      sourceUnchanged: true,
+    });
+  }
+  for (const boundary of unicodeBoundaries.slice(0, -1).reverse()) {
+    await dispatchTrustedKey(client, arrows.left);
+    result = await state();
+    assertCell(`Unicode ArrowLeft boundary ${boundary}`, result, {
+      rowKind: "body",
+      rowIndex: 0,
+      column: 0,
+      anchor: boundary,
+      head: boundary,
+      collapsed: true,
+      text: unicodeText,
+      sourceUnchanged: true,
+    });
+  }
+  for (let index = 0; index + 1 < unicodeBoundaries.length; index += 1) {
+    const from = unicodeBoundaries[index];
+    const to = unicodeBoundaries[index + 1];
+    await setup({
+      tableIndex: 0,
+      rowKind: "body",
+      rowIndex: 0,
+      column: 0,
+      anchor: from,
+      head: from,
+    });
+    await dispatchTrustedKey(client, { ...arrows.right, modifiers: 8 });
+    result = await state();
+    assertCell(`Unicode Shift+ArrowRight ${from}-${to}`, result, {
+      rowKind: "body",
+      rowIndex: 0,
+      column: 0,
+      anchor: from,
+      head: to,
+      collapsed: false,
+      text: unicodeText,
+      sourceUnchanged: true,
+    });
+    assertKeyboardNavigation(
+      `Unicode selected grapheme ${from}-${to}`,
+      result,
+      (candidate) =>
+        candidate.nativeSelectionInsideCell &&
+        candidate.selectedText === unicodeText.slice(from, to),
+    );
+  }
+  checkpoints.unicodeGraphemeWalk = unicodeBoundaries.length - 1;
+
+  const unicodeRestored = await evaluateJson(
+    client,
+    restoreKeyboardUnicodeFixtureExpression(),
+  );
+  assertKeyboardNavigation(
+    "restore document after Unicode traversal",
+    unicodeRestored,
+    (candidate) => candidate.restored,
+  );
+
+  console.log("TRUSTED KEYBOARD NAVIGATION CHECK:", checkpoints);
+}
+
+function assertKeyboardNavigation(label, result, predicate) {
+  if (!result?.ok || !predicate(result)) {
+    throw new Error(
+      `${label} failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function keyboardNavigationSetupExpression(target, captureBaseline = false) {
+  const targetJson = JSON.stringify(target);
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const wrappers = root ? Array.from(root.querySelectorAll('.mlrt-table-widget')) : [];
+    const target = ${targetJson};
+    const wrapper = wrappers[target.tableIndex ?? 1];
+    if (!root || !view || !wrapper) {
+      return JSON.stringify({ ok: false, reason: 'missing keyboard fixture' });
+    }
+    const selector = target.rowKind === 'header'
+      ? '.mlrt-table-cell[data-row-kind="header"][data-column="' + target.column + '"]'
+      : '.mlrt-table-cell[data-row-kind="body"][data-row-index="' + target.rowIndex + '"][data-column="' + target.column + '"]';
+    const cell = wrapper.querySelector(selector);
+    if (!cell) {
+      return JSON.stringify({ ok: false, reason: 'missing target cell', selector });
+    }
+    const textLength = (cell.textContent ?? '').length;
+    const positionAt = (offset) => {
+      const walker = root.createTreeWalker(cell, root.defaultView.NodeFilter.SHOW_TEXT);
+      let remaining = Math.max(0, Math.min(textLength, offset));
+      let last = null;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        last = node;
+        const length = node.textContent?.length ?? 0;
+        if (remaining <= length) return { node, offset: remaining };
+        remaining -= length;
+      }
+      return last
+        ? { node: last, offset: last.textContent?.length ?? 0 }
+        : { node: cell, offset: 0 };
+    };
+    const anchor = Math.max(0, Math.min(textLength, target.anchor));
+    const head = Math.max(0, Math.min(textLength, target.head));
+    const anchorPoint = positionAt(anchor);
+    const headPoint = positionAt(head);
+    wrapper.scrollIntoView({ block: 'center', inline: 'nearest' });
+    cell.focus({ preventScroll: true });
+    const selection = root.defaultView.getSelection();
+    if (typeof selection?.setBaseAndExtent === 'function') {
+      selection.setBaseAndExtent(
+        anchorPoint.node,
+        anchorPoint.offset,
+        headPoint.node,
+        headPoint.offset,
+      );
+    } else if (selection) {
+      const range = root.createRange();
+      range.setStart(anchorPoint.node, anchorPoint.offset);
+      range.setEnd(headPoint.node, headPoint.offset);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    if (${captureBaseline ? "true" : "false"} || !root.defaultView.__MLRT_KEYBOARD_NAV_STATE__) {
+      const source = view.state.doc.toString();
+      const tableFrom = Number(wrapper.dataset.srcFrom);
+      const tableTo = Number(wrapper.dataset.srcTo);
+      root.defaultView.__MLRT_KEYBOARD_NAV_STATE__ = {
+        source,
+        tableFrom,
+        tableTo,
+        expectedBefore: Math.max(0, tableFrom - 1),
+        expectedAfter: source.slice(tableTo, tableTo + 1) === '\\n'
+          ? tableTo + 1
+          : tableTo,
+      };
+    }
+    return JSON.stringify({
+      ok: true,
+      cellText: cell.textContent ?? '',
+      cellTextLength: textLength,
+      tableFrom: Number(wrapper.dataset.srcFrom),
+      anchor,
+      head,
+    });
+  })()`;
+}
+
+function keyboardNavigationStateExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const baseline = root?.defaultView.__MLRT_KEYBOARD_NAV_STATE__;
+    if (!root || !view || !baseline) {
+      return JSON.stringify({ ok: false, reason: 'missing keyboard state' });
+    }
+    const wrapper = Array.from(root.querySelectorAll('.mlrt-table-widget')).find(
+      (candidate) => Number(candidate.dataset.srcFrom) === baseline.tableFrom,
+    );
+    const active = root.activeElement;
+    const activeCell = active instanceof root.defaultView.HTMLElement &&
+      active.classList.contains('mlrt-table-cell')
+      ? active
+      : null;
+    const selection = root.defaultView.getSelection();
+    const nodeInside = (node, cell) => node === cell || Boolean(node && cell?.contains(node));
+    const offsetAt = (cell, node, offset) => {
+      if (!cell || !nodeInside(node, cell)) return null;
+      try {
+        const range = root.createRange();
+        range.selectNodeContents(cell);
+        range.setEnd(node, offset);
+        return range.toString().replace(/\\u00a0/g, ' ').length;
+      } catch {
+        return null;
+      }
+    };
+    const selectionAnchor = activeCell
+      ? offsetAt(activeCell, selection?.anchorNode, selection?.anchorOffset ?? 0)
+      : null;
+    const selectionHead = activeCell
+      ? offsetAt(activeCell, selection?.focusNode, selection?.focusOffset ?? 0)
+      : null;
+    const source = view.state.doc.toString();
+    const tableTo = Number(wrapper?.dataset.srcTo ?? baseline.tableTo);
+    return JSON.stringify({
+      ok: true,
+      activeCell: activeCell ? {
+        rowKind: activeCell.dataset.rowKind,
+        rowIndex: Number(activeCell.dataset.rowIndex ?? '0'),
+        column: Number(activeCell.dataset.column ?? '0'),
+        text: activeCell.textContent ?? '',
+      } : null,
+      activeTableFrom: Number(activeCell?.closest('.mlrt-table-widget')?.dataset.srcFrom ?? NaN),
+      activeClassName: active?.className ?? null,
+      selectionAnchor,
+      selectionHead,
+      selectedText: selection?.toString().replace(/\\u00a0/g, ' ') ?? '',
+      nativeSelectionCollapsed: selection?.isCollapsed ?? null,
+      nativeSelectionInsideCell: Boolean(
+        activeCell &&
+        nodeInside(selection?.anchorNode, activeCell) &&
+        nodeInside(selection?.focusNode, activeCell)
+      ),
+      tableSelectedCells: root.querySelectorAll('.mlrt-table-cell-selected').length,
+      documentSelectedCells: root.querySelectorAll('.mlrt-document-selected-cell').length,
+      editorFocused: view.hasFocus,
+      documentHasFocus: root.hasFocus(),
+      editorAnchor: view.state.selection.main.anchor,
+      editorHead: view.state.selection.main.head,
+      expectedBefore: baseline.expectedBefore,
+      expectedAfter: baseline.expectedAfter,
+      sourceUnchanged: source === baseline.source,
+      tableSource: wrapper ? source.slice(baseline.tableFrom, tableTo) : '',
+      documentLength: source.length,
+    });
+  })()`;
+}
+
+function keyboardCellDomShapeExpression(target) {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const wrapper = root?.querySelectorAll('.mlrt-table-widget')?.[1];
+    const target = ${JSON.stringify(target)};
+    const selector = '.mlrt-table-cell[data-row-kind="' + target.rowKind + '"]' +
+      '[data-row-index="' + target.rowIndex + '"]' +
+      '[data-column="' + target.column + '"]';
+    const cell = wrapper?.querySelector(selector);
+    if (!root || !cell) {
+      return JSON.stringify({ ok: false, reason: 'missing DOM-shape cell' });
+    }
+    return JSON.stringify({
+      ok: true,
+      text: cell.textContent ?? '',
+      childNodes: cell.childNodes.length,
+      emptyTextNodes: Array.from(cell.childNodes).filter(
+        (node) => node.nodeType === root.defaultView.Node.TEXT_NODE &&
+          (node.textContent ?? '').length === 0,
+      ).length,
+      nodeTypes: Array.from(cell.childNodes).map((node) => node.nodeName),
+    });
+  })()`;
+}
+
+function keyboardUnicodeFixtureExpression(unicodeText) {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) {
+      return JSON.stringify({ ok: false, reason: 'missing live editor' });
+    }
+    const unicodeText = ${JSON.stringify(unicodeText)};
+    const fixture = [
+      '| Unicode | Neighbor |',
+      '| --- | --- |',
+      '| ' + unicodeText + ' | next |',
+      '',
+    ].join('\\n');
+    root.defaultView.__MLRT_KEYBOARD_UNICODE_RESTORE__ = view.state.doc.toString();
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text: fixture, revision: 999841, debug: false },
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    const cell = root.querySelector(
+      '.mlrt-table-cell[data-row-kind="body"][data-row-index="0"][data-column="0"]'
+    );
+    return JSON.stringify({
+      ok: Boolean(cell),
+      cellText: cell?.textContent ?? null,
+    });
+  })()`;
+}
+
+function restoreKeyboardUnicodeFixtureExpression() {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    const text = root?.defaultView.__MLRT_KEYBOARD_UNICODE_RESTORE__;
+    if (!root || !view || typeof text !== 'string') {
+      return JSON.stringify({ ok: false, reason: 'missing Unicode restore state' });
+    }
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: { type: 'setDocument', text, revision: 999842, debug: false },
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    delete root.defaultView.__MLRT_KEYBOARD_UNICODE_RESTORE__;
+    return JSON.stringify({ ok: true, restored: view.state.doc.toString() === text });
+  })()`;
+}
+
+function setKeyboardNavigationModifierExpression(key) {
+  return `(async () => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const view = root?.defaultView.__MLRT_EDITOR_VIEW__;
+    if (!root || !view) {
+      return JSON.stringify({ ok: false, reason: 'missing live editor' });
+    }
+    root.defaultView.dispatchEvent(new root.defaultView.MessageEvent('message', {
+      data: {
+        type: 'setEditorOptions',
+        editorOptions: {
+          lineWrapping: view.contentDOM.classList.contains('cm-lineWrapping'),
+          scrollBeyondLastLine: true,
+          clipboardDocumentToken: root.documentElement.dataset.mlrtDocumentToken || 'keyboard-navigation-qa',
+          defaultCopyMode: root.documentElement.dataset.mlrtDefaultCopyMode || 'smart',
+          defaultPasteMode: root.documentElement.dataset.mlrtDefaultPasteMode || 'auto',
+          tableNavigationModifierKey: ${JSON.stringify(key)},
+        },
+      },
+    }));
+    await new Promise((done) => root.defaultView.requestAnimationFrame(() =>
+      root.defaultView.requestAnimationFrame(done)
+    ));
+    return JSON.stringify({ ok: true, requestedKey: ${JSON.stringify(key)} });
+  })()`;
+}
+
+function clearKeyboardNavigationOnFocusLossExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    if (!root) return JSON.stringify({ ok: false, reason: 'missing live root' });
+    root.defaultView.dispatchEvent(new root.defaultView.PageTransitionEvent('pagehide'));
+    return JSON.stringify({ ok: true, focusLossDispatched: true });
+  })()`;
+}
+
+function keyboardComposingArrowExpression() {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const cell = root?.activeElement;
+    if (!root || !(cell instanceof root.defaultView.HTMLElement) ||
+        !cell.classList.contains('mlrt-table-cell')) {
+      return JSON.stringify({ ok: false, reason: 'missing active cell' });
+    }
+    const event = new root.defaultView.KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+    const defaultAllowed = cell.dispatchEvent(event);
+    return JSON.stringify({
+      ok: true,
+      isComposing: event.isComposing,
+      defaultAllowed,
+      defaultPrevented: event.defaultPrevented,
+    });
+  })()`;
+}
+
+function keyboardModifiedFunctionKeyExpression(key) {
+  return `(() => {
+    const roots = [document, ...Array.from(document.querySelectorAll('iframe')).map((frame) => {
+      try { return frame.contentDocument; } catch { return null; }
+    }).filter(Boolean)];
+    const root = roots.find((candidate) => candidate.defaultView?.__MLRT_EDITOR_VIEW__);
+    const cell = root?.activeElement;
+    if (!root || !(cell instanceof root.defaultView.HTMLElement) ||
+        !cell.classList.contains('mlrt-table-cell')) {
+      return JSON.stringify({ ok: false, reason: 'missing active cell' });
+    }
+    const event = new root.defaultView.KeyboardEvent('keydown', {
+      key: ${JSON.stringify(key)},
+      code: ${JSON.stringify(key)},
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const defaultAllowed = cell.dispatchEvent(event);
+    return JSON.stringify({
+      ok: true,
+      defaultAllowed,
+      defaultPrevented: event.defaultPrevented,
+    });
+  })()`;
+}
+
 async function runTrustedTableEditingReliabilityCheck(client) {
   const afterSetup = await evaluateJson(
     client,
@@ -9751,22 +12244,34 @@ async function runTrustedTableEditingReliabilityCheck(client) {
 }
 
 async function dispatchTrustedEditingKey(client, options) {
-  const modifiers = options.modifiers ?? 0;
+  await dispatchTrustedKey(client, options);
+  await sleep(180);
+}
+
+async function dispatchTrustedKey(client, options) {
+  await dispatchTrustedKeyDown(client, options);
+  await dispatchTrustedKeyUp(client, options);
+}
+
+async function dispatchTrustedKeyDown(client, options) {
   await client.send("Input.dispatchKeyEvent", {
     type: "keyDown",
-    modifiers,
+    autoRepeat: options.autoRepeat ?? false,
+    modifiers: options.modifiers ?? 0,
     key: options.key,
     code: options.code,
     windowsVirtualKeyCode: options.windowsVirtualKeyCode,
   });
+}
+
+async function dispatchTrustedKeyUp(client, options) {
   await client.send("Input.dispatchKeyEvent", {
     type: "keyUp",
-    modifiers,
+    modifiers: options.modifiers ?? 0,
     key: options.key,
     code: options.code,
     windowsVirtualKeyCode: options.windowsVirtualKeyCode,
   });
-  await sleep(180);
 }
 
 function assertReliabilitySetup(label, result) {
@@ -10544,8 +13049,9 @@ function assertAdjacentProseSurfaceSelection(surface, setup, result) {
     !result.nativeSelectionInsideEditor ||
     !selectionColorIsTransparent(result.nativeTableSelectionBackground) ||
     !result.copyPrevented ||
-    !result.copiedPlain.includes("Key\tValue") ||
-    !result.copiedPlain.includes("Long\tThis is a very long cell") ||
+    result.copiedPlain.includes("\t") ||
+    !result.copiedPlain.includes("| Key | Value |") ||
+    !result.copiedPlain.includes("| Long | This is a very long cell") ||
     !result.copiedHtmlHasTable
   ) {
     throw new Error(
@@ -10949,7 +13455,8 @@ function assertPartialMixedSelectionCopy(result) {
     !result.markdown.includes("Short") ||
     !result.markdown.includes("short cell.") ||
     !result.plainHasSelectedShort ||
-    !result.plainHasTabs ||
+    result.plainHasTabs ||
+    !result.plainHasPipes ||
     !result.htmlHasTable ||
     !result.excludesUnselectedTest ||
     !result.excludesUnselectedThirdColumn ||
@@ -11221,17 +13728,40 @@ function assertTableRichCopyFallback(result) {
     result.writeCalls !== 1 ||
     !result.types.includes('text/plain') ||
     !result.types.includes('text/html') ||
+    !result.optionalFormatsExcluded ||
     !result.htmlHasTable ||
     !result.htmlHasRichFormatting ||
     !result.mixedLinkLabelPreserved ||
     !result.mixedLinkIsInline ||
     !result.mixedLinkTargetPreserved ||
     !result.htmlHasAnchor ||
-    !result.plainHasTabs ||
+    result.plainHasTabs ||
+    !result.plainHasPipes ||
     result.status !== 'Copied as Rich.'
   ) {
     throw new Error(
       `Table rich copy fallback check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableMenuCopyCarrier(result) {
+  if (
+    !result?.ok ||
+    result.selectedBefore !== 2 ||
+    result.selectedAfter !== 2 ||
+    !result.carrierSelected ||
+    !result.carrierRemoved ||
+    !result.focusRestored ||
+    !result.eventPrevented ||
+    !result.carrierMatchesPlain ||
+    !result.plainHasPipeTable ||
+    !result.htmlHasTable ||
+    !result.hasPrivateData ||
+    result.status !== 'Copied as Smart.'
+  ) {
+    throw new Error(
+      `Table menu copy carrier check failed: ${JSON.stringify(result)}`,
     );
   }
 }
@@ -11257,7 +13787,8 @@ function assertDocumentClipboard(result) {
     !result.richPreservesLinkLabel ||
     !result.richUsesInlineLink ||
     !result.richPreservesMixedLinkTarget ||
-    result.smartLeakedPipeTable ||
+    !result.smartPlainHasPipeTable ||
+    !result.richPlainHasPipeTable ||
     result.privateKind !== 'document' ||
     !result.markdownHasPipeTable ||
     !result.cutDeferred ||
@@ -11266,7 +13797,11 @@ function assertDocumentClipboard(result) {
     !result.importedHeading ||
     !result.importedList ||
     !result.importedTable ||
+    !result.importedSpecialSourcePreserved ||
+    !result.importedSpecialVisiblePreserved ||
     !result.excelRoundTripNoRawHtml ||
+    result.trailingBlankParagraphCount !== 1 ||
+    !result.trailingTableHasNoExtraParagraph ||
     !result.restoredDoc
   ) {
     throw new Error(
@@ -11476,14 +14011,27 @@ function assertTableSourceProtection(result) {
 function assertTableArrowNavigation(result) {
   if (
     !result?.ok ||
+    !result.fromBeforeDownPrevented ||
     result.fromBeforeTableLine?.rowKind !== "header" ||
     result.fromBeforeTableLine?.column !== "0" ||
-    !result.fromBeforeTableLine?.selectionAtEnd ||
+    !result.fromBeforeTableLine?.selectionAtStart ||
+    !result.fromBeforeTableLine?.selectionOnFirstVisualLine ||
     result.fromAfterTableLine?.rowKind !== "body" ||
     result.fromAfterTableLine?.column !== "1" ||
-    !result.fromAfterTableLine?.selectionAtEnd ||
-    !result.insideDownAllowed ||
+    !result.fromAfterTableLine?.selectionOnLastVisualLine ||
+    !result.insideUpPrevented ||
+    !result.insideUpMovedOneVisualLine ||
+    !result.insideUpPreservedColumn ||
+    !result.stayedInCellAfterInsideUp ||
+    !result.insideDownPrevented ||
     !result.stayedInCellAfterInsideDown ||
+    !result.goalFirstDownPrevented ||
+    !result.goalSecondDownPrevented ||
+    !result.goalColumnPreserved ||
+    !result.goalOffsetsAreGraphemeBoundaries ||
+    !result.shortLineEdgeNavigationCorrect ||
+    !result.emojiWrapAffinityResolved ||
+    !result.emojiCaretIsGraphemeBoundary ||
     !result.exitDownPrevented ||
     result.afterDownGutterText !== result.expectedAfterDownGutterText ||
     result.afterDownSelectionHead !== result.afterDownLineStart ||
@@ -11491,6 +14039,151 @@ function assertTableArrowNavigation(result) {
   ) {
     throw new Error(
       `Table arrow navigation check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableCrossRowArrowRegression(result) {
+  if (
+    !result?.ok ||
+    result.sourceLine71Text !== "abcdefghijABCDEFGHIJ0123456789" ||
+    result.sourceLine72Text !== "x\nabcdefghijABCDEFGHIJ0123456789" ||
+    !result.downPrevented ||
+    result.afterDownSourceLine !== "72" ||
+    !result.downLandedAtShortLineEnd ||
+    !result.upPrevented ||
+    !result.stayedInLine72Cell ||
+    !result.upLandedAtShortLineEnd ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table cross-row arrow regression check failed: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+function assertTableExactFixtureArrowRegression(result) {
+  if (result?.captureOnly === "up-from-ul") {
+    const beforeLineTops = result.beforeUp?.lineTops ?? [];
+    const previousBox = result.afterUp?.previousBox;
+    const nextBox = result.afterUp?.nextBox;
+    const beforeLastLineTop = beforeLineTops.at(-1);
+    const precedingLineTop = beforeLineTops.at(-2);
+    const landedOnPrecedingLine =
+      Number.isFinite(precedingLineTop) &&
+      previousBox &&
+      Math.abs(previousBox.top - precedingLineTop) <= 1 &&
+      nextBox &&
+      Math.abs(nextBox.top - beforeLastLineTop) <= 1 &&
+      !result.afterUp?.hasVisualCaretAffinity &&
+      typeof result.afterUp?.nativeCaretColor === "string" &&
+      result.afterUp.nativeCaretColor !== "transparent" &&
+      result.afterUp.nativeCaretColor !== "rgba(0, 0, 0, 0)";
+    const secondUpTop = beforeLineTops.at(-3);
+    const secondUpStopsBeforeWrapSpace =
+      result.afterSecondUp?.beforeText?.endsWith("Level ") &&
+      result.afterSecondUp?.afterText?.startsWith("5<ul>") &&
+      !result.afterSecondUp?.hasVisualCaretAffinity &&
+      Math.abs(result.afterSecondUp?.previousBox?.top - secondUpTop) <= 1 &&
+      Math.abs(result.afterSecondUp?.nextBox?.top - precedingLineTop) <= 1;
+    const rightConsumesOnlyWrapSpace =
+      result.rightDefaultAllowed &&
+      result.afterRight?.offset === result.afterSecondUp?.offset + 1 &&
+      result.afterRight?.beforeText?.endsWith("Level 5") &&
+      result.afterRight?.afterText?.startsWith("<ul>");
+    const visualTop = (details) =>
+      details?.nextBox?.top ?? details?.previousBox?.top ?? Number.NaN;
+    const leftEdgeTop = beforeLineTops.at(-2);
+    const leftEdgeTrackedUpstream =
+      result.afterLeftToLineStart?.offset === result.afterRight?.offset &&
+      !result.afterLeftToLineStart?.hasVisualCaretAffinity &&
+      Math.abs(result.afterLeftToLineStart?.previousBox?.top - leftEdgeTop) <= 1 &&
+      Math.abs(result.afterLeftToLineStart?.nextBox?.top - leftEdgeTop) <= 1;
+    const downMovedOneVisualLine =
+      result.afterLeftThenDown?.offset !== result.afterLeftToLineStart?.offset &&
+      Math.abs(
+        visualTop(result.afterLeftThenDown) - beforeLineTops.at(-1),
+      ) <= 1;
+    const upMovedOneVisualLine =
+      result.afterLeftThenUp?.offset !== result.afterLeftToLineStart?.offset &&
+      Math.abs(
+        visualTop(result.afterLeftThenUp) - beforeLineTops.at(-3),
+      ) <= 1;
+    if (
+      result.ok &&
+      result.line71EndsWithUl &&
+      result.upPrevented &&
+      result.stayedInLine71Cell &&
+      result.beforeUp &&
+      result.afterUp &&
+      Number.isFinite(beforeLastLineTop) &&
+      landedOnPrecedingLine &&
+      result.secondUpPrevented &&
+      secondUpStopsBeforeWrapSpace &&
+      rightConsumesOnlyWrapSpace &&
+      leftEdgeTrackedUpstream &&
+      downMovedOneVisualLine &&
+      upMovedOneVisualLine &&
+      result.captureAfterSecondUp?.offset === result.afterSecondUp?.offset
+    ) {
+      return;
+    }
+    throw new Error(
+      `Table exact-fixture Up capture setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+  if (result?.captureOnly === "down-before-bold") {
+    if (
+      result.ok &&
+      result.line71EndsWithUl &&
+      result.line72ContainsBoldText &&
+      result.afterDown?.offset === 35 &&
+      result.afterDown?.afterText?.startsWith(" **bold text") &&
+      !result.afterDown?.hasVisualCaretAffinity &&
+      result.enteredLine72Cell
+    ) {
+      return;
+    }
+    throw new Error(
+      `Table exact-fixture capture setup failed: ${JSON.stringify(result)}`,
+    );
+  }
+  const upLineTops = result?.beforeUp?.lineTops ?? [];
+  const expectedUpTop = upLineTops.at(-2);
+  const upPreviousBox = result?.afterUp?.previousBox;
+  const upNextBox = result?.afterUp?.nextBox;
+  const upLandedOnPrecedingVisualLine =
+    Number.isFinite(expectedUpTop) &&
+    upPreviousBox &&
+    Math.abs(upPreviousBox.top - expectedUpTop) <= 1 &&
+    (!upNextBox || Math.abs(upNextBox.top - expectedUpTop) <= 1);
+  const downLineTops = result?.afterDown?.lineTops ?? [];
+  const expectedDownTop = downLineTops.at(0);
+  const downPreviousBox = result?.afterDown?.previousBox;
+  const downNextBox = result?.afterDown?.nextBox;
+  const downLandedOnFirstVisualLine =
+    Number.isFinite(expectedDownTop) &&
+    downPreviousBox &&
+    Math.abs(downPreviousBox.top - expectedDownTop) <= 1 &&
+    (!downNextBox || Math.abs(downNextBox.top - expectedDownTop) <= 1);
+  if (
+    !result?.ok ||
+    !result.line71EndsWithUl ||
+    !result.line72ContainsBoldText ||
+    !result.upPrevented ||
+    !result.stayedInLine71Cell ||
+    !result.downPrevented ||
+    !result.enteredLine72Cell ||
+    !result.beforeUp ||
+    !result.afterUp ||
+    !result.beforeDown ||
+    !result.afterDown ||
+    !upLandedOnPrecedingVisualLine ||
+    !downLandedOnFirstVisualLine ||
+    !result.restoredDoc
+  ) {
+    throw new Error(
+      `Table exact-fixture arrow regression check failed: ${JSON.stringify(result)}`,
     );
   }
 }
@@ -11523,6 +14216,23 @@ function assertTableEnterExit(result) {
       `Enter exit check failed: expected line directly below table, got ${JSON.stringify(
         result,
       )}`,
+    );
+  }
+}
+
+function assertTableOnlyEnterExit(result) {
+  if (
+    !result?.ok ||
+    !result.insertedSingleBoundaryNewline ||
+    !result.selectionAtDocumentEnd ||
+    !result.selectionOnBlankLine ||
+    !result.editorFocused ||
+    !result.caretVisible ||
+    !result.restoredDoc ||
+    !result.restoredSourceLinesMatch
+  ) {
+    throw new Error(
+      `Table-only Enter exit check failed: ${JSON.stringify(result)}`,
     );
   }
 }

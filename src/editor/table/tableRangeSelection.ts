@@ -16,7 +16,6 @@ import {
 import {
   getParsedTables,
   ParsedTable,
-  positionAfterTable,
   positionBeforeTable,
 } from "../../shared/tableModel";
 import {
@@ -30,6 +29,7 @@ import {
   TABLE_CELL_SELECTOR,
 } from "./cellSelection";
 import { getPendingClipboardCut } from "../clipboardCutState";
+import { selectVisibleTableBoundary } from "../tableBoundaryInput";
 import { syncTableSelectionOverlay } from "./tableSelectionOverlay";
 import { getTableWidgetTable } from "./tableWidgetState";
 
@@ -783,6 +783,16 @@ export function bindTableRangeSelection(
     if (event.button !== 0) {
       return;
     }
+    // Clipboard menus live under document.body rather than inside the table
+    // wrapper. Their actions still operate on the table rectangle, so a real
+    // left-button press on a menu item must not clear that rectangle before
+    // the subsequent click callback serializes it.
+    if (
+      event.target instanceof Element &&
+      event.target.closest(".mlrt-clipboard-menu")
+    ) {
+      return;
+    }
     const selection = getTableRangeSelection(wrapper.ownerDocument);
     if (
       selection?.wrapper === wrapper &&
@@ -899,15 +909,11 @@ export function bindTableRangeSelection(
         } else {
           clearTableRangeSelection(wrapper.ownerDocument);
           view.focus();
-          view.dispatch({
-            selection: EditorSelection.cursor(
-              event.shiftKey
-                ? positionBeforeTable(latestTable)
-                : positionAfterTable(view.state.doc, latestTable),
-              event.shiftKey ? -1 : 1,
-            ),
-            scrollIntoView: true,
-          });
+          selectVisibleTableBoundary(
+            view,
+            latestTable,
+            event.shiftKey ? "before" : "after",
+          );
         }
         return;
       }
@@ -917,18 +923,13 @@ export function bindTableRangeSelection(
           (event.key === "ArrowDown" &&
             selection.head.row === latestTable.body.length))
       ) {
-        const selectionAnchor =
-          event.key === "ArrowUp"
-            ? positionBeforeTable(latestTable)
-            : view.state.doc.lineAt(
-                positionAfterTable(view.state.doc, latestTable),
-              ).to;
         clearTableRangeSelection(wrapper.ownerDocument);
         view.focus();
-        view.dispatch({
-          selection: EditorSelection.cursor(selectionAnchor, 1),
-          scrollIntoView: true,
-        });
+        selectVisibleTableBoundary(
+          view,
+          latestTable,
+          event.key === "ArrowUp" ? "before" : "after",
+        );
         return;
       }
       const delta = keyDelta(event);
@@ -1658,9 +1659,18 @@ function tabDestination(
 }
 
 function isSelectAll(event: KeyboardEvent): boolean {
+  const ownerDocument = event.target instanceof Node
+    ? event.target.ownerDocument
+    : null;
+  const platform = ownerDocument?.defaultView?.navigator.platform ?? "";
+  const isApplePlatform = /Mac|iPhone|iPad|iPod/i.test(platform);
+  const primaryModifier = isApplePlatform
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
   return (
-    (event.metaKey || event.ctrlKey) &&
+    primaryModifier &&
     !event.altKey &&
+    !event.shiftKey &&
     event.key.toLowerCase() === "a"
   );
 }
