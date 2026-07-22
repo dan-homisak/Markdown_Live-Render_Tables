@@ -1,7 +1,6 @@
 /**
- * Rich table cells need a deliberately small HTML surface. Semantic list tags
- * are accepted as input, then either flattened for spreadsheet-safe HTML or
- * retained while building Rich Copy's native Word/RTF companion.
+ * Rich table cells need a deliberately small HTML surface. Rich Copy retains
+ * semantic lists for Word; Smart Copy flattens them for spreadsheet cells.
  */
 export const OFFICE_RICH_CELL_ALLOWED_TAGS = [
   "a",
@@ -33,23 +32,10 @@ export const OFFICE_RICH_CELL_ALLOWED_ATTR = [
 const SMART_UNORDERED_MARKERS = ["•", "◦", "▪"];
 
 /**
- * Rewrites supported rich HTML into inline formatting shared by Word and
- * Excel. Lists become inline spans separated by same-cell line breaks; no
- * block elements remain for Excel to reinterpret as rows or columns.
+ * Keeps semantic list elements while applying explicit per-level geometry so
+ * Word imports them as real nested lists.
  */
 export function officeCompatibleRichHtml(html: string): string {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  normalizeRichInlineFormatting(parsed);
-  flattenRichLists(parsed);
-  return parsed.body.innerHTML;
-}
-
-/**
- * Keeps semantic list elements while applying explicit per-level geometry for
- * Rich Copy's native Word/RTF companion. Excel never receives this block-list
- * HTML representation.
- */
-export function officeCompatibleWordHtml(html: string): string {
   const parsed = new DOMParser().parseFromString(html, "text/html");
   normalizeRichInlineFormatting(parsed);
   parsed.body.querySelectorAll<HTMLElement>("ul, ol").forEach((list) => {
@@ -90,55 +76,6 @@ function normalizeRichInlineFormatting(parsed: Document): void {
   parsed.body.querySelectorAll("br").forEach((br) =>
     br.setAttribute("style", "mso-data-placement:same-cell"),
   );
-}
-
-function flattenRichLists(parsed: Document): void {
-  const roots = Array.from(parsed.body.querySelectorAll<HTMLElement>("ul, ol"))
-    .filter((list) => !list.parentElement?.closest("ul, ol"));
-  for (const root of roots) {
-    const nodes: Node[] = [];
-    appendRichListNodes(root, nodes, 0, parsed);
-    root.replaceWith(...nodes);
-  }
-}
-
-function appendRichListNodes(
-  list: HTMLElement,
-  nodes: Node[],
-  depth: number,
-  parsed: Document,
-): void {
-  const ordered = list.tagName === "OL";
-  const items = listItems(list);
-  const reversed = ordered && list.hasAttribute("reversed");
-  let value = listStart(list, items.length, reversed);
-  const step = reversed ? -1 : 1;
-  for (const item of items) {
-    value = explicitItemValue(item, value, ordered);
-    if (nodes.length > 0) {
-      const br = parsed.createElement("br");
-      br.setAttribute("style", "mso-data-placement:same-cell");
-      nodes.push(br);
-    }
-    const content = item.cloneNode(true) as HTMLElement;
-    content.querySelectorAll(":scope > ul, :scope > ol").forEach((nested) => nested.remove());
-    const line = parsed.createElement("span");
-    line.setAttribute("style", "white-space:pre-wrap");
-    const marker = ordered
-      ? smartOrderedMarker(value, list.getAttribute("type"))
-      : SMART_UNORDERED_MARKERS[depth % SMART_UNORDERED_MARKERS.length];
-    line.append(
-      parsed.createTextNode(`${"\u00a0".repeat(depth * 4)}${marker} `),
-      ...Array.from(content.childNodes),
-    );
-    nodes.push(line);
-    for (const nested of Array.from(item.children)) {
-      if (nested instanceof HTMLElement && isList(nested)) {
-        appendRichListNodes(nested, nodes, depth + 1, parsed);
-      }
-    }
-    value += step;
-  }
 }
 
 function listDepth(list: HTMLElement): number {

@@ -33,7 +33,7 @@ Ordinary arrow keys navigate characters and visual lines normally, crossing into
 
 Press `Escape` while editing to select the current cell. From there, use the arrow keys to move the selection or hold `Shift` to extend it. Range selections can also be created by dragging or by shift-clicking another cell.
 
-The editor provides several clipboard formats for moving content between Markdown, spreadsheets, and rich-text tools. Smart copy is the default and automatically supplies appropriate Markdown, HTML, plain-text, and lossless internal representations. **Copy Rich** publishes native RTF for desktop Office: Word receives true nested-list metadata, while the surrounding RTF table keeps each source cell—including all of its list levels—inside one Excel cell. Dedicated **Copy Plain Text** and **Copy Markdown** actions are also available from the context menu.
+The editor provides several clipboard formats for moving content between Markdown, spreadsheets, and rich-text tools. Smart copy is the default and keeps list content inside spreadsheet cells using portable inline markers and same-cell line breaks. **Copy Rich** preserves semantic nested lists for Word and other rich-text tools. Dedicated **Copy Plain Text** and **Copy Markdown** actions are also available from the context menu.
 
 ## Configuration
 

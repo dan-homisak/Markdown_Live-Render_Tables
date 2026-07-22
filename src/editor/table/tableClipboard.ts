@@ -61,10 +61,7 @@ import {
   OFFICE_RICH_CELL_ALLOWED_TAGS,
   officeCompatibleRichHtml,
   officeCompatibleSmartListHtml,
-  officeCompatibleWordHtml,
 } from "../officeClipboardHtml";
-import { requestNativeOfficeClipboard } from "../officeClipboardBridge";
-import { officeRtfFromHtml } from "../officeClipboardRtf";
 
 const HTML_METADATA_SELECTOR = 'meta[name="mlrt-clipboard"]';
 const CLIPBOARD_MENU_CLASS = "mlrt-clipboard-menu";
@@ -91,7 +88,6 @@ richCellTurndown.use(gfm);
 interface ClipboardRepresentations {
   plain: string;
   html?: string;
-  rtf?: string;
   markdown?: string;
   csv?: string;
   privatePayload?: string;
@@ -160,20 +156,13 @@ export function bindTableClipboard(
     beginClipboardOperation(doc);
     event.preventDefault();
     writeDataTransfer(event.clipboardData, representations);
-    const nativeWrite = event.isTrusted || requestedForWrapper
-      ? publishNativeOfficeClipboard(doc, representations)
-      : Promise.resolve(false);
     clearPendingClipboardCut(doc);
     setPendingCutToken(doc, undefined);
     view.dom.classList.remove("mlrt-document-cut-pending");
     const message = requestedMode
       ? `Copied as ${COPY_MODE_LABELS[requestedMode]}.`
       : "Copied selection.";
-    if (requestedMode === "rich") {
-      void nativeWrite.then(() => announce(doc, message));
-    } else {
-      announce(doc, message);
-    }
+    announce(doc, message);
   };
 
   const onCut = (event: ClipboardEvent): void => {
@@ -197,9 +186,6 @@ export function bindTableClipboard(
     beginClipboardOperation(doc);
     event.preventDefault();
     writeDataTransfer(event.clipboardData, representations);
-    if (event.isTrusted) {
-      void publishNativeOfficeClipboard(doc, representations);
-    }
     view.dom.classList.remove("mlrt-document-cut-pending");
     setPendingClipboardCut(doc, {
       kind: "table",
@@ -533,21 +519,10 @@ function representationsForGrid(
     htmlCells,
     headerRow: payload.includesHeader,
   });
-  const rtf = mode === "rich" && renderedCells
-    ? officeRtfFromHtml(gridToHtml(payload.rows, {
-        alignments: payload.alignments,
-        embeddedPayload: embedded,
-        htmlCells: renderedCells.map((row) =>
-          row.map((cell) => officeCompatibleWordHtml(cell))
-        ),
-        headerRow: payload.includesHeader,
-      }))
-    : undefined;
   return {
     plain,
     csv: serializeDelimitedGrid(rows, ","),
     html,
-    ...(rtf ? { rtf } : {}),
     privatePayload,
   };
 }
@@ -1171,9 +1146,6 @@ function writeDataTransfer(
   if (representations.html) {
     transfer.setData("text/html", representations.html);
   }
-  if (representations.rtf) {
-    transfer.setData("text/rtf", representations.rtf);
-  }
   if (representations.markdown) {
     transfer.setData("text/markdown", representations.markdown);
   }
@@ -1183,19 +1155,6 @@ function writeDataTransfer(
   if (representations.privatePayload) {
     transfer.setData(MLRT_CLIPBOARD_MIME, representations.privatePayload);
   }
-}
-
-function publishNativeOfficeClipboard(
-  doc: Document,
-  representations: ClipboardRepresentations,
-): Promise<boolean> {
-  if (!representations.html || !representations.rtf) {
-    return Promise.resolve(false);
-  }
-  return requestNativeOfficeClipboard(doc, {
-    plain: representations.plain,
-    rtf: representations.rtf,
-  });
 }
 
 function readDataTransfer(transfer: DataTransfer): ClipboardReadData {
@@ -1248,10 +1207,6 @@ async function copyThroughMenu(
     if (!isCurrentClipboardOperation(doc, operationVersion)) {
       return;
     }
-    await publishNativeOfficeClipboard(doc, representations);
-    if (!isCurrentClipboardOperation(doc, operationVersion)) {
-      return;
-    }
     clearPendingClipboardCut(doc);
     setPendingCutToken(doc, undefined);
     doc.querySelector(".cm-editor")?.classList.remove(
@@ -1301,7 +1256,6 @@ async function cutThroughMenu(
   const operationVersion = beginClipboardOperation(doc);
   try {
     await writeAsyncClipboard(representations);
-    await publishNativeOfficeClipboard(doc, representations);
   } catch {
     if (isCurrentClipboardOperation(doc, operationVersion)) {
       announce(doc, "Move could not access the clipboard. Use Cmd/Ctrl+X.");

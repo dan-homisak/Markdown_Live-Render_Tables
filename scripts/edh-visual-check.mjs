@@ -7247,15 +7247,6 @@ function tableRichCopyFallbackExpression() {
     const clipboardItemDescriptor = Object.getOwnPropertyDescriptor(win, 'ClipboardItem');
     let writtenItems = null;
     let writeCalls = 0;
-    let nativePayload = null;
-    const captureNativePayload = (event) => {
-      nativePayload = event.detail;
-      win.dispatchEvent(new win.CustomEvent(
-        'mlrt:native-office-clipboard-result',
-        { detail: { requestId: event.detail.requestId, written: true } },
-      ));
-    };
-    win.addEventListener('mlrt:write-native-office-clipboard', captureNativePayload);
     class MockClipboardItem {
       static supports(type) {
         return type === 'text/plain' || type === 'text/html';
@@ -7325,19 +7316,11 @@ function tableRichCopyFallbackExpression() {
         htmlHasAnchor: /<a(?:\\s|>)/i.test(html),
         plainHasTabs: plain.includes('\\t'),
         plainHasPipes: plain.includes('|'),
-        nativePayloadHasRtf:
-          typeof nativePayload?.rtf === 'string' &&
-          nativePayload.rtf.startsWith('{' + String.fromCharCode(92) + 'rtf1'),
-        nativePayloadExcludesHtml:
-          !Object.prototype.hasOwnProperty.call(nativePayload ?? {}, 'html'),
-        nativePayloadHasRequestId:
-          Number.isInteger(nativePayload?.requestId) && nativePayload.requestId > 0,
         status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
       });
     } catch (error) {
       return JSON.stringify({ ok: false, reason: String(error) });
     } finally {
-      win.removeEventListener('mlrt:write-native-office-clipboard', captureNativePayload);
       if (execDescriptor) {
         Object.defineProperty(root, 'execCommand', execDescriptor);
       } else {
@@ -7380,10 +7363,10 @@ function tableMenuCopyCarrierExpression() {
       clientX: rect.left + 6, clientY: rect.top + 6,
     }));
     const copyButton = root.querySelector(
-      '.mlrt-clipboard-menu button[data-action="copy-rich"]'
+      '.mlrt-clipboard-menu button[data-action="copy-smart"]'
     );
     if (!copyButton) {
-      return JSON.stringify({ ok: false, reason: 'missing rich-copy action' });
+      return JSON.stringify({ ok: false, reason: 'missing smart-copy action' });
     }
     const execDescriptor = Object.getOwnPropertyDescriptor(root, 'execCommand');
     let carrierSelected = false;
@@ -7392,18 +7375,6 @@ function tableMenuCopyCarrierExpression() {
     let copiedHtml = '';
     let copiedPrivate = '';
     let carrierValue = '';
-    let nativePayload = null;
-    const captureNativePayload = (event) => {
-      nativePayload = event.detail;
-      root.defaultView.dispatchEvent(new root.defaultView.CustomEvent(
-        'mlrt:native-office-clipboard-result',
-        { detail: { requestId: event.detail.requestId, written: true } },
-      ));
-    };
-    root.defaultView.addEventListener(
-      'mlrt:write-native-office-clipboard',
-      captureNativePayload,
-    );
     try {
       Object.defineProperty(root, 'execCommand', {
         configurable: true,
@@ -7468,20 +7439,11 @@ function tableMenuCopyCarrierExpression() {
         plainHasPipeTable: copiedPlain.includes('|') && !copiedPlain.includes('\\t'),
         htmlHasTable: copiedHtml.includes('<table'),
         hasPrivateData: copiedPrivate.length > 0,
-        nativePayloadHasRtf:
-          typeof nativePayload?.rtf === 'string' &&
-          nativePayload.rtf.startsWith('{' + String.fromCharCode(92) + 'rtf1'),
-        nativePayloadExcludesHtml:
-          !Object.prototype.hasOwnProperty.call(nativePayload ?? {}, 'html'),
         status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
       });
     } catch (error) {
       return JSON.stringify({ ok: false, reason: String(error) });
     } finally {
-      root.defaultView.removeEventListener(
-        'mlrt:write-native-office-clipboard',
-        captureNativePayload,
-      );
       if (execDescriptor) {
         Object.defineProperty(root, 'execCommand', execDescriptor);
       } else {
@@ -7542,13 +7504,15 @@ function deepListRichCopyExpression() {
         candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
       );
       const richRows = Array.from(tableDocument.querySelectorAll('table > tbody > tr'));
-      const richLines = Array.from(copiedCell?.children ?? []).filter((element) =>
-        element.tagName === 'SPAN' &&
-        (element.getAttribute('style') ?? '').includes('white-space:pre-wrap')
-      );
-      const richLevelTexts = richLines.map((line) => line.textContent.trim());
-      const richRtf = transfer.getData('text/rtf');
-      const rtfSlash = String.fromCharCode(92);
+      const richLists = Array.from(copiedCell?.querySelectorAll('ul, ol') ?? []);
+      const richListItems = Array.from(copiedCell?.querySelectorAll('li') ?? []);
+      const richMaximumListDepth = Math.max(0, ...richLists.map((list) => {
+        let depth = 1;
+        for (let parent = list.parentElement?.closest('ul, ol'); parent; parent = parent.parentElement?.closest('ul, ol')) {
+          depth++;
+        }
+        return depth;
+      }));
       root.documentElement.dataset.mlrtDefaultCopyMode = 'smart';
       const smartTransfer = new root.defaultView.DataTransfer();
       const smartCopy = new root.defaultView.ClipboardEvent('copy', {
@@ -7575,7 +7539,9 @@ function deepListRichCopyExpression() {
       const richDocumentListCell = Array.from(richFullDocument.querySelectorAll('td, th')).find((candidate) =>
         candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
       );
-      const richDocumentRtf = richDocumentTransfer.getData('text/rtf');
+      const richDocumentLists = Array.from(
+        richDocumentListCell?.querySelectorAll('ul, ol') ?? []
+      );
       root.documentElement.dataset.mlrtDefaultCopyMode = 'smart';
       const documentTransfer = new root.defaultView.DataTransfer();
       const documentCopy = new root.defaultView.ClipboardEvent('copy', {
@@ -7597,25 +7563,16 @@ function deepListRichCopyExpression() {
         copiedCellFound: Boolean(copiedCell),
         richCellCount: tableDocument.querySelectorAll('table > tbody > tr > td').length,
         richMaximumColumnCount: Math.max(0, ...richRows.map((row) => row.children.length)),
-        richHasNoBlockContent: !copiedCell?.querySelector('p, div, ul, ol, li'),
-        richLineCount: richLines.length,
-        richSameCellBreakCount:
-          copiedCell?.querySelectorAll('br[style*="mso-data-placement:same-cell"]').length ?? 0,
-        richLevelTexts,
-        richHasIndentedMarkers:
-          copiedCell?.textContent.includes('• Level 1') &&
-          copiedCell?.textContent.includes('\\u00a0'.repeat(4) + '◦ Level 2') &&
-          copiedCell?.textContent.includes('\\u00a0'.repeat(8) + '▪ Level 3'),
-        richHasNativeRtf: richRtf.startsWith('{' + rtfSlash + 'rtf1'),
-        richRtfHasListTable: richRtf.includes(rtfSlash + 'listtable'),
-        richRtfHasListOverride: richRtf.includes(rtfSlash + 'listoverridetable'),
-        richRtfUsesBulletNumberFormat: richRtf.includes(rtfSlash + 'levelnfc23'),
-        richRtfHasSixNativeLevels: [0, 1, 2, 3, 4, 5].every((level) =>
-          richRtf.includes(rtfSlash + 'ilvl' + level)
+        richHasSemanticList: Boolean(copiedCell?.querySelector(':scope > ul, :scope > ol')),
+        richListCount: richLists.length,
+        richListItemCount: richListItems.length,
+        richMaximumListDepth,
+        richHasExplicitListStyles: richLists.every((list) =>
+          (list.getAttribute('style') ?? '').includes('list-style-type:')
         ),
-        richRtfParagraphCount: richRtf.split(rtfSlash + 'par ').length - 1,
-        richRtfCellCount: richRtf.split(rtfSlash + 'cell ').length - 1,
-        richRtfRowCount: richRtf.split(rtfSlash + 'row ').length - 1,
+        richContainsAllLevels: [1, 2, 3, 4, 5, 6].every((level) =>
+          copiedCell?.textContent.includes('Level ' + level)
+        ),
         plainHasMarkdownList: transfer.getData('text/plain').includes('<ul><li>Level 1'),
         plainHasTabs: transfer.getData('text/plain').includes('\\t'),
         smartCopyPrevented: smartCopy.defaultPrevented,
@@ -7633,14 +7590,11 @@ function deepListRichCopyExpression() {
         smartPlainHasTabs: smartTransfer.getData('text/plain').includes('\\t'),
         richDocumentCopyPrevented: richDocumentCopy.defaultPrevented,
         richDocumentCellFound: Boolean(richDocumentListCell),
-        richDocumentHasNoBlockContent:
-          !richDocumentListCell?.querySelector('p, div, ul, ol, li'),
-        richDocumentSameCellBreakCount:
-          richDocumentListCell?.querySelectorAll('br[style*="mso-data-placement:same-cell"]').length ?? 0,
-        richDocumentHasNativeRtf:
-          richDocumentRtf.startsWith('{' + rtfSlash + 'rtf1'),
-        richDocumentRtfHasSixNativeLevels: [0, 1, 2, 3, 4, 5].every((level) =>
-          richDocumentRtf.includes(rtfSlash + 'ilvl' + level)
+        richDocumentHasSemanticList:
+          Boolean(richDocumentListCell?.querySelector(':scope > ul, :scope > ol')),
+        richDocumentListCount: richDocumentLists.length,
+        richDocumentContainsAllLevels: [1, 2, 3, 4, 5, 6].every((level) =>
+          richDocumentListCell?.textContent.includes('Level ' + level)
         ),
         documentCopyPrevented: documentCopy.defaultPrevented,
         documentSmartCellFound: Boolean(documentListCell),
@@ -13955,9 +13909,6 @@ function assertTableRichCopyFallback(result) {
     !result.htmlHasAnchor ||
     result.plainHasTabs ||
     !result.plainHasPipes ||
-    !result.nativePayloadHasRtf ||
-    !result.nativePayloadExcludesHtml ||
-    !result.nativePayloadHasRequestId ||
     result.status !== 'Copied as Rich.'
   ) {
     throw new Error(
@@ -13975,21 +13926,12 @@ function assertDeepListRichCopy(result) {
     !result.copiedCellFound ||
     result.richCellCount !== 1 ||
     result.richMaximumColumnCount !== 1 ||
-    !result.richHasNoBlockContent ||
-    result.richLineCount !== 6 ||
-    result.richSameCellBreakCount !== 5 ||
-    ![1, 2, 3, 4, 5, 6].every((level) =>
-      result.richLevelTexts.some((text) => text.includes('Level ' + level))
-    ) ||
-    !result.richHasIndentedMarkers ||
-    !result.richHasNativeRtf ||
-    !result.richRtfHasListTable ||
-    !result.richRtfHasListOverride ||
-    !result.richRtfUsesBulletNumberFormat ||
-    !result.richRtfHasSixNativeLevels ||
-    result.richRtfParagraphCount !== 6 ||
-    result.richRtfCellCount !== 1 ||
-    result.richRtfRowCount !== 1 ||
+    !result.richHasSemanticList ||
+    result.richListCount !== 6 ||
+    result.richListItemCount !== 6 ||
+    result.richMaximumListDepth !== 6 ||
+    !result.richHasExplicitListStyles ||
+    !result.richContainsAllLevels ||
     !result.plainHasMarkdownList ||
     result.plainHasTabs ||
     !result.smartCopyPrevented ||
@@ -14002,10 +13944,9 @@ function assertDeepListRichCopy(result) {
     result.smartPlainHasTabs ||
     !result.richDocumentCopyPrevented ||
     !result.richDocumentCellFound ||
-    !result.richDocumentHasNoBlockContent ||
-    result.richDocumentSameCellBreakCount !== 5 ||
-    !result.richDocumentHasNativeRtf ||
-    !result.richDocumentRtfHasSixNativeLevels ||
+    !result.richDocumentHasSemanticList ||
+    result.richDocumentListCount !== 6 ||
+    !result.richDocumentContainsAllLevels ||
     !result.documentCopyPrevented ||
     !result.documentSmartCellFound ||
     !result.documentSmartHasNoSemanticList ||
@@ -14031,9 +13972,7 @@ function assertTableMenuCopyCarrier(result) {
     !result.plainHasPipeTable ||
     !result.htmlHasTable ||
     !result.hasPrivateData ||
-    !result.nativePayloadHasRtf ||
-    !result.nativePayloadExcludesHtml ||
-    result.status !== 'Copied as Rich.'
+    result.status !== 'Copied as Smart.'
   ) {
     throw new Error(
       `Table menu copy carrier check failed: ${JSON.stringify(result)}`,

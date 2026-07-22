@@ -49,11 +49,6 @@ import {
   getPendingClipboardCut,
 } from "../editor/clipboardCutState";
 import { setPendingCutToken } from "../editor/table/tableRangeSelection";
-import {
-  NATIVE_OFFICE_CLIPBOARD_EVENT,
-  NativeOfficeClipboardRequest,
-  reportNativeOfficeClipboardResult,
-} from "../editor/officeClipboardBridge";
 
 declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
@@ -85,12 +80,6 @@ interface HostSetDocumentMessage {
 interface HostSetEditorOptionsMessage {
   type: "setEditorOptions";
   editorOptions: EditorOptions;
-}
-
-interface HostNativeOfficeClipboardResultMessage {
-  type: "nativeOfficeClipboardResult";
-  requestId: number;
-  written: boolean;
 }
 
 interface DocumentChangeMessage {
@@ -266,18 +255,6 @@ try {
   view.dom.addEventListener("mlrt:open-clipboard-settings", () => {
     vscode.postMessage({ type: "openClipboardSettings" });
   });
-  window.addEventListener(
-    NATIVE_OFFICE_CLIPBOARD_EVENT,
-    (event) => {
-      const payload = (event as CustomEvent<NativeOfficeClipboardRequest>).detail;
-      vscode.postMessage({
-        type: "writeNativeOfficeClipboard",
-        requestId: payload.requestId,
-        plain: payload.plain,
-        rtf: payload.rtf,
-      });
-    },
-  );
 } catch (error) {
   app.replaceChildren(renderStartupError(error));
   throw error;
@@ -285,10 +262,6 @@ try {
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
   const message = event.data;
-  if (isHostNativeOfficeClipboardResultMessage(message)) {
-    reportNativeOfficeClipboardResult(window, message);
-    return;
-  }
   if (isHostSetEditorOptionsMessage(message)) {
     updateEditorOptions(message.editorOptions);
     return;
@@ -1434,22 +1407,6 @@ function isHostSetEditorOptionsMessage(
   const record = message as Record<string, unknown>;
   return (
     record.type === "setEditorOptions" && isEditorOptions(record.editorOptions)
-  );
-}
-
-function isHostNativeOfficeClipboardResultMessage(
-  message: unknown,
-): message is HostNativeOfficeClipboardResultMessage {
-  if (!message || typeof message !== "object") {
-    return false;
-  }
-  const record = message as Record<string, unknown>;
-  return (
-    record.type === "nativeOfficeClipboardResult" &&
-    typeof record.requestId === "number" &&
-    Number.isInteger(record.requestId) &&
-    record.requestId > 0 &&
-    typeof record.written === "boolean"
   );
 }
 
