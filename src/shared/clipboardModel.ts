@@ -305,8 +305,7 @@ export function gridToHtml(
   options: {
     alignments?: readonly CellAlignment[];
     embeddedPayload?: string;
-    rich?: boolean;
-    richCells?: readonly (readonly string[])[];
+    htmlCells?: readonly (readonly (string | undefined)[])[];
     headerRow?: boolean;
   } = {},
 ): string {
@@ -322,8 +321,8 @@ export function gridToHtml(
           const alignment = alignments[column] ?? "left";
           const style = `text-align:${alignment};border:1px solid #000000;padding:2px 6px;vertical-align:top;white-space:pre-wrap`;
           const content =
-            options.rich && options.richCells?.[rowIndex]?.[column] !== undefined
-              ? options.richCells[rowIndex][column]
+            options.htmlCells?.[rowIndex]?.[column] !== undefined
+              ? options.htmlCells[rowIndex][column]
               : cellTextToHtml(cell.text);
           return `<${tagName} style="${style}">${content}</${tagName}>`;
         })

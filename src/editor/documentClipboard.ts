@@ -57,7 +57,11 @@ import {
   OFFICE_RICH_CELL_ALLOWED_ATTR,
   OFFICE_RICH_CELL_ALLOWED_TAGS,
   officeCompatibleRichHtml,
+  officeCompatibleSmartListHtml,
+  officeCompatibleWordHtml,
 } from "./officeClipboardHtml";
+import { requestNativeOfficeClipboard } from "./officeClipboardBridge";
+import { officeRtfFromHtml } from "./officeClipboardRtf";
 
 interface ClipboardReadData {
   privatePayload?: string;
@@ -65,6 +69,16 @@ interface ClipboardReadData {
   markdown?: string;
   plain?: string;
 }
+
+interface DocumentClipboardRepresentations {
+  plain: string;
+  html?: string;
+  rtf?: string;
+  markdown?: string;
+  privatePayload?: string;
+}
+
+type ClipboardRenderMode = ClipboardCopyMode | "word";
 
 const markdownRenderer = new MarkdownIt({
   html: false,
@@ -158,15 +172,20 @@ export function installDocumentClipboard(
         )
       : documentRepresentations(view, range!.from, range!.to, mode);
     writeDocumentTransfer(event.clipboardData, representations);
+    const nativeWrite = event.isTrusted || requestedMode !== null
+      ? publishNativeOfficeClipboard(doc, representations)
+      : Promise.resolve(false);
     clearPendingClipboardCut(doc);
     setPendingCutToken(doc, undefined);
     view.dom.classList.remove("mlrt-document-cut-pending");
-    announce(
-      doc,
-      requestedMode
-        ? `Copied as ${capitalize(requestedMode)}.`
-        : "Copied document selection.",
-    );
+    const message = requestedMode
+      ? `Copied as ${capitalize(requestedMode)}.`
+      : "Copied document selection.";
+    if (requestedMode === "rich") {
+      void nativeWrite.then(() => announce(doc, message));
+    } else {
+      announce(doc, message);
+    }
   };
 
   const onCut = (event: ClipboardEvent): void => {
@@ -197,9 +216,7 @@ export function installDocumentClipboard(
       cutToken: token,
     };
     event.preventDefault();
-    writeDocumentTransfer(
-      event.clipboardData,
-      projection
+    const representations = projection
         ? documentRepresentationsForMarkdown(
             view,
             markdown,
@@ -212,8 +229,11 @@ export function installDocumentClipboard(
             range!.to,
             readCopyMode(doc),
             payload,
-          ),
-    );
+          );
+    writeDocumentTransfer(event.clipboardData, representations);
+    if (event.isTrusted) {
+      void publishNativeOfficeClipboard(doc, representations);
+    }
     setPendingClipboardCut(
       doc,
       projection
@@ -1083,12 +1103,7 @@ function documentRepresentations(
   to: number,
   mode: ClipboardCopyMode,
   suppliedPayload?: ClipboardDocumentPayload,
-): {
-  plain: string;
-  html?: string;
-  markdown?: string;
-  privatePayload?: string;
-} {
+): DocumentClipboardRepresentations {
   const markdown = view.state.doc.sliceString(from, to);
   return documentRepresentationsForMarkdown(
     view,
@@ -1103,12 +1118,7 @@ function documentRepresentationsForMarkdown(
   markdown: string,
   mode: ClipboardCopyMode,
   suppliedPayload?: ClipboardDocumentPayload,
-): {
-  plain: string;
-  html?: string;
-  markdown?: string;
-  privatePayload?: string;
-} {
+): DocumentClipboardRepresentations {
   const cutPrivatePayload = suppliedPayload
     ? JSON.stringify(suppliedPayload)
     : null;
@@ -1124,7 +1134,7 @@ function documentRepresentationsForMarkdown(
         : {}),
     };
   }
-  const clipboard = buildDocumentClipboard(markdown, mode === "rich");
+  const clipboard = buildDocumentClipboard(markdown, mode);
   const plain = mode === "plain" || parseMarkdownTables(markdown).length === 0
     ? clipboard.plain
     : markdown;
@@ -1154,7 +1164,21 @@ function documentRepresentationsForMarkdown(
   const metadata = `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute(
     encodePayload(privatePayload),
   )}">`;
-  return { plain, html: `${metadata}${sanitized}`, privatePayload };
+  const rtf = mode === "rich"
+    ? officeRtfFromHtml(DOMPurify.sanitize(
+        buildDocumentClipboard(markdown, "word").html,
+        {
+          FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
+          FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"],
+        },
+      ))
+    : undefined;
+  return {
+    plain,
+    html: `${metadata}${sanitized}`,
+    ...(rtf ? { rtf } : {}),
+    privatePayload,
+  };
 }
 
 function compositeSelectionMarkdown(
@@ -1357,7 +1381,7 @@ type ClipboardDocumentSegment =
  * Blank source lines are explicit in both representations so Office cannot
  * collapse them while interpreting the clipboard fragment.
  */
-function buildDocumentClipboard(markdown: string, rich: boolean): {
+function buildDocumentClipboard(markdown: string, mode: ClipboardRenderMode): {
   plain: string;
   html: string;
 } {
@@ -1374,7 +1398,7 @@ function buildDocumentClipboard(markdown: string, rich: boolean): {
     }
     if (segment.kind === "prose") {
       rows.push(...proseWorksheetRows(segment.markdown));
-      html.push(renderClipboardProse(segment.markdown, rich));
+      html.push(renderClipboardProse(segment.markdown, mode));
       continue;
     }
     const table = segment.table;
@@ -1389,7 +1413,7 @@ function buildDocumentClipboard(markdown: string, rich: boolean): {
         )),
       );
     }
-    html.push(renderClipboardTable(table, rich));
+    html.push(renderClipboardTable(table, mode));
   }
 
   if (rows.length === 0) {
@@ -1453,7 +1477,11 @@ function appendClipboardProseSegments(
   flushProse();
 }
 
-function renderClipboardProse(markdown: string, rich: boolean): string {
+function renderClipboardProse(
+  markdown: string,
+  mode: ClipboardRenderMode,
+): string {
+  const rich = mode === "rich" || mode === "word";
   const rendered = DOMPurify.sanitize(
     (rich ? richMarkdownRenderer : markdownRenderer).render(markdown),
     {
@@ -1461,7 +1489,10 @@ function renderClipboardProse(markdown: string, rich: boolean): string {
       FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"],
     },
   );
-  if (rich) {
+  if (mode === "word") {
+    return officeCompatibleWordHtml(rendered);
+  }
+  if (mode === "rich") {
     return officeCompatibleRichHtml(rendered);
   }
   const parsed = new DOMParser().parseFromString(rendered, "text/html");
@@ -1473,18 +1504,24 @@ function renderClipboardProse(markdown: string, rich: boolean): string {
 
 function renderClipboardTable(
   table: ReturnType<typeof parseMarkdownTables>[number],
-  rich: boolean,
+  mode: ClipboardRenderMode,
 ): string {
   const renderRow = (
     rawCells: string[],
     kind: "table-header" | "table-body",
   ): string => {
     const values = tableRowDisplayValues(rawCells);
-    const richValues = rich ? tableRowRichValues(rawCells) : undefined;
+    const richValues = mode === "rich" || mode === "word"
+      ? tableRowRichValues(rawCells, mode === "word")
+      : undefined;
+    const smartListValues = mode === "smart"
+      ? tableRowSmartListValues(rawCells)
+      : undefined;
     const tag = kind === "table-header" ? "th" : "td";
     const cells = Array.from({ length: table.columnCount }, (_, column) => {
       const alignment = table.alignments[column] ?? "left";
-      const content = richValues?.[column] ?? escapeWorksheetText(values[column] ?? "");
+      const content = richValues?.[column] ?? smartListValues?.[column] ??
+        escapeWorksheetText(values[column] ?? "");
       return `<${tag} style="border:1px solid #000000;padding:2px 6px;text-align:${alignment};vertical-align:top;white-space:pre-wrap">${content}</${tag}>`;
     }).join("");
     return `<tr data-mlrt-row-kind="${kind}">${cells}</tr>`;
@@ -1564,7 +1601,7 @@ function tableRowDisplayValues(rawCells: string[]): string[] {
   });
 }
 
-function tableRowRichValues(rawCells: string[]): string[] {
+function tableRowRichValues(rawCells: string[], word: boolean): string[] {
   return rawCells.map((raw) => {
     const sanitized = DOMPurify.sanitize(
       richMarkdownRenderer.renderInline(
@@ -1576,7 +1613,25 @@ function tableRowRichValues(rawCells: string[]): string[] {
         ALLOW_UNKNOWN_PROTOCOLS: false,
       },
     );
-    return officeCompatibleRichHtml(sanitized);
+    return word
+      ? officeCompatibleWordHtml(sanitized)
+      : officeCompatibleRichHtml(sanitized);
+  });
+}
+
+function tableRowSmartListValues(rawCells: string[]): Array<string | null> {
+  return rawCells.map((raw) => {
+    const sanitized = DOMPurify.sanitize(
+      richMarkdownRenderer.renderInline(
+        markdownCellToDisplayText(raw).trim(),
+      ),
+      {
+        ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
+        ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
+        ALLOW_UNKNOWN_PROTOCOLS: false,
+      },
+    );
+    return officeCompatibleSmartListHtml(sanitized);
   });
 }
 
@@ -1599,11 +1654,14 @@ function escapeWorksheetText(value: string): string {
 
 function writeDocumentTransfer(
   transfer: DataTransfer,
-  representations: ReturnType<typeof documentRepresentations>,
+  representations: DocumentClipboardRepresentations,
 ): void {
   transfer.setData("text/plain", representations.plain);
   if (representations.html) {
     transfer.setData("text/html", representations.html);
+  }
+  if (representations.rtf) {
+    transfer.setData("text/rtf", representations.rtf);
   }
   if (representations.markdown) {
     transfer.setData("text/markdown", representations.markdown);
@@ -1611,6 +1669,19 @@ function writeDocumentTransfer(
   if (representations.privatePayload) {
     transfer.setData(MLRT_CLIPBOARD_MIME, representations.privatePayload);
   }
+}
+
+function publishNativeOfficeClipboard(
+  doc: Document,
+  representations: DocumentClipboardRepresentations,
+): Promise<boolean> {
+  if (!representations.html || !representations.rtf) {
+    return Promise.resolve(false);
+  }
+  return requestNativeOfficeClipboard(doc, {
+    plain: representations.plain,
+    rtf: representations.rtf,
+  });
 }
 
 function readTransfer(transfer: DataTransfer): ClipboardReadData {
@@ -2457,6 +2528,7 @@ async function copyDocumentThroughMenu(
 
   try {
     await writeDocumentAsyncClipboard(representations);
+    await publishNativeOfficeClipboard(doc, representations);
     clearPendingClipboardCut(doc);
     setPendingCutToken(doc, undefined);
     view.dom.classList.remove("mlrt-document-cut-pending");
@@ -2467,7 +2539,7 @@ async function copyDocumentThroughMenu(
 }
 
 async function writeDocumentAsyncClipboard(
-  representations: ReturnType<typeof documentRepresentations>,
+  representations: DocumentClipboardRepresentations,
 ): Promise<void> {
   if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
     throw new Error("Async clipboard unavailable");

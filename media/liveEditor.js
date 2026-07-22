@@ -33134,7 +33134,7 @@
       return `<tr>${row.map((cell2, column) => {
         const alignment = alignments[column] ?? "left";
         const style = `text-align:${alignment};border:1px solid #000000;padding:2px 6px;vertical-align:top;white-space:pre-wrap`;
-        const content2 = options.rich && options.richCells?.[rowIndex]?.[column] !== void 0 ? options.richCells[rowIndex][column] : cellTextToHtml(cell2.text);
+        const content2 = options.htmlCells?.[rowIndex]?.[column] !== void 0 ? options.htmlCells[rowIndex][column] : cellTextToHtml(cell2.text);
         return `<${tagName} style="${style}">${content2}</${tagName}>`;
       }).join("")}</tr>`;
     }).join("");
@@ -34762,29 +34762,19 @@ ${text3}`;
     "type",
     "value"
   ];
-  var UNORDERED_MARKERS = ["disc", "circle", "square"];
-  var ORDERED_MARKERS = ["decimal", "lower-alpha", "lower-roman"];
+  var SMART_UNORDERED_MARKERS = ["\u2022", "\u25E6", "\u25AA"];
   function officeCompatibleRichHtml(html3) {
     const parsed = new DOMParser().parseFromString(html3, "text/html");
-    const replaceWithSpan = (selector, style) => {
-      parsed.body.querySelectorAll(selector).forEach((element) => {
-        const span = parsed.createElement("span");
-        span.setAttribute("style", style);
-        span.append(...Array.from(element.childNodes));
-        element.replaceWith(span);
-      });
-    };
-    replaceWithSpan("strong, b", "font-weight:700");
-    replaceWithSpan("em, i", "font-style:italic");
-    replaceWithSpan("code", "font-family:monospace");
-    replaceWithSpan("s, del", "text-decoration:line-through");
-    parsed.body.querySelectorAll("br").forEach(
-      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
-    );
+    normalizeRichInlineFormatting(parsed);
+    flattenRichLists(parsed);
+    return parsed.body.innerHTML;
+  }
+  function officeCompatibleWordHtml(html3) {
+    const parsed = new DOMParser().parseFromString(html3, "text/html");
+    normalizeRichInlineFormatting(parsed);
     parsed.body.querySelectorAll("ul, ol").forEach((list2) => {
       const depth = listDepth(list2);
-      const markers = list2.tagName === "OL" ? ORDERED_MARKERS : UNORDERED_MARKERS;
-      const marker = explicitListMarker(list2) ?? markers[(depth - 1) % markers.length];
+      const marker = list2.tagName === "OL" ? orderedListStyle(list2.getAttribute("type"), depth) : ["disc", "circle", "square"][(depth - 1) % 3];
       list2.setAttribute(
         "style",
         [
@@ -34801,6 +34791,62 @@ ${text3}`;
     });
     return parsed.body.innerHTML;
   }
+  function normalizeRichInlineFormatting(parsed) {
+    const replaceWithSpan = (selector, style) => {
+      parsed.body.querySelectorAll(selector).forEach((element) => {
+        const span = parsed.createElement("span");
+        span.setAttribute("style", style);
+        span.append(...Array.from(element.childNodes));
+        element.replaceWith(span);
+      });
+    };
+    replaceWithSpan("strong, b", "font-weight:700");
+    replaceWithSpan("em, i", "font-style:italic");
+    replaceWithSpan("code", "font-family:monospace");
+    replaceWithSpan("s, del", "text-decoration:line-through");
+    parsed.body.querySelectorAll("br").forEach(
+      (br) => br.setAttribute("style", "mso-data-placement:same-cell")
+    );
+  }
+  function flattenRichLists(parsed) {
+    const roots = Array.from(parsed.body.querySelectorAll("ul, ol")).filter((list2) => !list2.parentElement?.closest("ul, ol"));
+    for (const root2 of roots) {
+      const nodes = [];
+      appendRichListNodes(root2, nodes, 0, parsed);
+      root2.replaceWith(...nodes);
+    }
+  }
+  function appendRichListNodes(list2, nodes, depth, parsed) {
+    const ordered = list2.tagName === "OL";
+    const items = listItems(list2);
+    const reversed = ordered && list2.hasAttribute("reversed");
+    let value = listStart(list2, items.length, reversed);
+    const step = reversed ? -1 : 1;
+    for (const item of items) {
+      value = explicitItemValue(item, value, ordered);
+      if (nodes.length > 0) {
+        const br = parsed.createElement("br");
+        br.setAttribute("style", "mso-data-placement:same-cell");
+        nodes.push(br);
+      }
+      const content2 = item.cloneNode(true);
+      content2.querySelectorAll(":scope > ul, :scope > ol").forEach((nested) => nested.remove());
+      const line = parsed.createElement("span");
+      line.setAttribute("style", "white-space:pre-wrap");
+      const marker = ordered ? smartOrderedMarker(value, list2.getAttribute("type")) : SMART_UNORDERED_MARKERS[depth % SMART_UNORDERED_MARKERS.length];
+      line.append(
+        parsed.createTextNode(`${"\xA0".repeat(depth * 4)}${marker} `),
+        ...Array.from(content2.childNodes)
+      );
+      nodes.push(line);
+      for (const nested of Array.from(item.children)) {
+        if (nested instanceof HTMLElement && isList2(nested)) {
+          appendRichListNodes(nested, nodes, depth + 1, parsed);
+        }
+      }
+      value += step;
+    }
+  }
   function listDepth(list2) {
     let depth = 1;
     for (let parent = list2.parentElement; parent; parent = parent.parentElement) {
@@ -34810,21 +34856,608 @@ ${text3}`;
     }
     return depth;
   }
-  function explicitListMarker(list2) {
-    const type = list2.getAttribute("type");
-    if (!type) {
-      return null;
-    }
-    if (list2.tagName === "UL") {
-      return ["disc", "circle", "square"].includes(type.toLowerCase()) ? type.toLowerCase() : null;
-    }
+  function orderedListStyle(type, depth) {
     return {
       "1": "decimal",
       a: "lower-alpha",
       A: "upper-alpha",
       i: "lower-roman",
       I: "upper-roman"
-    }[type] ?? null;
+    }[type ?? ""] ?? ["decimal", "lower-alpha", "lower-roman"][(depth - 1) % 3];
+  }
+  function officeCompatibleSmartListHtml(html3) {
+    const parsed = new DOMParser().parseFromString(html3, "text/html");
+    if (!parsed.body.querySelector("ul, ol")) {
+      return null;
+    }
+    const lines = [];
+    for (const child of Array.from(parsed.body.childNodes)) {
+      if (child instanceof HTMLElement && isList2(child)) {
+        appendSmartListLines(child, lines, 0);
+        continue;
+      }
+      const text3 = visibleNodeText(child).trim();
+      if (text3) {
+        lines.push(text3);
+      }
+    }
+    if (lines.length === 0) {
+      return null;
+    }
+    const container = parsed.createElement("span");
+    lines.forEach((line, index) => {
+      if (index > 0) {
+        const br = parsed.createElement("br");
+        br.setAttribute("style", "mso-data-placement:same-cell");
+        container.append(br);
+      }
+      container.append(parsed.createTextNode(line));
+    });
+    return container.innerHTML;
+  }
+  function appendSmartListLines(list2, lines, depth) {
+    const ordered = list2.tagName === "OL";
+    const items = listItems(list2);
+    const reversed = ordered && list2.hasAttribute("reversed");
+    let value = listStart(list2, items.length, reversed);
+    const step = reversed ? -1 : 1;
+    for (const item of items) {
+      value = explicitItemValue(item, value, ordered);
+      const clone2 = item.cloneNode(true);
+      clone2.querySelectorAll(":scope > ul, :scope > ol").forEach((nested) => nested.remove());
+      const itemLines = visibleNodeText(clone2).split("\n").map((line) => line.trim()).filter(Boolean);
+      const indent = "\xA0".repeat(depth * 4);
+      const marker = ordered ? smartOrderedMarker(value, list2.getAttribute("type")) : SMART_UNORDERED_MARKERS[depth % SMART_UNORDERED_MARKERS.length];
+      lines.push(`${indent}${marker} ${itemLines[0] ?? ""}`.trimEnd());
+      for (const continuation of itemLines.slice(1)) {
+        lines.push(`${indent}\xA0\xA0${continuation}`);
+      }
+      for (const nested of Array.from(item.children)) {
+        if (nested instanceof HTMLElement && isList2(nested)) {
+          appendSmartListLines(nested, lines, depth + 1);
+        }
+      }
+      value += step;
+    }
+  }
+  function listItems(list2) {
+    return Array.from(list2.children).filter(
+      (child) => child instanceof HTMLElement && child.tagName === "LI"
+    );
+  }
+  function listStart(list2, itemCount, reversed) {
+    const parsedStart = list2.hasAttribute("start") ? Number(list2.getAttribute("start")) : Number.NaN;
+    return Number.isFinite(parsedStart) ? parsedStart : reversed ? itemCount : 1;
+  }
+  function explicitItemValue(item, fallback, ordered) {
+    const explicitValue = item.hasAttribute("value") ? Number(item.getAttribute("value")) : Number.NaN;
+    return ordered && Number.isFinite(explicitValue) ? explicitValue : fallback;
+  }
+  function smartOrderedMarker(value, type) {
+    if (type === "a" || type === "A") {
+      const marker = numberToAlphabetic(value);
+      return `${type === "A" ? marker.toUpperCase() : marker}.`;
+    }
+    if (type === "i" || type === "I") {
+      const marker = numberToRoman(value);
+      return `${type === "I" ? marker.toUpperCase() : marker}.`;
+    }
+    return `${value}.`;
+  }
+  function numberToAlphabetic(value) {
+    let remaining = Math.max(1, Math.trunc(value));
+    let result = "";
+    while (remaining > 0) {
+      remaining--;
+      result = String.fromCharCode(97 + remaining % 26) + result;
+      remaining = Math.floor(remaining / 26);
+    }
+    return result;
+  }
+  function numberToRoman(value) {
+    let remaining = Math.max(1, Math.min(3999, Math.trunc(value)));
+    let result = "";
+    const numerals = [
+      [1e3, "m"],
+      [900, "cm"],
+      [500, "d"],
+      [400, "cd"],
+      [100, "c"],
+      [90, "xc"],
+      [50, "l"],
+      [40, "xl"],
+      [10, "x"],
+      [9, "ix"],
+      [5, "v"],
+      [4, "iv"],
+      [1, "i"]
+    ];
+    for (const [amount, numeral] of numerals) {
+      while (remaining >= amount) {
+        result += numeral;
+        remaining -= amount;
+      }
+    }
+    return result;
+  }
+  function visibleNodeText(node) {
+    const container = document.createElement("span");
+    container.append(node.cloneNode(true));
+    container.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return (container.textContent ?? "").replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+  }
+  function isList2(element) {
+    return element.tagName === "UL" || element.tagName === "OL";
+  }
+
+  // src/editor/officeClipboardBridge.ts
+  var NATIVE_OFFICE_CLIPBOARD_EVENT = "mlrt:write-native-office-clipboard";
+  var NATIVE_OFFICE_CLIPBOARD_RESULT_EVENT = "mlrt:native-office-clipboard-result";
+  var nextNativeClipboardRequestId = 0;
+  function requestNativeOfficeClipboard(doc2, payload) {
+    const win = doc2.defaultView;
+    if (!win) {
+      return Promise.resolve(false);
+    }
+    const requestId = ++nextNativeClipboardRequestId;
+    return new Promise((resolve) => {
+      const finish = (written) => {
+        win.clearTimeout(timeout);
+        win.removeEventListener(
+          NATIVE_OFFICE_CLIPBOARD_RESULT_EVENT,
+          onResult
+        );
+        resolve(written);
+      };
+      const onResult = (event) => {
+        if (event.detail.requestId === requestId) {
+          finish(event.detail.written);
+        }
+      };
+      const timeout = win.setTimeout(() => finish(false), 8500);
+      win.addEventListener(
+        NATIVE_OFFICE_CLIPBOARD_RESULT_EVENT,
+        onResult
+      );
+      win.dispatchEvent(
+        new CustomEvent(
+          NATIVE_OFFICE_CLIPBOARD_EVENT,
+          { detail: { ...payload, requestId } }
+        )
+      );
+    });
+  }
+  function reportNativeOfficeClipboardResult(win, result) {
+    win.dispatchEvent(
+      new CustomEvent(
+        NATIVE_OFFICE_CLIPBOARD_RESULT_EVENT,
+        { detail: result }
+      )
+    );
+  }
+
+  // src/editor/officeClipboardRtf.ts
+  var UNORDERED_MARKERS = [8226, 9702, 9642];
+  function officeRtfFromHtml(html3) {
+    const parsed = new DOMParser().parseFromString(html3, "text/html");
+    const definitions = collectListDefinitions(parsed);
+    const definitionMap = new Map(
+      definitions.map((definition) => [definition.root, definition])
+    );
+    const body = Array.from(parsed.body.childNodes).map((node) => renderBlockNode(node, {
+      inTable: false,
+      listDefinitions: definitionMap
+    })).join("");
+    const listTable = definitions.length > 0 ? `{\\*\\listtable${definitions.map(renderListDefinition).join("")}}` : "";
+    const overrideTable = definitions.length > 0 ? `{\\*\\listoverridetable${definitions.map(
+      (definition) => `{\\listoverride\\listid${definition.id}\\listoverridecount0\\ls${definition.id}}`
+    ).join("")}}` : "";
+    return [
+      "{\\rtf1\\ansi\\ansicpg1252\\uc1\\deff0",
+      "{\\fonttbl{\\f0\\fnil\\fcharset0 Calibri;}{\\f1\\fmodern\\fcharset0 Courier New;}}",
+      "{\\colortbl;\\red0\\green0\\blue0;}",
+      listTable,
+      overrideTable,
+      "\\viewkind4\\fs22 ",
+      body,
+      "}"
+    ].join("");
+  }
+  function collectListDefinitions(parsed) {
+    const roots = Array.from(parsed.body.querySelectorAll("ul, ol")).filter((list2) => !closestList(list2.parentElement));
+    return roots.map((root2, index) => {
+      const levels = [];
+      collectListLevels(root2, 0, levels);
+      return { id: index + 1, root: root2, levels };
+    });
+  }
+  function collectListLevels(list2, depth, levels) {
+    if (!levels[depth]) {
+      levels[depth] = {
+        kind: list2.tagName === "OL" ? "ol" : "ul",
+        start: listStart2(list2),
+        type: list2.getAttribute("type")
+      };
+    }
+    for (const item of directListItems(list2)) {
+      for (const nested of directNestedLists(item)) {
+        collectListLevels(nested, Math.min(depth + 1, 8), levels);
+      }
+    }
+  }
+  function renderListDefinition(definition) {
+    const fallback = definition.levels[definition.levels.length - 1] ?? {
+      kind: "ul",
+      start: 1,
+      type: null
+    };
+    const levels = Array.from(
+      { length: 9 },
+      (_, depth) => renderListLevelDefinition(
+        definition.levels[depth] ?? fallback,
+        depth,
+        definition.id * 10 + depth + 1
+      )
+    ).join("");
+    return `{\\list\\listtemplateid${definition.id}\\listhybrid${levels}{\\listname ;}\\listid${definition.id}}`;
+  }
+  function renderListLevelDefinition(definition, depth, templateId) {
+    const indent = (depth + 1) * 720;
+    const shared = [
+      "\\leveljc0\\leveljcn0\\levelfollow0",
+      `\\levelstartat${Math.max(1, definition.start)}`,
+      "\\levelspace360\\levelindent0"
+    ].join("");
+    if (definition.kind === "ul") {
+      const marker = UNORDERED_MARKERS[Math.min(depth, 2)];
+      const markerName = ["disc", "circle", "square"][Math.min(depth, 2)];
+      return [
+        "{\\listlevel\\levelnfc23\\levelnfcn23",
+        shared,
+        `{\\*\\levelmarker \\{${markerName}\\}}`,
+        `{\\leveltext\\leveltemplateid${templateId}\\'01\\uc0\\u${marker} ;}`,
+        "{\\levelnumbers;}",
+        `\\fi-360\\li${indent}\\lin${indent}}`
+      ].join("");
+    }
+    const numberStyle = orderedNumberStyle(definition.type, depth);
+    const placeholder = depth.toString(16).padStart(2, "0");
+    return [
+      `{\\listlevel\\levelnfc${numberStyle}\\levelnfcn${numberStyle}`,
+      shared,
+      `{\\leveltext\\leveltemplateid${templateId}\\'02\\'${placeholder}.;}`,
+      `{\\levelnumbers\\'01;}`,
+      `\\fi-360\\li${indent}\\lin${indent}}`
+    ].join("");
+  }
+  function renderBlockNode(node, context) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text3 = node.textContent ?? "";
+      return text3.trim() ? renderParagraph(rtfEscape(text3), context) : "";
+    }
+    if (!(node instanceof HTMLElement)) {
+      return "";
+    }
+    if (node.tagName === "META" || node.tagName === "STYLE") {
+      return "";
+    }
+    if (node.tagName === "TABLE") {
+      return renderTable(node, context);
+    }
+    if (isList3(node)) {
+      return renderList(node, 0, context);
+    }
+    if (node.tagName === "BR") {
+      return renderParagraph("", context);
+    }
+    if (node.tagName === "HR") {
+      return renderParagraph("________________", context);
+    }
+    if (isBlockElement2(node)) {
+      const content2 = renderInlineChildren(node, context);
+      const headingSize = headingFontSize(node.tagName);
+      const formatted = headingSize ? `{\\b\\fs${headingSize} ${content2}}` : content2;
+      const paragraph2 = renderParagraph(formatted, context);
+      const nested = Array.from(node.children).filter(
+        (child) => child instanceof HTMLElement && (isList3(child) || child.tagName === "TABLE")
+      ).map((child) => renderBlockNode(child, context)).join("");
+      return paragraph2 + nested;
+    }
+    return renderParagraph(renderInlineNode(node, context), context);
+  }
+  function renderParagraph(content2, context) {
+    const table2 = context.inTable ? "\\intbl\\itap1" : "";
+    return `\\pard${table2} ${content2}\\par `;
+  }
+  function renderTable(table2, context) {
+    const rows = directTableRows(table2);
+    return rows.map((row) => {
+      const cells = Array.from(row.children).filter(
+        (child) => child instanceof HTMLElement && (child.tagName === "TD" || child.tagName === "TH")
+      );
+      if (cells.length === 0) {
+        return "";
+      }
+      const cellWidth = 2400;
+      const definitions = cells.map((_, index) => [
+        "\\clvertalt",
+        "\\clbrdrt\\brdrs\\brdrw10",
+        "\\clbrdrl\\brdrs\\brdrw10",
+        "\\clbrdrb\\brdrs\\brdrw10",
+        "\\clbrdrr\\brdrs\\brdrw10",
+        `\\cellx${(index + 1) * cellWidth}`
+      ].join("")).join("");
+      const contents = cells.map(
+        (cell2) => `${renderTableCell(cell2, {
+          ...context,
+          inTable: true,
+          forceBold: cell2.tagName === "TH"
+        })}\\cell `
+      ).join("");
+      return `\\trowd\\trgaph108\\trleft0${definitions}${contents}\\row `;
+    }).join("");
+  }
+  function renderTableCell(cell2, context) {
+    const output = [];
+    let inlineNodes = [];
+    const flushInline = () => {
+      if (inlineNodes.length === 0) {
+        return;
+      }
+      const content2 = inlineNodes.map((node) => renderInlineNode(node, context)).join("");
+      if (content2 || output.length === 0) {
+        output.push(renderParagraph(
+          context.forceBold ? `{\\b ${content2}}` : content2,
+          context
+        ));
+      }
+      inlineNodes = [];
+    };
+    for (const child of Array.from(cell2.childNodes)) {
+      if (child instanceof HTMLElement && isList3(child)) {
+        flushInline();
+        output.push(renderList(child, 0, context));
+      } else if (child instanceof HTMLElement && child.tagName === "TABLE") {
+        flushInline();
+        output.push(renderTable(child, context));
+      } else {
+        inlineNodes.push(child);
+      }
+    }
+    flushInline();
+    return output.join("") || renderParagraph("", context);
+  }
+  function renderList(list2, depth, context) {
+    const root2 = closestListRoot(list2);
+    const definition = context.listDefinitions.get(root2);
+    if (!definition) {
+      return "";
+    }
+    const level = Math.min(depth, 8);
+    const indent = (level + 1) * 720;
+    const table2 = context.inTable ? "\\intbl\\itap1" : "";
+    const ordered = list2.tagName === "OL";
+    const reversed = ordered && list2.hasAttribute("reversed");
+    const items = directListItems(list2);
+    let value = listStart2(list2, reversed ? items.length : 1);
+    const step = reversed ? -1 : 1;
+    const output = [];
+    for (const item of items) {
+      value = listItemValue(item, value, ordered);
+      const marker = ordered ? orderedMarker(value, list2.getAttribute("type")) : String.fromCodePoint(UNORDERED_MARKERS[Math.min(level, 2)]);
+      const content2 = Array.from(item.childNodes).filter((child) => !(child instanceof HTMLElement && isList3(child))).map((child) => renderInlineNode(child, context)).join("");
+      output.push([
+        `\\pard${table2}\\tx${indent}\\li${indent}\\fi-360`,
+        `\\ls${definition.id}\\ilvl${level}`,
+        `{\\listtext ${rtfEscape(marker)}\\tab }`,
+        context.forceBold ? `{\\b ${content2}}` : content2,
+        "\\par "
+      ].join(""));
+      for (const nested of directNestedLists(item)) {
+        output.push(renderList(nested, level + 1, context));
+      }
+      value += step;
+    }
+    return output.join("");
+  }
+  function renderInlineChildren(element, context) {
+    return Array.from(element.childNodes).filter(
+      (child) => !(child instanceof HTMLElement && (isList3(child) || child.tagName === "TABLE"))
+    ).map((child) => renderInlineNode(child, context)).join("");
+  }
+  function renderInlineNode(node, context) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return rtfEscape(node.textContent ?? "");
+    }
+    if (!(node instanceof HTMLElement)) {
+      return "";
+    }
+    if (node.tagName === "BR") {
+      return "\\line ";
+    }
+    if (isList3(node) || node.tagName === "TABLE") {
+      return "";
+    }
+    const content2 = Array.from(node.childNodes).map((child) => renderInlineNode(child, context)).join("");
+    if (node.tagName === "A" && node.getAttribute("href")) {
+      const href = rtfEscapeFieldInstruction(node.getAttribute("href") ?? "");
+      return `{\\field{\\*\\fldinst{HYPERLINK "${href}"}}{\\fldrslt{${content2}}}}`;
+    }
+    const controls = [];
+    const style = node.getAttribute("style")?.toLowerCase() ?? "";
+    if (node.tagName === "B" || node.tagName === "STRONG" || /font-weight\s*:\s*(bold|[6-9]00)/.test(style)) {
+      controls.push("\\b");
+    }
+    if (node.tagName === "I" || node.tagName === "EM" || style.includes("font-style:italic")) {
+      controls.push("\\i");
+    }
+    if (node.tagName === "U" || style.includes("text-decoration:underline")) {
+      controls.push("\\ul");
+    }
+    if (node.tagName === "S" || node.tagName === "DEL" || style.includes("line-through")) {
+      controls.push("\\strike");
+    }
+    if (node.tagName === "CODE" || style.includes("font-family:monospace")) {
+      controls.push("\\f1");
+    }
+    if (node.tagName === "SUB") {
+      controls.push("\\sub");
+    }
+    if (node.tagName === "SUP") {
+      controls.push("\\super");
+    }
+    return controls.length > 0 ? `{${controls.join("")} ${content2}}` : content2;
+  }
+  function directTableRows(table2) {
+    const rows = [];
+    for (const child of Array.from(table2.children)) {
+      if (child instanceof HTMLElement && child.tagName === "TR") {
+        rows.push(child);
+        continue;
+      }
+      if (child instanceof HTMLElement && (child.tagName === "THEAD" || child.tagName === "TBODY" || child.tagName === "TFOOT")) {
+        rows.push(...Array.from(child.children).filter(
+          (row) => row instanceof HTMLElement && row.tagName === "TR"
+        ));
+      }
+    }
+    return rows;
+  }
+  function directListItems(list2) {
+    return Array.from(list2.children).filter(
+      (child) => child instanceof HTMLElement && child.tagName === "LI"
+    );
+  }
+  function directNestedLists(item) {
+    return Array.from(item.children).filter(
+      (child) => child instanceof HTMLElement && isList3(child)
+    );
+  }
+  function closestList(element) {
+    for (let current = element; current; current = current.parentElement) {
+      if (isList3(current)) {
+        return current;
+      }
+    }
+    return null;
+  }
+  function closestListRoot(list2) {
+    let root2 = list2;
+    for (let parent = closestList(list2.parentElement); parent; parent = closestList(parent.parentElement)) {
+      root2 = parent;
+    }
+    return root2;
+  }
+  function listStart2(list2, fallback = 1) {
+    const parsed = list2.hasAttribute("start") ? Number(list2.getAttribute("start")) : Number.NaN;
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+  }
+  function listItemValue(item, fallback, ordered) {
+    const parsed = item.hasAttribute("value") ? Number(item.getAttribute("value")) : Number.NaN;
+    return ordered && Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+  }
+  function orderedNumberStyle(type, depth) {
+    if (type === "A") return 3;
+    if (type === "a") return 4;
+    if (type === "I") return 1;
+    if (type === "i") return 2;
+    return [0, 4, 2][depth % 3];
+  }
+  function orderedMarker(value, type) {
+    if (type === "A" || type === "a") {
+      const marker = alphabetic(value);
+      return `${type === "A" ? marker.toUpperCase() : marker}.`;
+    }
+    if (type === "I" || type === "i") {
+      const marker = roman(value);
+      return `${type === "I" ? marker.toUpperCase() : marker}.`;
+    }
+    return `${value}.`;
+  }
+  function alphabetic(value) {
+    let remaining = Math.max(1, Math.trunc(value));
+    let result = "";
+    while (remaining > 0) {
+      remaining--;
+      result = String.fromCharCode(97 + remaining % 26) + result;
+      remaining = Math.floor(remaining / 26);
+    }
+    return result;
+  }
+  function roman(value) {
+    let remaining = Math.max(1, Math.min(3999, Math.trunc(value)));
+    let result = "";
+    const numerals = [
+      [1e3, "m"],
+      [900, "cm"],
+      [500, "d"],
+      [400, "cd"],
+      [100, "c"],
+      [90, "xc"],
+      [50, "l"],
+      [40, "xl"],
+      [10, "x"],
+      [9, "ix"],
+      [5, "v"],
+      [4, "iv"],
+      [1, "i"]
+    ];
+    for (const [amount, numeral] of numerals) {
+      while (remaining >= amount) {
+        result += numeral;
+        remaining -= amount;
+      }
+    }
+    return result;
+  }
+  function headingFontSize(tagName) {
+    const level = /^H([1-6])$/.exec(tagName)?.[1];
+    return level ? [40, 34, 30, 26, 24, 22][Number(level) - 1] : null;
+  }
+  function isBlockElement2(element) {
+    return [
+      "P",
+      "DIV",
+      "SECTION",
+      "ARTICLE",
+      "HEADER",
+      "FOOTER",
+      "BLOCKQUOTE",
+      "H1",
+      "H2",
+      "H3",
+      "H4",
+      "H5",
+      "H6",
+      "PRE"
+    ].includes(element.tagName);
+  }
+  function isList3(element) {
+    return element.tagName === "UL" || element.tagName === "OL";
+  }
+  function rtfEscape(value) {
+    let result = "";
+    for (let index = 0; index < value.length; index++) {
+      const code3 = value.charCodeAt(index);
+      const character = value[index];
+      if (character === "\\" || character === "{" || character === "}") {
+        result += `\\${character}`;
+      } else if (character === "\n") {
+        result += "\\line ";
+      } else if (character === "\r") {
+        continue;
+      } else if (character === "	") {
+        result += "\\tab ";
+      } else if (code3 >= 32 && code3 <= 126) {
+        result += character;
+      } else {
+        result += `\\u${code3 > 32767 ? code3 - 65536 : code3}?`;
+      }
+    }
+    return result;
+  }
+  function rtfEscapeFieldInstruction(value) {
+    return value.replace(/([\\{}"])/g, "\\$1");
   }
 
   // src/editor/documentClipboard.ts
@@ -34900,13 +35533,16 @@ ${text3}`;
         mode
       ) : documentRepresentations(view2, range.from, range.to, mode);
       writeDocumentTransfer(event.clipboardData, representations);
+      const nativeWrite = event.isTrusted || requestedMode !== null ? publishNativeOfficeClipboard(doc2, representations) : Promise.resolve(false);
       clearPendingClipboardCut(doc2);
       setPendingCutToken(doc2, void 0);
       view2.dom.classList.remove("mlrt-document-cut-pending");
-      announce(
-        doc2,
-        requestedMode ? `Copied as ${capitalize(requestedMode)}.` : "Copied document selection."
-      );
+      const message = requestedMode ? `Copied as ${capitalize(requestedMode)}.` : "Copied document selection.";
+      if (requestedMode === "rich") {
+        void nativeWrite.then(() => announce(doc2, message));
+      } else {
+        announce(doc2, message);
+      }
     };
     const onCut = (event) => {
       if (event.defaultPrevented || getTableRangeSelection(doc2) || findCell(event.target)) {
@@ -34930,21 +35566,22 @@ ${text3}`;
         cutToken: token
       };
       event.preventDefault();
-      writeDocumentTransfer(
-        event.clipboardData,
-        projection ? documentRepresentationsForMarkdown(
-          view2,
-          markdown2,
-          readCopyMode(doc2),
-          payload
-        ) : documentRepresentations(
-          view2,
-          range.from,
-          range.to,
-          readCopyMode(doc2),
-          payload
-        )
+      const representations = projection ? documentRepresentationsForMarkdown(
+        view2,
+        markdown2,
+        readCopyMode(doc2),
+        payload
+      ) : documentRepresentations(
+        view2,
+        range.from,
+        range.to,
+        readCopyMode(doc2),
+        payload
       );
+      writeDocumentTransfer(event.clipboardData, representations);
+      if (event.isTrusted) {
+        void publishNativeOfficeClipboard(doc2, representations);
+      }
       setPendingClipboardCut(
         doc2,
         projection ? {
@@ -35592,7 +36229,7 @@ ${text3}`;
         } : {}
       };
     }
-    const clipboard = buildDocumentClipboard(markdown2, mode === "rich");
+    const clipboard = buildDocumentClipboard(markdown2, mode);
     const plain = mode === "plain" || parseMarkdownTables(markdown2).length === 0 ? clipboard.plain : markdown2;
     if (mode === "plain") {
       return {
@@ -35618,7 +36255,19 @@ ${text3}`;
     const metadata = `<meta name="mlrt-clipboard" content="${escapeHtmlAttribute2(
       encodePayload(privatePayload)
     )}">`;
-    return { plain, html: `${metadata}${sanitized}`, privatePayload };
+    const rtf = mode === "rich" ? officeRtfFromHtml(purify.sanitize(
+      buildDocumentClipboard(markdown2, "word").html,
+      {
+        FORBID_TAGS: ["script", "style", "object", "embed", "iframe", "form"],
+        FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
+      }
+    )) : void 0;
+    return {
+      plain,
+      html: `${metadata}${sanitized}`,
+      ...rtf ? { rtf } : {},
+      privatePayload
+    };
   }
   function compositeSelectionMarkdown(view2, projection) {
     const tables2 = getParsedTables(view2.state.doc);
@@ -35749,7 +36398,7 @@ ${text3}`;
       userEvent: "delete.selection"
     });
   }
-  function buildDocumentClipboard(markdown2, rich) {
+  function buildDocumentClipboard(markdown2, mode) {
     const segments = clipboardDocumentSegments(markdown2);
     const rows = [];
     const html3 = [];
@@ -35763,7 +36412,7 @@ ${text3}`;
       }
       if (segment.kind === "prose") {
         rows.push(...proseWorksheetRows(segment.markdown));
-        html3.push(renderClipboardProse(segment.markdown, rich));
+        html3.push(renderClipboardProse(segment.markdown, mode));
         continue;
       }
       const table2 = segment.table;
@@ -35778,7 +36427,7 @@ ${text3}`;
           ))
         );
       }
-      html3.push(renderClipboardTable(table2, rich));
+      html3.push(renderClipboardTable(table2, mode));
     }
     if (rows.length === 0) {
       rows.push([""]);
@@ -35832,7 +36481,8 @@ ${text3}`;
     }
     flushProse();
   }
-  function renderClipboardProse(markdown2, rich) {
+  function renderClipboardProse(markdown2, mode) {
+    const rich = mode === "rich" || mode === "word";
     const rendered = purify.sanitize(
       (rich ? richMarkdownRenderer : markdownRenderer).render(markdown2),
       {
@@ -35840,21 +36490,25 @@ ${text3}`;
         FORBID_ATTR: ["src", "srcset", "onload", "onclick", "onerror"]
       }
     );
-    if (rich) {
+    if (mode === "word") {
+      return officeCompatibleWordHtml(rendered);
+    }
+    if (mode === "rich") {
       return officeCompatibleRichHtml(rendered);
     }
     const parsed = new DOMParser().parseFromString(rendered, "text/html");
     parsed.body.querySelectorAll("a, strong, b, em, i, u, s, del, code, sub, sup").forEach((element) => element.replaceWith(...Array.from(element.childNodes)));
     return parsed.body.innerHTML;
   }
-  function renderClipboardTable(table2, rich) {
+  function renderClipboardTable(table2, mode) {
     const renderRow = (rawCells, kind) => {
       const values2 = tableRowDisplayValues(rawCells);
-      const richValues = rich ? tableRowRichValues(rawCells) : void 0;
+      const richValues = mode === "rich" || mode === "word" ? tableRowRichValues(rawCells, mode === "word") : void 0;
+      const smartListValues = mode === "smart" ? tableRowSmartListValues(rawCells) : void 0;
       const tag = kind === "table-header" ? "th" : "td";
       const cells = Array.from({ length: table2.columnCount }, (_, column) => {
         const alignment = table2.alignments[column] ?? "left";
-        const content2 = richValues?.[column] ?? escapeWorksheetText(values2[column] ?? "");
+        const content2 = richValues?.[column] ?? smartListValues?.[column] ?? escapeWorksheetText(values2[column] ?? "");
         return `<${tag} style="border:1px solid #000000;padding:2px 6px;text-align:${alignment};vertical-align:top;white-space:pre-wrap">${content2}</${tag}>`;
       }).join("");
       return `<tr data-mlrt-row-kind="${kind}">${cells}</tr>`;
@@ -35920,7 +36574,7 @@ ${text3}`;
       return visibleElementText(parsed.body).trim();
     });
   }
-  function tableRowRichValues(rawCells) {
+  function tableRowRichValues(rawCells, word) {
     return rawCells.map((raw) => {
       const sanitized = purify.sanitize(
         richMarkdownRenderer.renderInline(
@@ -35932,7 +36586,22 @@ ${text3}`;
           ALLOW_UNKNOWN_PROTOCOLS: false
         }
       );
-      return officeCompatibleRichHtml(sanitized);
+      return word ? officeCompatibleWordHtml(sanitized) : officeCompatibleRichHtml(sanitized);
+    });
+  }
+  function tableRowSmartListValues(rawCells) {
+    return rawCells.map((raw) => {
+      const sanitized = purify.sanitize(
+        richMarkdownRenderer.renderInline(
+          markdownCellToDisplayText(raw).trim()
+        ),
+        {
+          ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
+          ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
+          ALLOW_UNKNOWN_PROTOCOLS: false
+        }
+      );
+      return officeCompatibleSmartListHtml(sanitized);
     });
   }
   function visibleElementText(element) {
@@ -35948,12 +36617,24 @@ ${text3}`;
     if (representations.html) {
       transfer.setData("text/html", representations.html);
     }
+    if (representations.rtf) {
+      transfer.setData("text/rtf", representations.rtf);
+    }
     if (representations.markdown) {
       transfer.setData("text/markdown", representations.markdown);
     }
     if (representations.privatePayload) {
       transfer.setData(MLRT_CLIPBOARD_MIME, representations.privatePayload);
     }
+  }
+  function publishNativeOfficeClipboard(doc2, representations) {
+    if (!representations.html || !representations.rtf) {
+      return Promise.resolve(false);
+    }
+    return requestNativeOfficeClipboard(doc2, {
+      plain: representations.plain,
+      rtf: representations.rtf
+    });
   }
   function readTransfer(transfer) {
     return {
@@ -36629,6 +37310,7 @@ ${replacement}
     requestedDocumentCopyMode = null;
     try {
       await writeDocumentAsyncClipboard(representations);
+      await publishNativeOfficeClipboard(doc2, representations);
       clearPendingClipboardCut(doc2);
       setPendingCutToken(doc2, void 0);
       view2.dom.classList.remove("mlrt-document-cut-pending");
@@ -39323,13 +40005,16 @@ ${replacement}
       beginClipboardOperation(doc2);
       event.preventDefault();
       writeDataTransfer(event.clipboardData, representations);
+      const nativeWrite = event.isTrusted || requestedForWrapper ? publishNativeOfficeClipboard2(doc2, representations) : Promise.resolve(false);
       clearPendingClipboardCut(doc2);
       setPendingCutToken(doc2, void 0);
       view2.dom.classList.remove("mlrt-document-cut-pending");
-      announce2(
-        doc2,
-        requestedMode ? `Copied as ${COPY_MODE_LABELS[requestedMode]}.` : "Copied selection."
-      );
+      const message = requestedMode ? `Copied as ${COPY_MODE_LABELS[requestedMode]}.` : "Copied selection.";
+      if (requestedMode === "rich") {
+        void nativeWrite.then(() => announce2(doc2, message));
+      } else {
+        announce2(doc2, message);
+      }
     };
     const onCut = (event) => {
       const selection = getTableRangeSelection(doc2);
@@ -39352,6 +40037,9 @@ ${replacement}
       beginClipboardOperation(doc2);
       event.preventDefault();
       writeDataTransfer(event.clipboardData, representations);
+      if (event.isTrusted) {
+        void publishNativeOfficeClipboard2(doc2, representations);
+      }
       view2.dom.classList.remove("mlrt-document-cut-pending");
       setPendingClipboardCut(doc2, {
         kind: "table",
@@ -39606,28 +40294,40 @@ ${replacement}
     }
     const privatePayload = JSON.stringify(payload);
     const embedded = encodePayloadForHtml(privatePayload);
-    const richCells = mode === "rich" ? payload.rows.map(
-      (row) => row.map(
-        (cell2) => officeCompatibleRichHtml(purify.sanitize(
+    const renderedCells = mode === "rich" || mode === "smart" ? payload.rows.map(
+      (row) => row.map((cell2) => {
+        return purify.sanitize(
           richCellRenderer.renderInline(cell2.markdown?.trim() ?? cell2.text),
           {
             ALLOWED_TAGS: OFFICE_RICH_CELL_ALLOWED_TAGS,
             ALLOWED_ATTR: OFFICE_RICH_CELL_ALLOWED_ATTR,
             ALLOW_UNKNOWN_PROTOCOLS: false
           }
-        ))
-      )
+        );
+      })
     ) : void 0;
+    const htmlCells = renderedCells?.map((row) => row.map(
+      (cell2) => mode === "rich" ? officeCompatibleRichHtml(cell2) : officeCompatibleSmartListHtml(cell2) ?? void 0
+    ));
+    const html3 = gridToHtml(payload.rows, {
+      alignments: payload.alignments,
+      embeddedPayload: embedded,
+      htmlCells,
+      headerRow: payload.includesHeader
+    });
+    const rtf = mode === "rich" && renderedCells ? officeRtfFromHtml(gridToHtml(payload.rows, {
+      alignments: payload.alignments,
+      embeddedPayload: embedded,
+      htmlCells: renderedCells.map(
+        (row) => row.map((cell2) => officeCompatibleWordHtml(cell2))
+      ),
+      headerRow: payload.includesHeader
+    })) : void 0;
     return {
       plain,
       csv: serializeDelimitedGrid(rows, ","),
-      html: gridToHtml(payload.rows, {
-        alignments: payload.alignments,
-        embeddedPayload: embedded,
-        rich: mode === "rich",
-        richCells,
-        headerRow: payload.includesHeader
-      }),
+      html: html3,
+      ...rtf ? { rtf } : {},
       privatePayload
     };
   }
@@ -40073,6 +40773,9 @@ ${replacement}
     if (representations.html) {
       transfer.setData("text/html", representations.html);
     }
+    if (representations.rtf) {
+      transfer.setData("text/rtf", representations.rtf);
+    }
     if (representations.markdown) {
       transfer.setData("text/markdown", representations.markdown);
     }
@@ -40082,6 +40785,15 @@ ${replacement}
     if (representations.privatePayload) {
       transfer.setData(MLRT_CLIPBOARD_MIME, representations.privatePayload);
     }
+  }
+  function publishNativeOfficeClipboard2(doc2, representations) {
+    if (!representations.html || !representations.rtf) {
+      return Promise.resolve(false);
+    }
+    return requestNativeOfficeClipboard(doc2, {
+      plain: representations.plain,
+      rtf: representations.rtf
+    });
   }
   function readDataTransfer(transfer) {
     return {
@@ -40118,6 +40830,10 @@ ${replacement}
     const operationVersion = beginClipboardOperation(doc2);
     try {
       await writeAsyncClipboard(representations);
+      if (!isCurrentClipboardOperation(doc2, operationVersion)) {
+        return;
+      }
+      await publishNativeOfficeClipboard2(doc2, representations);
       if (!isCurrentClipboardOperation(doc2, operationVersion)) {
         return;
       }
@@ -40166,6 +40882,7 @@ ${replacement}
     const operationVersion = beginClipboardOperation(doc2);
     try {
       await writeAsyncClipboard(representations);
+      await publishNativeOfficeClipboard2(doc2, representations);
     } catch {
       if (isCurrentClipboardOperation(doc2, operationVersion)) {
         announce2(doc2, "Move could not access the clipboard. Use Cmd/Ctrl+X.");
@@ -41119,12 +41836,28 @@ ${replacement}
     view.dom.addEventListener("mlrt:open-clipboard-settings", () => {
       vscode.postMessage({ type: "openClipboardSettings" });
     });
+    window.addEventListener(
+      NATIVE_OFFICE_CLIPBOARD_EVENT,
+      (event) => {
+        const payload = event.detail;
+        vscode.postMessage({
+          type: "writeNativeOfficeClipboard",
+          requestId: payload.requestId,
+          plain: payload.plain,
+          rtf: payload.rtf
+        });
+      }
+    );
   } catch (error2) {
     app.replaceChildren(renderStartupError(error2));
     throw error2;
   }
   window.addEventListener("message", (event) => {
     const message = event.data;
+    if (isHostNativeOfficeClipboardResultMessage(message)) {
+      reportNativeOfficeClipboardResult(window, message);
+      return;
+    }
     if (isHostSetEditorOptionsMessage(message)) {
       updateEditorOptions(message.editorOptions);
       return;
@@ -41969,6 +42702,13 @@ ${String(error2)}`;
     }
     const record = message;
     return record.type === "setEditorOptions" && isEditorOptions(record.editorOptions);
+  }
+  function isHostNativeOfficeClipboardResultMessage(message) {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
+    const record = message;
+    return record.type === "nativeOfficeClipboardResult" && typeof record.requestId === "number" && Number.isInteger(record.requestId) && record.requestId > 0 && typeof record.written === "boolean";
   }
   function isEditorOptions(value) {
     if (!value || typeof value !== "object") {

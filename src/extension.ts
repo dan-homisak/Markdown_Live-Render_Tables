@@ -1,5 +1,9 @@
 import * as fs from "fs";
+import { execFile } from "child_process";
 import { randomUUID } from "crypto";
+import * as os from "os";
+import * as path from "path";
+import { promisify } from "util";
 import * as vscode from "vscode";
 import {
   mapNormalizedDocumentChangesToHost,
@@ -20,6 +24,8 @@ const TABLE_NAVIGATION_MODIFIER_KEY_SETTING =
   "tableNavigation.modifierKey";
 const REOPEN_ACTIVE_EDITOR_WITH_COMMAND = "reopenActiveEditorWith";
 const DEFAULT_EDITOR_ID = "default";
+const execFileAsync = promisify(execFile);
+const MAX_NATIVE_CLIPBOARD_TEXT_LENGTH = 16 * 1024 * 1024;
 
 let debugOutputChannel: vscode.OutputChannel | undefined;
 
@@ -99,6 +105,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     let applyingFromWebview = false;
     let applyQueue: Promise<void> = Promise.resolve();
     let documentRevision = 0;
+    let nativeClipboardRequest = 0;
     // Once a claim is rejected, every message sent before the webview receives
     // that rejection belongs to the invalidated optimistic branch. The
     // webview intentionally clears all of those pending echoes; this floor
@@ -372,6 +379,32 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
 
+        if (isWriteNativeOfficeClipboardMessage(message)) {
+          const request = ++nativeClipboardRequest;
+          void writeNativeOfficeClipboard(message, () =>
+            request === nativeClipboardRequest &&
+            webviewPanel.active &&
+            this.activeLiveDocumentUri?.toString() === documentKey
+          ).then((written) => {
+            logDebug(
+              `native Office clipboard ${written ? "written" : "skipped"}`,
+            );
+            void webview.postMessage({
+              type: "nativeOfficeClipboardResult",
+              requestId: message.requestId,
+              written,
+            });
+          }).catch((error: unknown) => {
+            logDebug(`native Office clipboard failed: ${String(error)}`);
+            void webview.postMessage({
+              type: "nativeOfficeClipboardResult",
+              requestId: message.requestId,
+              written: false,
+            });
+          });
+          return;
+        }
+
         if (isChangeMessage(message)) {
           // Always serialize the claim through the apply queue, even when its
           // final text happens to match the document *right now*. An earlier
@@ -633,6 +666,13 @@ interface OpenClipboardSettingsMessage {
   type: "openClipboardSettings";
 }
 
+interface WriteNativeOfficeClipboardMessage {
+  type: "writeNativeOfficeClipboard";
+  requestId: number;
+  plain: string;
+  rtf: string;
+}
+
 function isReadyMessage(message: unknown): message is ReadyMessage {
   return isMessageRecord(message) && message.type === "ready";
 }
@@ -709,9 +749,133 @@ function isOpenClipboardSettingsMessage(
   return isMessageRecord(message) && message.type === "openClipboardSettings";
 }
 
+function isWriteNativeOfficeClipboardMessage(
+  message: unknown,
+): message is WriteNativeOfficeClipboardMessage {
+  return (
+    isMessageRecord(message) &&
+    message.type === "writeNativeOfficeClipboard" &&
+    typeof message.requestId === "number" &&
+    Number.isInteger(message.requestId) &&
+    message.requestId > 0 &&
+    typeof message.plain === "string" &&
+    typeof message.rtf === "string" &&
+    message.plain.length <= MAX_NATIVE_CLIPBOARD_TEXT_LENGTH &&
+    message.rtf.length <= MAX_NATIVE_CLIPBOARD_TEXT_LENGTH &&
+    message.rtf.startsWith("{\\rtf1")
+  );
+}
+
 function isMessageRecord(message: unknown): message is Record<string, unknown> {
   return Boolean(message) && typeof message === "object";
 }
+
+async function writeNativeOfficeClipboard(
+  message: WriteNativeOfficeClipboardMessage,
+  isCurrent: () => boolean,
+): Promise<boolean> {
+  if (
+    vscode.env.remoteName !== undefined ||
+    (process.platform !== "darwin" && process.platform !== "win32")
+  ) {
+    return false;
+  }
+  let browserClipboardReady = false;
+  for (let attempt = 0; attempt < 6 && isCurrent(); attempt++) {
+    const currentText = (await vscode.env.clipboard.readText())
+      .replace(/\r\n?/g, "\n");
+    if (currentText === message.plain.replace(/\r\n?/g, "\n")) {
+      browserClipboardReady = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (!browserClipboardReady || !isCurrent()) {
+    return false;
+  }
+
+  const tempDirectory = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "mlrt-office-clipboard-"),
+  );
+  const payloadPath = path.join(tempDirectory, "payload.json");
+  try {
+    await fs.promises.writeFile(payloadPath, JSON.stringify(message), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    if (!isCurrent()) {
+      return false;
+    }
+    if (process.platform === "darwin") {
+      await execFileAsync(
+        "/usr/bin/osascript",
+        ["-l", "JavaScript", "-e", MAC_OFFICE_CLIPBOARD_SCRIPT, payloadPath],
+        { timeout: 5000, maxBuffer: 1024 * 1024 },
+      );
+    } else {
+      const encodedCommand = Buffer.from(
+        WINDOWS_OFFICE_CLIPBOARD_SCRIPT,
+        "utf16le",
+      ).toString("base64");
+      await execFileAsync(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Sta",
+          "-EncodedCommand",
+          encodedCommand,
+        ],
+        {
+          timeout: 7000,
+          maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            MLRT_OFFICE_CLIPBOARD_PAYLOAD: payloadPath,
+          },
+        },
+      );
+    }
+    return true;
+  } finally {
+    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
+  }
+}
+
+const MAC_OFFICE_CLIPBOARD_SCRIPT = String.raw`
+ObjC.import('AppKit');
+ObjC.import('Foundation');
+function run(argv) {
+  const source = $.NSString.stringWithContentsOfFileEncodingError(
+    $(argv[0]),
+    $.NSUTF8StringEncoding,
+    null
+  );
+  if (!source) throw new Error('Could not read clipboard payload.');
+  const payload = JSON.parse(ObjC.unwrap(source));
+  const pasteboard = $.NSPasteboard.generalPasteboard;
+  pasteboard.clearContents;
+  const rtfData = $(payload.rtf).dataUsingEncoding($.NSUTF8StringEncoding);
+  if (!pasteboard.setDataForType(rtfData, $.NSPasteboardTypeRTF)) {
+    throw new Error('Could not publish native RTF.');
+  }
+  if (!pasteboard.setStringForType($(payload.plain), $.NSPasteboardTypeString)) {
+    throw new Error('Could not publish native text.');
+  }
+  return 'ok';
+}`;
+
+const WINDOWS_OFFICE_CLIPBOARD_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+
+$payload = Get-Content -LiteralPath $env:MLRT_OFFICE_CLIPBOARD_PAYLOAD -Raw -Encoding UTF8 | ConvertFrom-Json
+$data = [System.Windows.Forms.DataObject]::new()
+$data.SetData([System.Windows.Forms.DataFormats]::Rtf, [string]$payload.rtf)
+$data.SetData([System.Windows.Forms.DataFormats]::UnicodeText, [string]$payload.plain)
+[System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+`;
 
 function isDebugEnabled(): boolean {
   return vscode.workspace

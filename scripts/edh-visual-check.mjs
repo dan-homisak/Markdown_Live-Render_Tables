@@ -7247,6 +7247,15 @@ function tableRichCopyFallbackExpression() {
     const clipboardItemDescriptor = Object.getOwnPropertyDescriptor(win, 'ClipboardItem');
     let writtenItems = null;
     let writeCalls = 0;
+    let nativePayload = null;
+    const captureNativePayload = (event) => {
+      nativePayload = event.detail;
+      win.dispatchEvent(new win.CustomEvent(
+        'mlrt:native-office-clipboard-result',
+        { detail: { requestId: event.detail.requestId, written: true } },
+      ));
+    };
+    win.addEventListener('mlrt:write-native-office-clipboard', captureNativePayload);
     class MockClipboardItem {
       static supports(type) {
         return type === 'text/plain' || type === 'text/html';
@@ -7316,11 +7325,19 @@ function tableRichCopyFallbackExpression() {
         htmlHasAnchor: /<a(?:\\s|>)/i.test(html),
         plainHasTabs: plain.includes('\\t'),
         plainHasPipes: plain.includes('|'),
+        nativePayloadHasRtf:
+          typeof nativePayload?.rtf === 'string' &&
+          nativePayload.rtf.startsWith('{' + String.fromCharCode(92) + 'rtf1'),
+        nativePayloadExcludesHtml:
+          !Object.prototype.hasOwnProperty.call(nativePayload ?? {}, 'html'),
+        nativePayloadHasRequestId:
+          Number.isInteger(nativePayload?.requestId) && nativePayload.requestId > 0,
         status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
       });
     } catch (error) {
       return JSON.stringify({ ok: false, reason: String(error) });
     } finally {
+      win.removeEventListener('mlrt:write-native-office-clipboard', captureNativePayload);
       if (execDescriptor) {
         Object.defineProperty(root, 'execCommand', execDescriptor);
       } else {
@@ -7363,10 +7380,10 @@ function tableMenuCopyCarrierExpression() {
       clientX: rect.left + 6, clientY: rect.top + 6,
     }));
     const copyButton = root.querySelector(
-      '.mlrt-clipboard-menu button[data-action="copy-smart"]'
+      '.mlrt-clipboard-menu button[data-action="copy-rich"]'
     );
     if (!copyButton) {
-      return JSON.stringify({ ok: false, reason: 'missing smart-copy action' });
+      return JSON.stringify({ ok: false, reason: 'missing rich-copy action' });
     }
     const execDescriptor = Object.getOwnPropertyDescriptor(root, 'execCommand');
     let carrierSelected = false;
@@ -7375,6 +7392,18 @@ function tableMenuCopyCarrierExpression() {
     let copiedHtml = '';
     let copiedPrivate = '';
     let carrierValue = '';
+    let nativePayload = null;
+    const captureNativePayload = (event) => {
+      nativePayload = event.detail;
+      root.defaultView.dispatchEvent(new root.defaultView.CustomEvent(
+        'mlrt:native-office-clipboard-result',
+        { detail: { requestId: event.detail.requestId, written: true } },
+      ));
+    };
+    root.defaultView.addEventListener(
+      'mlrt:write-native-office-clipboard',
+      captureNativePayload,
+    );
     try {
       Object.defineProperty(root, 'execCommand', {
         configurable: true,
@@ -7439,11 +7468,20 @@ function tableMenuCopyCarrierExpression() {
         plainHasPipeTable: copiedPlain.includes('|') && !copiedPlain.includes('\\t'),
         htmlHasTable: copiedHtml.includes('<table'),
         hasPrivateData: copiedPrivate.length > 0,
+        nativePayloadHasRtf:
+          typeof nativePayload?.rtf === 'string' &&
+          nativePayload.rtf.startsWith('{' + String.fromCharCode(92) + 'rtf1'),
+        nativePayloadExcludesHtml:
+          !Object.prototype.hasOwnProperty.call(nativePayload ?? {}, 'html'),
         status: root.querySelector('.mlrt-clipboard-status')?.textContent ?? '',
       });
     } catch (error) {
       return JSON.stringify({ ok: false, reason: String(error) });
     } finally {
+      root.defaultView.removeEventListener(
+        'mlrt:write-native-office-clipboard',
+        captureNativePayload,
+      );
       if (execDescriptor) {
         Object.defineProperty(root, 'execCommand', execDescriptor);
       } else {
@@ -7503,18 +7541,42 @@ function deepListRichCopyExpression() {
       const copiedCell = Array.from(tableDocument.querySelectorAll('td, th')).find((candidate) =>
         candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
       );
-      const lists = Array.from(copiedCell?.querySelectorAll('ul, ol') ?? []);
-      const items = Array.from(copiedCell?.querySelectorAll('li') ?? []);
-      let nestedDepth = 0;
-      let branch = copiedCell?.querySelector(':scope > ul, :scope > ol') ?? null;
-      while (branch) {
-        nestedDepth++;
-        branch = branch.querySelector(':scope > li > ul, :scope > li > ol');
-      }
-      const expectedMarkers = ['disc', 'circle', 'square', 'disc', 'circle', 'square'];
+      const richRows = Array.from(tableDocument.querySelectorAll('table > tbody > tr'));
+      const richLines = Array.from(copiedCell?.children ?? []).filter((element) =>
+        element.tagName === 'SPAN' &&
+        (element.getAttribute('style') ?? '').includes('white-space:pre-wrap')
+      );
+      const richLevelTexts = richLines.map((line) => line.textContent.trim());
+      const richRtf = transfer.getData('text/rtf');
+      const rtfSlash = String.fromCharCode(92);
+      root.documentElement.dataset.mlrtDefaultCopyMode = 'smart';
+      const smartTransfer = new root.defaultView.DataTransfer();
+      const smartCopy = new root.defaultView.ClipboardEvent('copy', {
+        clipboardData: smartTransfer, bubbles: true, cancelable: true,
+      });
+      wrapper.dispatchEvent(smartCopy);
+      const smartHtml = smartTransfer.getData('text/html');
+      const smartDocument = new root.defaultView.DOMParser().parseFromString(smartHtml, 'text/html');
+      const smartRows = Array.from(smartDocument.querySelectorAll('table > tbody > tr'));
+      const smartCell = smartDocument.querySelector('table > tbody > tr > td');
       view.focus();
       view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
       await wait();
+      root.documentElement.dataset.mlrtDefaultCopyMode = 'rich';
+      const richDocumentTransfer = new root.defaultView.DataTransfer();
+      const richDocumentCopy = new root.defaultView.ClipboardEvent('copy', {
+        clipboardData: richDocumentTransfer, bubbles: true, cancelable: true,
+      });
+      view.contentDOM.dispatchEvent(richDocumentCopy);
+      const richFullDocument = new root.defaultView.DOMParser().parseFromString(
+        richDocumentTransfer.getData('text/html'),
+        'text/html',
+      );
+      const richDocumentListCell = Array.from(richFullDocument.querySelectorAll('td, th')).find((candidate) =>
+        candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
+      );
+      const richDocumentRtf = richDocumentTransfer.getData('text/rtf');
+      root.documentElement.dataset.mlrtDefaultCopyMode = 'smart';
       const documentTransfer = new root.defaultView.DataTransfer();
       const documentCopy = new root.defaultView.ClipboardEvent('copy', {
         clipboardData: documentTransfer, bubbles: true, cancelable: true,
@@ -7527,36 +7589,64 @@ function deepListRichCopyExpression() {
       const documentListCell = Array.from(fullDocument.querySelectorAll('td, th')).find((candidate) =>
         candidate.textContent.includes('Level 1') && candidate.textContent.includes('Level 6')
       );
-      let documentNestedDepth = 0;
-      let documentBranch = documentListCell?.querySelector(':scope > ul, :scope > ol') ?? null;
-      while (documentBranch) {
-        documentNestedDepth++;
-        documentBranch = documentBranch.querySelector(':scope > li > ul, :scope > li > ol');
-      }
       result = {
         ok: true,
         copyPrevented: copy.defaultPrevented,
         selectedCellCount,
         htmlHasOuterTable: Boolean(tableDocument.querySelector('table > tbody > tr > td')),
         copiedCellFound: Boolean(copiedCell),
-        nestedDepth,
-        listCount: lists.length,
-        itemCount: items.length,
-        semanticLevelsPreserved: items.map((item) =>
-          Array.from(item.childNodes).filter((node) => node.nodeType === 3)
-            .map((node) => node.textContent).join('').trim()
+        richCellCount: tableDocument.querySelectorAll('table > tbody > tr > td').length,
+        richMaximumColumnCount: Math.max(0, ...richRows.map((row) => row.children.length)),
+        richHasNoBlockContent: !copiedCell?.querySelector('p, div, ul, ol, li'),
+        richLineCount: richLines.length,
+        richSameCellBreakCount:
+          copiedCell?.querySelectorAll('br[style*="mso-data-placement:same-cell"]').length ?? 0,
+        richLevelTexts,
+        richHasIndentedMarkers:
+          copiedCell?.textContent.includes('• Level 1') &&
+          copiedCell?.textContent.includes('\\u00a0'.repeat(4) + '◦ Level 2') &&
+          copiedCell?.textContent.includes('\\u00a0'.repeat(8) + '▪ Level 3'),
+        richHasNativeRtf: richRtf.startsWith('{' + rtfSlash + 'rtf1'),
+        richRtfHasListTable: richRtf.includes(rtfSlash + 'listtable'),
+        richRtfHasListOverride: richRtf.includes(rtfSlash + 'listoverridetable'),
+        richRtfUsesBulletNumberFormat: richRtf.includes(rtfSlash + 'levelnfc23'),
+        richRtfHasSixNativeLevels: [0, 1, 2, 3, 4, 5].every((level) =>
+          richRtf.includes(rtfSlash + 'ilvl' + level)
         ),
-        listStylesPreserved: lists.every((list, index) => {
-          const style = list.getAttribute('style') ?? '';
-          return style.includes('padding-left:24pt') &&
-            style.includes('list-style-position:outside') &&
-            style.includes('list-style-type:' + expectedMarkers[index]);
-        }),
+        richRtfParagraphCount: richRtf.split(rtfSlash + 'par ').length - 1,
+        richRtfCellCount: richRtf.split(rtfSlash + 'cell ').length - 1,
+        richRtfRowCount: richRtf.split(rtfSlash + 'row ').length - 1,
         plainHasMarkdownList: transfer.getData('text/plain').includes('<ul><li>Level 1'),
         plainHasTabs: transfer.getData('text/plain').includes('\\t'),
+        smartCopyPrevented: smartCopy.defaultPrevented,
+        smartCellCount: smartDocument.querySelectorAll('table > tbody > tr > td').length,
+        smartMaximumColumnCount: Math.max(0, ...smartRows.map((row) => row.children.length)),
+        smartHasNoSemanticList: !smartCell?.querySelector('ul, ol, li'),
+        smartSameCellBreakCount: smartCell?.querySelectorAll('br[style*="mso-data-placement:same-cell"]').length ?? 0,
+        smartHasAllLevels: [1, 2, 3, 4, 5, 6].every((level) =>
+          smartCell?.textContent.includes('Level ' + level)
+        ),
+        smartHasIndentedMarkers:
+          smartCell?.textContent.includes('• Level 1') &&
+          smartCell?.textContent.includes('\\u00a0'.repeat(4) + '◦ Level 2') &&
+          smartCell?.textContent.includes('\\u00a0'.repeat(8) + '▪ Level 3'),
+        smartPlainHasTabs: smartTransfer.getData('text/plain').includes('\\t'),
+        richDocumentCopyPrevented: richDocumentCopy.defaultPrevented,
+        richDocumentCellFound: Boolean(richDocumentListCell),
+        richDocumentHasNoBlockContent:
+          !richDocumentListCell?.querySelector('p, div, ul, ol, li'),
+        richDocumentSameCellBreakCount:
+          richDocumentListCell?.querySelectorAll('br[style*="mso-data-placement:same-cell"]').length ?? 0,
+        richDocumentHasNativeRtf:
+          richDocumentRtf.startsWith('{' + rtfSlash + 'rtf1'),
+        richDocumentRtfHasSixNativeLevels: [0, 1, 2, 3, 4, 5].every((level) =>
+          richDocumentRtf.includes(rtfSlash + 'ilvl' + level)
+        ),
         documentCopyPrevented: documentCopy.defaultPrevented,
-        documentNestedDepth,
-        documentListItemCount: documentListCell?.querySelectorAll('li').length ?? 0,
+        documentSmartCellFound: Boolean(documentListCell),
+        documentSmartHasNoSemanticList: !documentListCell?.querySelector('ul, ol, li'),
+        documentSmartSameCellBreakCount:
+          documentListCell?.querySelectorAll('br[style*="mso-data-placement:same-cell"]').length ?? 0,
       };
     } catch (error) {
       result = { ok: false, reason: String(error) };
@@ -13865,6 +13955,9 @@ function assertTableRichCopyFallback(result) {
     !result.htmlHasAnchor ||
     result.plainHasTabs ||
     !result.plainHasPipes ||
+    !result.nativePayloadHasRtf ||
+    !result.nativePayloadExcludesHtml ||
+    !result.nativePayloadHasRequestId ||
     result.status !== 'Copied as Rich.'
   ) {
     throw new Error(
@@ -13880,17 +13973,43 @@ function assertDeepListRichCopy(result) {
     result.selectedCellCount !== 1 ||
     !result.htmlHasOuterTable ||
     !result.copiedCellFound ||
-    result.nestedDepth !== 6 ||
-    result.listCount !== 6 ||
-    result.itemCount !== 6 ||
-    JSON.stringify(result.semanticLevelsPreserved) !==
-      JSON.stringify(['Level 1', 'Level 2', 'Level 3', 'Level 4', 'Level 5', 'Level 6']) ||
-    !result.listStylesPreserved ||
+    result.richCellCount !== 1 ||
+    result.richMaximumColumnCount !== 1 ||
+    !result.richHasNoBlockContent ||
+    result.richLineCount !== 6 ||
+    result.richSameCellBreakCount !== 5 ||
+    ![1, 2, 3, 4, 5, 6].every((level) =>
+      result.richLevelTexts.some((text) => text.includes('Level ' + level))
+    ) ||
+    !result.richHasIndentedMarkers ||
+    !result.richHasNativeRtf ||
+    !result.richRtfHasListTable ||
+    !result.richRtfHasListOverride ||
+    !result.richRtfUsesBulletNumberFormat ||
+    !result.richRtfHasSixNativeLevels ||
+    result.richRtfParagraphCount !== 6 ||
+    result.richRtfCellCount !== 1 ||
+    result.richRtfRowCount !== 1 ||
     !result.plainHasMarkdownList ||
     result.plainHasTabs ||
+    !result.smartCopyPrevented ||
+    result.smartCellCount !== 1 ||
+    result.smartMaximumColumnCount !== 1 ||
+    !result.smartHasNoSemanticList ||
+    result.smartSameCellBreakCount !== 5 ||
+    !result.smartHasAllLevels ||
+    !result.smartHasIndentedMarkers ||
+    result.smartPlainHasTabs ||
+    !result.richDocumentCopyPrevented ||
+    !result.richDocumentCellFound ||
+    !result.richDocumentHasNoBlockContent ||
+    result.richDocumentSameCellBreakCount !== 5 ||
+    !result.richDocumentHasNativeRtf ||
+    !result.richDocumentRtfHasSixNativeLevels ||
     !result.documentCopyPrevented ||
-    result.documentNestedDepth !== 6 ||
-    result.documentListItemCount !== 6 ||
+    !result.documentSmartCellFound ||
+    !result.documentSmartHasNoSemanticList ||
+    result.documentSmartSameCellBreakCount !== 5 ||
     !result.restoredDoc
   ) {
     throw new Error(
@@ -13912,7 +14031,9 @@ function assertTableMenuCopyCarrier(result) {
     !result.plainHasPipeTable ||
     !result.htmlHasTable ||
     !result.hasPrivateData ||
-    result.status !== 'Copied as Smart.'
+    !result.nativePayloadHasRtf ||
+    !result.nativePayloadExcludesHtml ||
+    result.status !== 'Copied as Rich.'
   ) {
     throw new Error(
       `Table menu copy carrier check failed: ${JSON.stringify(result)}`,
