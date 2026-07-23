@@ -31,6 +31,21 @@ const port = await findFreePort(9800, 200);
 const userDataDir = mkdtempSync(path.join(os.tmpdir(), "mlrt-edh-controls-"));
 const qaDir = path.join(repoRoot, "qa");
 await mkdir(qaDir, { recursive: true });
+const fixturePath = path.join(userDataDir, "TestTable.md");
+await writeFile(
+  fixturePath,
+  [
+    "Text up here at.",
+    "",
+    "| Key | Value |",
+    "|---|---|",
+    "| Long | long cell |",
+    "",
+    "Text after table.",
+    "",
+  ].join("\n"),
+  "utf8",
+);
 console.log(`Using Electron DevTools port ${port}`);
 
 async function findFreePort(start, count) {
@@ -68,7 +83,7 @@ const child = spawn(
     "--disable-workspace-trust",
     "--skip-release-notes",
     "--skip-welcome",
-    path.join(repoRoot, "TestTable.md"),
+    fixturePath,
   ],
   { stdio: ["ignore", "pipe", "pipe"], env: createElectronEnv() },
 );
@@ -501,12 +516,12 @@ try {
       const icons = [...menu.querySelectorAll(".mlrt-table-structure-menu-icon")];
       return JSON.stringify({
         ok:
-          items.length === 3 &&
-          icons.length === 3 &&
+          items.length === 4 &&
+          icons.length === 4 &&
           icons.every((icon) => icon.tagName.toLowerCase() === "svg") &&
           items.every((item) => !item.disabled) &&
           items.map((item) => item.dataset.action).join(",") ===
-            "insert-column-left,insert-column-right,delete-column" &&
+            "select-column,insert-column-left,insert-column-right,delete-column" &&
           !items.some((item) => /[🗑⬅➡⬆⬇]/u.test(item.textContent)),
         actions: items.map((item) => item.dataset.action),
         labels: items.map((item) => item.textContent),
@@ -519,6 +534,29 @@ try {
     wb,
     path.join(qaDir, "edh-structure-menu.png"),
   );
+  const selectedColumn = await evaluateJson(
+    live,
+    liveExpression(`
+      const wrapper = root.querySelector(".mlrt-table-widget");
+      root.querySelector('[data-action="select-column"]').click();
+      const rowCount = wrapper.querySelectorAll("thead tr, tbody tr").length;
+      const selectedCount = wrapper.querySelectorAll(".mlrt-table-cell-selected").length;
+      wrapper.dispatchEvent(new root.defaultView.KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }));
+      wrapper.querySelector(".mlrt-table-col-indicator").click();
+      return JSON.stringify({
+        ok:
+          selectedCount === rowCount &&
+          Boolean(root.querySelector('[data-action="insert-column-right"]')),
+        rowCount,
+        selectedCount,
+      });
+    `),
+  );
+  expectOk("SELECT COLUMN ACTION", selectedColumn);
 
   // 5. Insert column right; source gains an empty column.
   await evaluateJson(
@@ -684,7 +722,7 @@ try {
         return JSON.stringify({ ok: false, actions });
       }
       item.click();
-      return JSON.stringify({ ok: actions.length === 3, actions });
+      return JSON.stringify({ ok: actions.length === 4, actions });
     `),
   );
   expectOk("DELETE ROW CLICK", deleteRowClick);
@@ -802,7 +840,7 @@ try {
         return JSON.stringify({ ok: false, actions });
       }
       item.click();
-      return JSON.stringify({ ok: actions.length === 1 && hasIcon, actions });
+      return JSON.stringify({ ok: actions.length === 2 && hasIcon, actions });
     `),
   );
   expectOk("HEADER ROW MENU", headerRowMenu);

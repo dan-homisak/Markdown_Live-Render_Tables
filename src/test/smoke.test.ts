@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { editorDragPosition } from "../editor/dragPosition";
+import { cellValueNeedsCaretSentinel } from "../editor/table/cellSelection";
+import { planVisibleTableBoundary } from "../editor/tableBoundaryInput";
 import {
   mapNormalizedDocumentChangesToHost,
   normalizeDocumentText,
@@ -35,6 +38,39 @@ const standard = [
   "",
   "Done",
 ].join("\n");
+
+const dragCoordinates: { x: number; y: number }[] = [];
+const dragView = {
+  dom: {
+    getBoundingClientRect: () => ({
+      left: 10,
+      right: 110,
+      top: 20,
+      bottom: 120,
+      width: 100,
+    }),
+  },
+  contentDOM: {
+    getBoundingClientRect: () => ({
+      left: 30,
+      right: 90,
+      top: 20,
+      bottom: 120,
+      width: 60,
+    }),
+  },
+  state: { doc: { length: 500 } },
+  posAtCoords: (coordinates: { x: number; y: number }) => {
+    dragCoordinates.push(coordinates);
+    return 42;
+  },
+} as unknown as Parameters<typeof editorDragPosition>[0];
+assert.equal(editorDragPosition(dragView, -200, 60), 42);
+assert.deepEqual(dragCoordinates.pop(), { x: 30.5, y: 60 });
+assert.equal(editorDragPosition(dragView, 400, 60), 42);
+assert.deepEqual(dragCoordinates.pop(), { x: 89.5, y: 60 });
+assert.equal(editorDragPosition(dragView, 40, 10), 0);
+assert.equal(editorDragPosition(dragView, 40, 130), 500);
 
 const standardTables = parseMarkdownTables(standard);
 assert.equal(standardTables.length, 1);
@@ -169,6 +205,39 @@ assert.equal(
   positionedTable.to + 1,
 );
 assert.equal(positionBeforeTable(positionedTable), positionedTable.from - 1);
+assert.deepEqual(planVisibleTableBoundary(memoDoc, positionedTable, "before"), {
+  anchor: positionedTable.from - 1,
+});
+assert.deepEqual(planVisibleTableBoundary(memoDoc, positionedTable, "after"), {
+  anchor: positionedTable.to + 1,
+});
+
+const edgeTableSource = [
+  "| A | B |",
+  "| --- | --- |",
+  "| 1 | 2 |",
+].join("\n");
+const edgeTableDoc = {
+  length: edgeTableSource.length,
+  sliceString: (from: number, to: number) => edgeTableSource.slice(from, to),
+  toString: () => edgeTableSource,
+};
+const edgeTable = getParsedTables(edgeTableDoc)[0];
+assert.deepEqual(planVisibleTableBoundary(edgeTableDoc, edgeTable, "before"), {
+  anchor: 0,
+  change: { from: 0, to: 0, insert: "\n" },
+});
+assert.deepEqual(planVisibleTableBoundary(edgeTableDoc, edgeTable, "after"), {
+  anchor: edgeTableSource.length + 1,
+  change: {
+    from: edgeTableSource.length,
+    to: edgeTableSource.length,
+    insert: "\n",
+  },
+});
+assert.equal(cellValueNeedsCaretSentinel(""), true);
+assert.equal(cellValueNeedsCaretSentinel("line\n"), true);
+assert.equal(cellValueNeedsCaretSentinel("line"), false);
 
 const compactSizing = measureTableColumnSizing(
   parseMarkdownTables("| # | Value |\n| --- | --- |\n| 10 | B |")[0],
@@ -584,6 +653,12 @@ const packageJson = JSON.parse(
       displayName?: string;
       priority?: string;
     }>;
+    configuration?: {
+      properties?: Record<
+        string,
+        { default?: unknown; enum?: unknown[]; type?: string }
+      >;
+    };
   };
 };
 const extensionSource = fs.readFileSync(
@@ -592,6 +667,10 @@ const extensionSource = fs.readFileSync(
 );
 const liveEditorSource = fs.readFileSync(
   path.join(process.cwd(), "src", "webview", "liveEditor.ts"),
+  "utf8",
+);
+const liveEditorCss = fs.readFileSync(
+  path.join(process.cwd(), "media", "liveEditor.css"),
   "utf8",
 );
 const tableDecorationsSource = fs.readFileSync(
@@ -610,6 +689,30 @@ const tableWidgetSource = fs.readFileSync(
 assert.equal(
   packageJson.contributes?.customEditors?.[0]?.viewType,
   "markdownLiveRenderTables.liveEditor",
+);
+assert.deepEqual(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultCopyMode"
+  ]?.enum,
+  ["smart", "rich", "plain", "markdown"],
+);
+assert.equal(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultCopyMode"
+  ]?.default,
+  "smart",
+);
+assert.deepEqual(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultPasteMode"
+  ]?.enum,
+  ["auto", "rich", "plain", "markdown"],
+);
+assert.equal(
+  packageJson.contributes?.configuration?.properties?.[
+    "markdownLiveRenderTables.clipboard.defaultPasteMode"
+  ]?.default,
+  "auto",
 );
 assert.equal(packageJson.contributes?.customEditors?.[0]?.priority, "option");
 assert.equal(
@@ -648,6 +751,36 @@ assert.equal(
 assert.match(extensionSource, /reopenActiveEditorWith/);
 assert.match(extensionSource, /const DEFAULT_EDITOR_ID = "default"/);
 assert.match(liveEditorSource, /doc: initialDocument/);
+assert.match(liveEditorCss, /--mlrt-selection-accent:\s*#3b9cff;/);
+assert.match(liveEditorCss, /--mlrt-text-selection-accent:\s*#0078d4;/);
+assert.match(
+  liveEditorCss,
+  /var\(--mlrt-text-selection-accent\) 86%,\s*transparent/,
+);
+assert.match(
+  liveEditorCss,
+  /@media \(forced-colors: active\)[\s\S]*--mlrt-text-selection-accent:\s*Highlight;/,
+);
+assert.match(
+  liveEditorCss,
+  /\.cm-editor[\s\S]*\.cm-content[\s\S]*\.mlrt-table-cell\[contenteditable="true"\]:focus::selection[\s\S]*background-color:\s*rgb\(0 120 212 \/ 86%\)/,
+);
+assert.match(
+  liveEditorCss,
+  /var\(--mlrt-selection-accent\) 13%,\s*transparent/,
+);
+assert.doesNotMatch(
+  liveEditorCss,
+  /--mlrt-selection-fill:\s*var\(\s*--vscode-editor-selectionBackground/,
+);
+assert.match(
+  liveEditorCss,
+  /\.mlrt-prose-selection\s*\{[\s\S]*?background-color:\s*var\(--mlrt-text-selection-fill\)\s*!important;[\s\S]*?box-decoration-break:\s*clone;/,
+);
+assert.match(
+  liveEditorCss,
+  /\.mlrt-prose-selection::before\s*\{\s*content:\s*none;\s*\}/,
+);
 assert.doesNotMatch(extensionSource, /Loading Markdown live editor/);
 assert.doesNotMatch(
   liveEditorSource,

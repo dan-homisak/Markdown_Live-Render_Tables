@@ -1,142 +1,75 @@
 # Markdown Live Editor
 
-A VS Code custom editor for markdown that is intentionally table-first:
-markdown tables render as live editable grids that write every edit back to
-the markdown source, while the rest of the document remains editable markdown
-source with stock VS Code editor styling.
+Markdown Live Editor is a Visual Studio Code extension that makes Markdown tables easier to work with. It presents tables as editable grids while keeping the rest of the document in familiar Markdown source form, combining structured table editing with the precision and portability of plain text.
 
-## Usage
+Edits are written directly back to the underlying Markdown, so documents remain standard `.md` files that work with existing tools, version control, and publishing workflows.
 
-Open a markdown file and use the eye button in the editor title bar to toggle
-the live editor for that document. You can also toggle with `Cmd+Ctrl+M` on
-macOS or `Ctrl+Alt+M` on Windows/Linux. To change that shortcut later, open VS
-Code Keyboard Shortcuts and search for `Markdown Live Editor: Toggle Markdown
-Live Editor`.
+## Highlights
 
-In V1, tables support:
+- Edit Markdown tables through a live, spreadsheet-like interface
+- Navigate cells by keyboard and create multiline cell content
+- Select individual cells, rows, columns, or rectangular ranges
+- Copy and paste across Markdown editors, spreadsheets, and rich-text applications
+- Preserve table alignment, escaped pipes, and Markdown formatting
+- Expand tables safely when pasted data exceeds their current dimensions
+- Switch between the live editor and VS Code's standard Markdown editor at any time
 
-- live rendered grid editing
-- cell edits that write back to markdown source
-- Tab and Shift-Tab cell navigation
-- Shift-Enter multiline cells
-- escaped pipes
-- alignment preservation
+## Getting started
 
-Broader markdown live rendering is planned for V2.
+Open a `.md` or `.markdown` file in VS Code, then select the eye icon in the editor title bar to toggle Markdown Live Editor.
+
+You can also use the default keyboard shortcut:
+
+- macOS: `Cmd+Ctrl+M`
+- Windows and Linux: `Ctrl+Alt+M`
+
+To customize the shortcut, open **Keyboard Shortcuts** and search for **Markdown Live Editor: Toggle Markdown Live Editor**.
+
+## Working with tables
+
+Click a table cell to edit it. Press `Tab` or `Shift+Tab` to move between cells, and use `Shift+Enter` to add a line break within a cell.
+
+Ordinary arrow keys navigate characters and visual lines normally, crossing into another cell only after the caret reaches a cell edge. For immediate geometric navigation to an adjacent cell, hold the configured function key (`F2` by default) while pressing an arrow key; the caret lands at the end of the destination cell so you can continue typing there.
+
+Press `Escape` while editing to select the current cell. From there, use the arrow keys to move the selection or hold `Shift` to extend it. Range selections can also be created by dragging or by shift-clicking another cell.
+
+The editor provides several clipboard formats for moving content between Markdown, spreadsheets, and rich-text tools. Smart copy is the default and keeps list content inside spreadsheet cells using portable inline markers and same-cell line breaks. **Copy Rich** preserves semantic nested lists for Word and other rich-text tools. Dedicated **Copy Plain Text** and **Copy Markdown** actions are also available from the context menu.
+
+## Configuration
+
+The following settings are available in VS Code:
+
+- `markdownLiveRenderTables.tableNavigation.modifierKey` - chooses the function key used with arrow keys for direct cell navigation
+- `markdownLiveRenderTables.clipboard.defaultCopyMode` - sets the default copy representation
+- `markdownLiveRenderTables.clipboard.defaultPasteMode` - sets the default paste interpretation
+- `markdownLiveRenderTables.debug` - enables diagnostic logging for development and troubleshooting
 
 ## Development
 
-Install dependencies:
+Requirements:
+
+- Node.js and npm
+- Visual Studio Code 1.101 or later
+
+Install dependencies and build the extension:
 
 ```sh
 npm install
-```
-
-Compile TypeScript and bundle the webview:
-
-```sh
 npm run compile
 ```
 
-Run tests:
+Run the automated test suite:
 
 ```sh
 npm test
 ```
 
-Generate a standalone browser harness for the live editor bundle:
-
-```sh
-npm run qa:harness
-```
-
-Capture that harness with headless Chrome when visual layout needs checking:
-
-```sh
-npm run qa:screenshot
-```
-
-Run the Extension Development Host pixel-parity check for VS Code editor layout
-work:
-
-```sh
-npm run compile
-node scripts/edh-visual-check.mjs
-```
-
-This check captures `qa/edh-stock.png` and `qa/edh-live.png` in the same
-isolated VS Code workbench, then compares Monaco and live-editor metrics for
-gutter width, content x-position, first glyph x-position, line-number glyph
-position, font size, line height, table content x-position, and active gutter
-highlighting. Use this for pixel-perfect rendered-vs-source parity work; the
-standalone harness is not enough for that class of regression.
-
-Package the extension:
+Create a local VSIX package:
 
 ```sh
 npm run package
 ```
 
-Build, package, and install the latest local VSIX into the current VS Code
-profile:
+## License
 
-```sh
-./Build_and_Install
-```
-
-### Local VSIX Installation
-
-The extension can be installed from a local `.vsix` package without publishing
-to the VS Code Marketplace. This is useful for private testing, internal
-distribution, and validating release candidates.
-
-For local development on macOS, run:
-
-```sh
-./Build_and_Install
-```
-
-The script builds the extension, bumps the patch version so VS Code treats the
-package as a new update, creates `markdown-live-render-tables-latest.vsix`,
-installs the VSIX with the VS Code CLI, verifies the installed payload, removes
-stale local extension folders, and attempts to reload matching VS Code windows.
-
-The install step uses the supported VS Code CLI command:
-
-```sh
-code --install-extension markdown-live-render-tables-latest.vsix --force
-```
-
-VS Code does not provide a reliable CLI command to reload an already-open window
-after a local VSIX install. The macOS helper therefore uses AppleScript only for
-the final window reload. If automatic reload is blocked, run
-`Developer: Reload Window` in VS Code.
-
-To create a Windows transfer folder without installing locally, run:
-
-```sh
-npm run package:windows
-```
-
-This creates `install-bundles/Copy_to_Windows`, which contains only
-`markdown-live-render-tables-latest.vsix`.
-
-Copy that folder to the Windows machine and install the VSIX from VS Code:
-
-```text
-Extensions view > ... menu > Install from VSIX...
-```
-
-Choose `markdown-live-render-tables-latest.vsix` from `Copy_to_Windows`. This
-installs or updates the extension in the current Windows user profile. If VS Code
-does not automatically refresh open windows after the install, run
-`Developer: Reload Window`.
-
-## Project Layout
-
-- `src/extension.ts` registers the VS Code custom editor and toolbar commands.
-- `src/webview/liveEditor.ts` boots the webview CodeMirror editor.
-- `src/live-v4` contains the Meeting_Minutes-style live runtime, parser, model,
-  projection, and table renderer.
-- `src/shared/tableModel.ts` contains the markdown table parsing and formatting
-  logic used by the V1 renderer.
+This project is available under the MIT License.

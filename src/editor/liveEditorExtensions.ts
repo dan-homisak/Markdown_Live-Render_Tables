@@ -1,7 +1,8 @@
 import { history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { Extension } from "@codemirror/state";
+import { Compartment, Extension } from "@codemirror/state";
 import {
+  drawSelection,
   EditorView,
   highlightActiveLine,
   highlightActiveLineGutter,
@@ -11,16 +12,30 @@ import {
   createTableSourceChangeFilter,
   createTableSourceSelectionGuard,
 } from "../shared/tableSourceProtection";
+import {
+  TableNavigationModifierKey,
+} from "../shared/tableKeyboardNavigation";
 import { createEditorGeometrySync } from "./editorGeometrySync";
 import { createEditorTheme } from "./editorTheme";
+import { createDocumentSelectionInputHandler } from "./documentClipboard";
+import { createDocumentSelectionDecorations } from "./documentSelectionDecorations";
 import { TABLE_CELL_SELECTOR } from "./table/cellSelection";
 import { createTableBoundaryArrowNavigation } from "./tableBoundaryNavigation";
+import { createTableBoundaryInputHandler } from "./tableBoundaryInput";
 import { createTableCellFocusClassSync } from "./tableCellFocus";
 import { createTableDecorations } from "./tableDecorations";
+import {
+  createTableNavigationKeyTracker,
+  tableNavigationModifierCompartment,
+  tableNavigationModifierFacet,
+} from "./tableNavigation";
 
 export interface LiveEditorOptions {
   lineWrapping: boolean;
+  tableNavigationModifierKey: TableNavigationModifierKey;
 }
+
+export const lineWrappingCompartment = new Compartment();
 
 /**
  * Assembles the complete CodeMirror extension set for the live markdown
@@ -44,17 +59,27 @@ export function createLiveEditorExtensions(
     history(),
     createEditorTheme(),
     createTableBoundaryArrowNavigation(),
+    createTableBoundaryInputHandler(),
+    createDocumentSelectionInputHandler(),
+    drawSelection(),
+    createDocumentSelectionDecorations(),
     highlightActiveLine(),
     highlightActiveLineGutter(),
     lineNumbers(),
     createEditorGeometrySync(),
     createTableCellFocusClassSync(),
+    createTableNavigationKeyTracker(),
     createTableSourceChangeFilter(),
     createTableSourceSelectionGuard({
       tableCellSelector: TABLE_CELL_SELECTOR,
     }),
     markdown(),
-    ...(options.lineWrapping ? [EditorView.lineWrapping] : []),
+    lineWrappingCompartment.of(
+      options.lineWrapping ? EditorView.lineWrapping : [],
+    ),
+    tableNavigationModifierCompartment.of(
+      tableNavigationModifierFacet.of(options.tableNavigationModifierKey),
+    ),
     createTableDecorations(),
   ];
 }

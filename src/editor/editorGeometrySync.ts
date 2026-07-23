@@ -1,6 +1,7 @@
 import { Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { tableCellLiveEditAnnotation } from "./tableEditAnnotations";
+import { syncTableSelectionOverlay } from "./table/tableSelectionOverlay";
 import { TABLE_WIDGET_SELECTOR } from "./table/tableWidgetState";
 
 /**
@@ -26,10 +27,11 @@ export function createEditorGeometrySync(): Extension {
       private lastContentWidth = -1;
       private lastObservedScrollerWidth = -1;
       private resizeObserver: ResizeObserver | undefined;
+      private selectionOutlineFrame: number | undefined;
       private readonly observedTableWidgets = new Set<Element>();
       private readonly observedWidgetHeights = new WeakMap<Element, number>();
 
-      public constructor(view: EditorView) {
+      public constructor(private readonly view: EditorView) {
         const ResizeObserverCtor =
           view.dom.ownerDocument.defaultView?.ResizeObserver;
         if (ResizeObserverCtor) {
@@ -95,6 +97,10 @@ export function createEditorGeometrySync(): Extension {
 
       public destroy(): void {
         this.resizeObserver?.disconnect();
+        const win = viewWindow(this.view);
+        if (this.selectionOutlineFrame !== undefined && win) {
+          win.cancelAnimationFrame(this.selectionOutlineFrame);
+        }
         this.observedTableWidgets.clear();
       }
 
@@ -134,7 +140,28 @@ export function createEditorGeometrySync(): Extension {
                 `calc(${metrics.contentWidth}px - var(--mlrt-editor-right-padding, 26px))`,
               );
             }
+            this.scheduleSelectionOutlineSync(measuredView);
           },
+        });
+      }
+
+      /**
+       * Table cells can reflow one frame after the scroller width changes.
+       * The selection frame uses cell rectangles, so refresh it after that
+       * layout is committed rather than leaving it at the pre-resize width.
+       */
+      private scheduleSelectionOutlineSync(view: EditorView): void {
+        const win = viewWindow(view);
+        if (!win || this.selectionOutlineFrame !== undefined) {
+          return;
+        }
+        this.selectionOutlineFrame = win.requestAnimationFrame(() => {
+          this.selectionOutlineFrame = undefined;
+          for (const widget of this.observedTableWidgets) {
+            if (widget instanceof HTMLElement && widget.isConnected) {
+              syncTableSelectionOverlay(widget);
+            }
+          }
         });
       }
 
@@ -163,6 +190,10 @@ export function createEditorGeometrySync(): Extension {
       }
     },
   );
+}
+
+function viewWindow(view: EditorView): Window | null {
+  return view.dom.ownerDocument.defaultView;
 }
 
 /**

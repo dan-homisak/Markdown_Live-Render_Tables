@@ -12,6 +12,7 @@ import {
   readActiveCellSizingOverride,
   setTableWidgetCleanup,
 } from "./tableWidgetState";
+import { syncTableSelectionOverlay } from "./tableSelectionOverlay";
 
 /** Per-element cache of the measured width of one `ch`, keyed by font style. */
 const chWidthCache = new WeakMap<HTMLElement, { key: string; width: number }>();
@@ -111,6 +112,9 @@ export function bindTableLayout(
       ? 0
       : scrollbar.getBoundingClientRect().height;
     wrapper.style.height = `${Math.max(0, tableHeight + scrollbarHeight)}px`;
+    // Column sizing and wrapping are now committed. Synchronize selection
+    // geometry here so the overlay can never measure the previous layout.
+    syncTableSelectionOverlay(wrapper);
   };
   const scheduleLayout = () => {
     if (pendingAnimationFrame !== 0) {

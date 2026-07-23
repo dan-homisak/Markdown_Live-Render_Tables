@@ -1,30 +1,45 @@
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
+  ensureTableCellSeparatorSafe,
   formatMarkdownCell,
   formatTableCellSourceEdit,
   getCellPaddingWhitespace,
   parseMarkdownTableRow,
   ParsedRow,
   ParsedTable,
-  positionAfterTable,
-  positionBeforeTable,
+  tableCellLeadingPipePrefix,
   TableCellSourceEdit,
 } from "../../shared/tableModel";
 import { allowTableSourceChange } from "../../shared/tableSourceProtection";
 import {
+  CellTextEditSnapshot,
+  CellTextSelection,
+  computeCellBeforeInputDecision,
+} from "../../shared/tableCellInput";
+import {
+  adjacentTableCell,
+  TableCellArrowDirection,
+} from "../../shared/tableKeyboardNavigation";
+import {
   tableCellCommitSequenceAnnotation,
   tableCellLiveEditAnnotation,
 } from "../tableEditAnnotations";
+import { selectVisibleTableBoundary } from "../tableBoundaryInput";
 import {
+  extendCellSelectionVertically,
   findCell,
   focusCellAtEnd,
+  focusCellAtStart,
+  focusCellAtVerticalEdge,
   getCellCaretOffset,
   getCellSelectionOffsets,
-  isCaretAtVerticalBoundary,
+  moveCellCaretVertically,
+  moveCellSelectionToLineBoundary,
   readCellDisplayValue,
   requestElementAnimationFrame,
   setCellCaretOffset,
+  setCellSelectionOffsets,
   setCellPlainText,
   TABLE_CELL_SELECTOR,
 } from "./cellSelection";
@@ -34,6 +49,10 @@ import {
   releaseTableLiveEditPreservation,
 } from "./tableWidgetState";
 import { syncTableSourceMetadata } from "./tableCellMetadata";
+import {
+  isTableNavigationModifierHeld,
+  tableNavigationModifierFacet,
+} from "../tableNavigation";
 
 /** Event dispatched whenever a cell edit writes to the document source. */
 export const TABLE_CELL_COMMIT_EVENT = "mlrt:table-cell-commit";
@@ -44,10 +63,7 @@ interface CellEditHistory {
   lastValue: string;
 }
 
-interface CellEditSnapshot {
-  value: string;
-  caretOffset: number;
-}
+type CellEditSnapshot = CellTextEditSnapshot;
 
 interface CellCommitValueStep {
   value: string;
@@ -113,7 +129,6 @@ export function bindTableEditing(
     if (!cell || !(event instanceof InputEvent)) {
       return;
     }
-
     const currentTable = getCurrentTable();
     if (
       event.inputType === "historyUndo" ||
@@ -135,18 +150,34 @@ export function bindTableEditing(
       return;
     }
 
-    const nextSnapshot = computeBeforeInputSnapshot(cell, event);
-    if (!nextSnapshot) {
+    const cellSelection = getCellSelectionOffsets(cell);
+    const inputDecision = computeCellBeforeInputDecision({
+      value: readCellDisplayValue(cell),
+      selection: cellSelection,
+      // A target range confined to this editing host cannot make a DOM
+      // selection that visibly crosses sibling cells safe. Fail closed when
+      // the live selection itself is not wholly owned by the target cell.
+      targetSelection:
+        cellSelection === null
+          ? null
+          : getCellInputTargetSelection(cell, event),
+      inputType: event.inputType,
+      data: getCellInputData(event),
+    });
+    if (inputDecision.kind === "native") {
       recordCellEditHistory(cell);
       return;
     }
 
     event.preventDefault();
+    if (inputDecision.kind === "block") {
+      return;
+    }
     applyCellEditSnapshotChange(
       view,
       currentTable,
       cell,
-      nextSnapshot,
+      inputDecision.snapshot,
       scheduleTableLayout,
     );
   });
@@ -185,6 +216,55 @@ export function bindTableEditing(
       return;
     }
 
+    // Enter accepts an IME candidate and arrow keys navigate candidate lists.
+    // None of the table-level shortcuts may run until composition has ended.
+    if (event.isComposing || event.key === "Process") {
+      return;
+    }
+
+    const tableNavigationModifier = view.state.facet(
+      tableNavigationModifierFacet,
+    );
+    if (event.key === tableNavigationModifier && isPlainKey(event)) {
+      // The document-level tracker has already recorded the key in capture
+      // phase. Keep its ordinary VS Code command from stealing focus while it
+      // is acting as a held cell-navigation modifier.
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    const directCellDirection = tableCellArrowDirection(event.key);
+    if (
+      directCellDirection &&
+      isPlainKey(event) &&
+      isTableNavigationModifierHeld(
+        wrapper.ownerDocument,
+        tableNavigationModifier,
+      )
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const currentTable = getCurrentTable();
+      const target = resolveAdjacentGridCell(
+        cell,
+        currentTable,
+        directCellDirection,
+      );
+      if (!target) {
+        // Grid arrows do not wrap. With no destination, preserve the current
+        // caret or selection exactly as a standard directional no-op would.
+        return;
+      }
+      commitCellEdit(view, currentTable, cell);
+      focusCellAfterRender(currentTable.from, target);
+      return;
+    }
+
+    const verticalArrow = isUnmodifiedVerticalArrow(event);
+    const selectingVerticalArrow = isCellSelectionVerticalArrow(event);
+    const horizontalArrow = isUnmodifiedHorizontalArrow(event);
+    const selectingHorizontalArrow = isCellSelectionHorizontalArrow(event);
     // Let unhandled keys continue through the webview. VS Code's keyboard
     // command relay relies on that path for workbench commands such as Save,
     // Find, and user-defined keybindings. Stop propagation only when this
@@ -209,14 +289,74 @@ export function bindTableEditing(
       return;
     }
 
+    if (isMetaOnlyCellArrow(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        moveCellSelectionToLineBoundary(
+          cell,
+          event.key === "ArrowLeft" ? "start" : "end",
+          event.shiftKey,
+        );
+      } else {
+        const selection = getCellSelectionOffsets(cell);
+        if (selection) {
+          const target = event.key === "ArrowUp"
+            ? 0
+            : readCellDisplayValue(cell).length;
+          setCellSelectionOffsets(
+            cell,
+            event.shiftKey ? selection.anchor : target,
+            target,
+          );
+        }
+      }
+      return;
+    }
+
+    if (isModifiedCellArrow(event)) {
+      const selection = getCellSelectionOffsets(cell);
+      if (!selection) {
+        return;
+      }
+      const valueLength = readCellDisplayValue(cell).length;
+      const movingOutward =
+        ((event.key === "ArrowLeft" || event.key === "ArrowUp") &&
+          selection.head === 0) ||
+        ((event.key === "ArrowRight" || event.key === "ArrowDown") &&
+          selection.head === valueLength);
+      if (movingOutward) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (selection.anchor !== selection.head && !event.shiftKey) {
+          setCellCaretOffset(cell, selection.head);
+        }
+      }
+      return;
+    }
+
+    if (isPrimaryModifiedCellHomeEnd(event)) {
+      const selection = getCellSelectionOffsets(cell);
+      if (!selection) {
+        return;
+      }
+      const target = event.key === "Home"
+        ? 0
+        : readCellDisplayValue(cell).length;
+      event.preventDefault();
+      event.stopPropagation();
+      setCellSelectionOffsets(
+        cell,
+        event.shiftKey ? selection.anchor : target,
+        target,
+      );
+      return;
+    }
+
     if (event.key === "Enter" && isPlainKey(event)) {
       event.preventDefault();
       event.stopPropagation();
-      commitCellEdit(view, currentTable, cell, {
-        selectionAnchor: positionAfterTable(view.state.doc, currentTable),
-      });
-      cell.blur();
-      view.focus();
+      exitCellToBoundary(view, currentTable, cell, "after");
       return;
     }
 
@@ -247,35 +387,89 @@ export function bindTableEditing(
       return;
     }
 
-    if (isUnmodifiedVerticalArrow(event)) {
+    if (selectingVerticalArrow) {
+      event.preventDefault();
+      event.stopPropagation();
+      extendCellSelectionVertically(
+        cell,
+        event.key === "ArrowUp" ? -1 : 1,
+      );
+      return;
+    }
+
+    if (verticalArrow) {
       const rowDelta = event.key === "ArrowUp" ? -1 : 1;
-      if (!isCaretAtVerticalBoundary(cell, rowDelta)) {
+      event.preventDefault();
+      event.stopPropagation();
+      const verticalMove = moveCellCaretVertically(cell, rowDelta);
+      if (verticalMove.movedWithinCell) {
         return;
       }
 
       const target = resolveVerticalCell(cell, rowDelta);
-      event.preventDefault();
-      event.stopPropagation();
       if (target === "before-table") {
-        commitCellEdit(view, currentTable, cell, {
-          selectionAnchor: positionBeforeTable(currentTable),
-        });
-        cell.blur();
-        view.focus();
+        exitCellToBoundary(view, currentTable, cell, "before");
         return;
       }
       if (target === "after-table") {
-        commitCellEdit(view, currentTable, cell, {
-          selectionAnchor: getEndOfLineAfterTable(view, currentTable),
-        });
-        cell.blur();
-        view.focus();
+        exitCellToBoundary(view, currentTable, cell, "after");
         return;
       }
 
       commitCellEdit(view, currentTable, cell);
-      focusCellAfterRender(currentTable.from, target);
+      focusCellAfterRender(currentTable.from, target, {
+        rowDelta,
+        preferredX: verticalMove.preferredX,
+      });
       return;
+    }
+
+    if (selectingHorizontalArrow) {
+      const selection = getCellSelectionOffsets(cell);
+      const valueLength = readCellDisplayValue(cell).length;
+      const extendingPastCell = Boolean(
+        selection &&
+          ((event.key === "ArrowLeft" && selection.head === 0) ||
+            (event.key === "ArrowRight" && selection.head === valueLength)),
+      );
+      if (extendingPastCell) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+
+    if (horizontalArrow) {
+      const selection = getCellSelectionOffsets(cell);
+      const valueLength = readCellDisplayValue(cell).length;
+      const movingAcrossBoundary = Boolean(
+        selection &&
+          selection.anchor === selection.head &&
+          ((event.key === "ArrowLeft" && selection.head === 0) ||
+            (event.key === "ArrowRight" && selection.head === valueLength)),
+      );
+      if (movingAcrossBoundary) {
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = event.key === "ArrowLeft" ? -1 : 1;
+        const target = resolveRelativeCell(cell, delta);
+        if (target === "before-table") {
+          exitCellToBoundary(view, currentTable, cell, "before");
+          return;
+        }
+        if (target === "after-table") {
+          exitCellToBoundary(view, currentTable, cell, "after");
+          return;
+        }
+        commitCellEdit(view, currentTable, cell);
+        focusCellAfterRender(
+          currentTable.from,
+          target,
+          undefined,
+          event.key === "ArrowRight" ? "start" : "end",
+        );
+        return;
+      }
     }
 
     if (
@@ -287,10 +481,67 @@ export function bindTableEditing(
       event.preventDefault();
       event.stopPropagation();
       const target = resolveRelativeCell(cell, event.shiftKey ? -1 : 1);
+      if (target === "before-table") {
+        exitCellToBoundary(view, currentTable, cell, "before");
+        return;
+      }
+      if (target === "after-table") {
+        exitCellToBoundary(view, currentTable, cell, "after");
+        return;
+      }
       commitCellEdit(view, currentTable, cell);
       focusCellAfterRender(currentTable.from, target);
     }
   });
+
+}
+
+function resolveAdjacentGridCell(
+  cell: HTMLElement,
+  table: ParsedTable,
+  direction: TableCellArrowDirection,
+): CellTarget | null {
+  const rowKind = cell.dataset.rowKind;
+  const rowIndex = Number(cell.dataset.rowIndex ?? "0");
+  const column = Number(cell.dataset.column ?? "0");
+  if (
+    (rowKind !== "header" && rowKind !== "body") ||
+    !Number.isInteger(rowIndex) ||
+    rowIndex < 0 ||
+    !Number.isInteger(column) ||
+    column < 0
+  ) {
+    return null;
+  }
+
+  const target = adjacentTableCell(
+    { row: rowKind === "header" ? 0 : rowIndex + 1, column },
+    direction,
+    { rowCount: table.body.length + 1, columnCount: table.columnCount },
+  );
+  if (!target) {
+    return null;
+  }
+  return {
+    rowKind: target.row === 0 ? "header" : "body",
+    rowIndex: String(target.row === 0 ? 0 : target.row - 1),
+    column: String(target.column),
+  };
+}
+
+function tableCellArrowDirection(
+  key: string,
+): TableCellArrowDirection | null {
+  if (key === "ArrowUp") {
+    return "up";
+  }
+  if (key === "ArrowDown") {
+    return "down";
+  }
+  if (key === "ArrowLeft") {
+    return "left";
+  }
+  return key === "ArrowRight" ? "right" : null;
 }
 
 /**
@@ -580,7 +831,9 @@ function formatLiveTableCellSourceEdit(
   return {
     from: sourceCell.start,
     to: sourceCell.end,
-    insert: `${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`,
+    insert: ensureTableCellSeparatorSafe(
+      `${tableCellLeadingPipePrefix(sourceRow, column)}${leadingWhitespace}${formatMarkdownCell(value, { trim: false })}${trailingWhitespace}`,
+    ),
   };
 }
 
@@ -735,10 +988,6 @@ function dispatchSelection(
   });
 }
 
-function getEndOfLineAfterTable(view: EditorView, table: ParsedTable): number {
-  return view.state.doc.lineAt(positionAfterTable(view.state.doc, table)).to;
-}
-
 function mapPositionThroughCellEdit(
   position: number,
   edit: { from: number; to: number; insert: string },
@@ -753,14 +1002,20 @@ function mapPositionThroughCellEdit(
   return position + edit.insert.length - (edit.to - edit.from);
 }
 
-function resolveRelativeCell(cell: HTMLElement, delta: number): CellTarget {
+function resolveRelativeCell(
+  cell: HTMLElement,
+  delta: number,
+): VerticalCellTarget {
   const cells = Array.from(
     cell
       .closest(".mlrt-table")
       ?.querySelectorAll<HTMLElement>(TABLE_CELL_SELECTOR) ?? [],
   );
   const index = cells.indexOf(cell);
-  const next = cells[index + delta] ?? cell;
+  const next = cells[index + delta];
+  if (!next) {
+    return delta < 0 ? "before-table" : "after-table";
+  }
   return {
     rowKind: next.dataset.rowKind ?? "body",
     rowIndex: next.dataset.rowIndex ?? "0",
@@ -793,13 +1048,47 @@ function resolveVerticalCell(
   };
 }
 
-function focusCellAfterRender(tableFrom: number, target: CellTarget): void {
-  setTimeout(() => {
+function focusCellAfterRender(
+  tableFrom: number,
+  target: CellTarget,
+  vertical?: { rowDelta: -1 | 1; preferredX: number | null },
+  horizontalPlacement: "start" | "end" = "end",
+): void {
+  const focusTarget = (): boolean => {
     const cell = queryCell(tableFrom, target);
-    if (cell) {
+    if (!cell) {
+      return false;
+    }
+
+    if (vertical) {
+      focusCellAtVerticalEdge(
+        cell,
+        vertical.rowDelta,
+        vertical.preferredX,
+      );
+    } else if (horizontalPlacement === "start") {
+      focusCellAtStart(cell);
+    } else {
       focusCellAtEnd(cell);
     }
-  }, 0);
+    return true;
+  };
+
+  // CodeMirror dispatch is synchronous. A missing destination must not leave
+  // behind a delayed focus write that can override a later user action.
+  focusTarget();
+}
+
+function exitCellToBoundary(
+  view: EditorView,
+  table: ParsedTable,
+  cell: HTMLElement,
+  side: "before" | "after",
+): void {
+  commitCellEdit(view, table, cell);
+  cell.blur();
+  view.focus();
+  selectVisibleTableBoundary(view, table, side);
 }
 
 function focusCellAfterRenderAtOffset(
@@ -807,13 +1096,16 @@ function focusCellAfterRenderAtOffset(
   target: CellTarget,
   caretOffset: number,
 ): void {
-  setTimeout(() => {
+  const focusTarget = (): boolean => {
     const cell = queryCell(tableFrom, target);
-    if (cell) {
-      cell.focus();
-      setCellCaretOffset(cell, caretOffset);
+    if (!cell) {
+      return false;
     }
-  }, 0);
+    cell.focus();
+    setCellCaretOffset(cell, caretOffset);
+    return true;
+  };
+  focusTarget();
 }
 
 function queryCell(tableFrom: number, target: CellTarget): HTMLElement | null {
@@ -904,75 +1196,87 @@ function restoreCellEditHistory(
 }
 
 /**
- * Predicts the cell text and caret produced by a `beforeinput` event so the
- * edit can be applied synchronously as plain text (bypassing contenteditable
- * HTML mutations). Returns null for input types that are left to the browser.
+ * Converts Chromium's platform-native target range to display-text offsets.
+ * A non-empty range that crosses a cell boundary is reported as unsafe so the
+ * pure input decision blocks it instead of allowing the browser to merge DOM
+ * cells or rows.
  */
-function computeBeforeInputSnapshot(
+function getCellInputTargetSelection(
   cell: HTMLElement,
   event: InputEvent,
-): CellEditSnapshot | null {
-  const selection = getCellSelectionOffsets(cell);
-  if (!selection) {
+): CellTextSelection | null | undefined {
+  let ranges: StaticRange[];
+  try {
+    ranges = event.getTargetRanges();
+  } catch {
+    return undefined;
+  }
+  if (ranges.length === 0) {
+    return undefined;
+  }
+  if (ranges.length !== 1) {
     return null;
   }
 
-  const value = readCellDisplayValue(cell);
-  const from = Math.min(selection.anchor, selection.head);
-  const to = Math.max(selection.anchor, selection.head);
-  if (event.inputType === "insertText") {
-    const insert = event.data ?? "";
-    return replaceCellTextRange(value, from, to, insert);
+  const [range] = ranges;
+  if (
+    !isNodeInsideCell(range.startContainer, cell) ||
+    !isNodeInsideCell(range.endContainer, cell)
+  ) {
+    return null;
   }
 
+  try {
+    return {
+      anchor: getCellDomPointOffset(
+        cell,
+        range.startContainer,
+        range.startOffset,
+      ),
+      head: getCellDomPointOffset(
+        cell,
+        range.endContainer,
+        range.endOffset,
+      ),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getCellInputData(event: InputEvent): string | null {
   if (
     event.inputType === "insertFromPaste" ||
+    event.inputType === "insertFromPasteAsQuotation" ||
     event.inputType === "insertFromDrop" ||
-    event.inputType === "insertReplacementText"
+    event.inputType === "insertReplacementText" ||
+    event.inputType === "insertFromYank" ||
+    event.inputType === "insertTranspose"
   ) {
-    // Keep cells plain text: take the text/plain payload instead of letting
-    // the browser splice styled HTML into the contenteditable.
-    const insert =
-      event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
-    return replaceCellTextRange(
-      value,
-      from,
-      to,
-      insert.replace(/\r\n?/g, "\n"),
-    );
+    const transferred = event.dataTransfer?.getData("text/plain");
+    // Chromium can expose the transfer object while keeping its plain-text
+    // slot empty for replacement-style events. Preserve a populated `data`
+    // fallback instead of accidentally turning that replacement into delete.
+    return transferred || event.data || null;
   }
+  return event.data;
+}
 
-  if (
-    event.inputType === "insertLineBreak" ||
-    event.inputType === "insertParagraph"
-  ) {
-    return replaceCellTextRange(value, from, to, "\n");
-  }
+function getCellDomPointOffset(
+  cell: HTMLElement,
+  node: Node,
+  offset: number,
+): number {
+  const range = cell.ownerDocument.createRange();
+  range.selectNodeContents(cell);
+  range.setEnd(node, offset);
+  const measured = range.toString().replace(/\u00a0/g, " ").length;
+  range.detach();
+  return measured;
+}
 
-  if (
-    event.inputType === "deleteContentBackward" ||
-    event.inputType === "deleteByCut"
-  ) {
-    if (from !== to) {
-      return replaceCellTextRange(value, from, to, "");
-    }
-    if (from === 0) {
-      return { value, caretOffset: 0 };
-    }
-    return replaceCellTextRange(value, from - 1, to, "");
-  }
-
-  if (event.inputType === "deleteContentForward") {
-    if (from !== to) {
-      return replaceCellTextRange(value, from, to, "");
-    }
-    if (to >= value.length) {
-      return { value, caretOffset: value.length };
-    }
-    return replaceCellTextRange(value, from, to + 1, "");
-  }
-
-  return null;
+function isNodeInsideCell(node: Node, cell: HTMLElement): boolean {
+  return node === cell || cell.contains(node);
 }
 
 function computeCellTextInsertionSnapshot(
@@ -1061,5 +1365,62 @@ function isPlainKey(event: KeyboardEvent): boolean {
 function isUnmodifiedVerticalArrow(event: KeyboardEvent): boolean {
   return (
     (event.key === "ArrowUp" || event.key === "ArrowDown") && isPlainKey(event)
+  );
+}
+
+function isUnmodifiedHorizontalArrow(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+    isPlainKey(event)
+  );
+}
+
+function isModifiedCellArrow(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "ArrowUp" ||
+      event.key === "ArrowDown" ||
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowRight") &&
+    (event.altKey || event.ctrlKey || event.metaKey)
+  );
+}
+
+function isMetaOnlyCellArrow(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "ArrowUp" ||
+      event.key === "ArrowDown" ||
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowRight") &&
+    event.metaKey &&
+    !event.altKey &&
+    !event.ctrlKey
+  );
+}
+
+function isPrimaryModifiedCellHomeEnd(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "Home" || event.key === "End") &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey
+  );
+}
+
+function isCellSelectionVerticalArrow(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+    event.shiftKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey
+  );
+}
+
+function isCellSelectionHorizontalArrow(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+    event.shiftKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey
   );
 }

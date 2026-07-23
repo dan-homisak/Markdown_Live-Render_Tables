@@ -31,22 +31,21 @@ export function createTableSourceChangeFilter(): Extension {
     }
 
     const tables = getParsedTables(transaction.startState.doc);
-    if (
-      tables.length === 0 ||
-      !selectionTouchesTableSource(
-        transaction.startState,
-        transaction.startState.selection,
-        tables,
-      )
-    ) {
+    if (tables.length === 0) {
       return true;
     }
 
     let changeTouchesTable = false;
-    transaction.changes.iterChangedRanges((from, to) => {
+    transaction.changes.iterChanges((from, to, _fromB, _toB, inserted) => {
       if (
         tables.some((table) =>
-          changeTouchesTableSource(transaction.startState, from, to, table),
+          changeTouchesTableSource(
+            transaction.startState,
+            from,
+            to,
+            inserted.toString(),
+            table,
+          ),
         )
       ) {
         changeTouchesTable = true;
@@ -126,22 +125,19 @@ function isUndoRedo(transaction: Transaction): boolean {
   return transaction.isUserEvent("undo") || transaction.isUserEvent("redo");
 }
 
-function selectionTouchesTableSource(
-  state: EditorState,
-  selection: EditorSelection,
-  tables: ParsedTable[],
-): boolean {
-  return selection.ranges.some((range) =>
-    tables.some((table) => rangeTouchesTableSource(state, range, table)),
-  );
-}
-
 function findSafeSelectionAnchor(
   state: EditorState,
   previousHead: number | undefined,
 ): number | undefined {
   const tables = getParsedTables(state.doc);
   const range = state.selection.main;
+  // Non-empty selections are allowed to cross hidden table source. Clipboard
+  // handling serializes those ranges explicitly, and document edits still go
+  // through the change filter below. Only collapsed cursors must be bounced
+  // out of replacement widgets.
+  if (!range.empty) {
+    return undefined;
+  }
   const table = tables.find((candidate) =>
     rangeTouchesTableSource(state, range, candidate),
   );
@@ -170,13 +166,39 @@ function changeTouchesTableSource(
   state: EditorState,
   from: number,
   to: number,
+  inserted: string,
   table: ParsedTable,
 ): boolean {
   if (from === to) {
+    // At EOF, the position immediately after the table is also the end of its
+    // final source row. Plain text inserted there silently becomes another
+    // cell value. Starting the insertion with a newline is the safe way to
+    // create prose after an EOF table, so retain that normal editing path.
+    if (from === table.to && table.to === state.doc.length) {
+      return !inserted.startsWith("\n");
+    }
     return isPositionInTableSource(state, from, table);
   }
 
-  return from < getTableReplacementTo(state, table) && to > table.from;
+  return (
+    from < getTableReplacementTo(state, table) &&
+    to > getTableReplacementFrom(state, table)
+  );
+}
+
+/**
+ * The newline immediately before a table is structural even though it sits
+ * just outside the parsed table span. Removing it joins the preceding prose
+ * to the header row and changes the table's cells/column count.
+ */
+function getTableReplacementFrom(
+  state: EditorState,
+  table: ParsedTable,
+): number {
+  return table.from > 0 &&
+    state.doc.sliceString(table.from - 1, table.from) === "\n"
+    ? table.from - 1
+    : table.from;
 }
 
 function isPositionInTableSource(

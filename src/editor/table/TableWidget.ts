@@ -15,6 +15,9 @@ import {
   bindTableLayout,
 } from "./tableLayout";
 import { bindTableStructureControls } from "./tableStructureControls";
+import { bindTableRangeSelection } from "./tableRangeSelection";
+import { bindTableClipboard } from "./tableClipboard";
+import { syncTableSelectionOverlay } from "./tableSelectionOverlay";
 import {
   getTableWidgetCleanup,
   isTablePreservedForLiveEdit,
@@ -119,6 +122,12 @@ export class RenderedTableWidget extends WidgetType {
       this.table,
     );
     bindTableEditing(wrapper, view, this.table, scheduleTableLayout);
+    const rangeSelectionCleanup = bindTableRangeSelection(
+      wrapper,
+      view,
+      this.table,
+    );
+    const clipboardCleanup = bindTableClipboard(wrapper, view, this.table);
     const layoutCleanup = getTableWidgetCleanup(wrapper);
     const structureControlsCleanup = bindTableStructureControls({
       wrapper,
@@ -129,6 +138,8 @@ export class RenderedTableWidget extends WidgetType {
     });
     setTableWidgetCleanup(wrapper, () => {
       layoutCleanup?.();
+      rangeSelectionCleanup();
+      clipboardCleanup();
       structureControlsCleanup();
     });
     return wrapper;
@@ -238,6 +249,7 @@ function patchTableDOM(dom: HTMLElement, table: ParsedTable): void {
   });
 
   applyCurrentColumnSizing(dom, table);
+  syncTableSelectionOverlay(dom);
 }
 
 function patchTableRowDOM(
@@ -247,11 +259,18 @@ function patchTableRowDOM(
   rowKind: "header" | "body",
   rowIndex: number,
 ): void {
-  const lineCell = dom.querySelector<HTMLElement>(
-    `.mlrt-table-source-line[data-source-line="${sourceRow.lineIndex + 1}"]`,
+  const tableRow =
+    rowKind === "header"
+      ? dom.querySelector<HTMLTableRowElement>("thead tr")
+      : dom.querySelectorAll<HTMLTableRowElement>("tbody tr")[rowIndex];
+  const lineCell = tableRow?.querySelector<HTMLElement>(
+    ".mlrt-table-source-line",
   );
   if (lineCell) {
     const sourceLineText = String(sourceRow.lineIndex + 1);
+    if (lineCell.dataset.sourceLine !== sourceLineText) {
+      lineCell.dataset.sourceLine = sourceLineText;
+    }
     if (lineCell.textContent !== sourceLineText) {
       lineCell.textContent = sourceLineText;
     }
@@ -288,7 +307,7 @@ function appendCells(options: AppendCellsOptions): void {
     cell.className = "mlrt-table-cell";
     cell.contentEditable = "true";
     cell.spellcheck = false;
-    cell.textContent = value;
+    setCellPlainText(cell, value);
     cell.dataset.rowKind = options.rowKind;
     cell.dataset.rowIndex = String(options.rowIndex);
     cell.dataset.column = String(column);

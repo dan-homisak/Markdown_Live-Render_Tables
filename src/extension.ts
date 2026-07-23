@@ -1,12 +1,23 @@
 import * as fs from "fs";
+import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import {
   mapNormalizedDocumentChangesToHost,
   normalizeDocumentText,
 } from "./shared/documentChangeMapping";
+import { validateDocumentChangeClaim } from "./shared/documentChangeValidation";
+import {
+  DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY,
+  normalizeTableNavigationModifierKey,
+  TableNavigationModifierKey,
+} from "./shared/tableKeyboardNavigation";
 
 const LIVE_EDITOR_VIEW_TYPE = "markdownLiveRenderTables.liveEditor";
 const DEBUG_SETTING = "debug";
+const DEFAULT_COPY_MODE_SETTING = "clipboard.defaultCopyMode";
+const DEFAULT_PASTE_MODE_SETTING = "clipboard.defaultPasteMode";
+const TABLE_NAVIGATION_MODIFIER_KEY_SETTING =
+  "tableNavigation.modifierKey";
 const REOPEN_ACTIVE_EDITOR_WITH_COMMAND = "reopenActiveEditorWith";
 const DEFAULT_EDITOR_ID = "default";
 
@@ -70,6 +81,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     const scriptText = this.readMediaText("liveEditor.js");
     const styleText = this.readMediaText("liveEditor.css");
     const documentKey = document.uri.toString();
+    const clipboardDocumentToken = randomUUID();
 
     this.panelsByDocument.set(documentKey, webviewPanel);
     if (webviewPanel.active) {
@@ -87,11 +99,16 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
     let applyingFromWebview = false;
     let applyQueue: Promise<void> = Promise.resolve();
     let documentRevision = 0;
+    // Once a claim is rejected, every message sent before the webview receives
+    // that rejection belongs to the invalidated optimistic branch. The
+    // webview intentionally clears all of those pending echoes; this floor
+    // guarantees the host cannot later apply one of them and diverge silently.
+    let minimumWebviewBaseRevision = 0;
 
     const postDocument = (
       source: HostSetDocumentMessage["source"] = "host",
       ackId?: number,
-    ): void => {
+    ): number => {
       documentRevision++;
       const text = normalizeDocumentText(document.getText());
       void webview.postMessage({
@@ -99,22 +116,126 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
         text,
         revision: documentRevision,
         debug: isDebugEnabled(),
+        editorOptions: getEditorOptions(
+          document.uri,
+          clipboardDocumentToken,
+        ),
         source,
         ackId,
       } satisfies HostSetDocumentMessage);
+      return documentRevision;
+    };
+
+    const rejectWebviewChange = (changeId?: number): void => {
+      minimumWebviewBaseRevision = Math.max(
+        minimumWebviewBaseRevision,
+        postDocument("webviewReject", changeId),
+      );
+    };
+
+    const postEditorOptions = (): void => {
+      void webview.postMessage({
+        type: "setEditorOptions",
+        editorOptions: getEditorOptions(
+          document.uri,
+          clipboardDocumentToken,
+        ),
+      } satisfies HostSetEditorOptionsMessage);
     };
 
     const applyFromWebview = (message: ChangeMessage): void => {
       applyQueue = applyQueue
         .then(async () => {
+          if (message.baseRevision < minimumWebviewBaseRevision) {
+            logDebug(
+              `drop invalidated webview change ${message.changeId ?? "unknown"}: base revision ${message.baseRevision} predates conflict floor ${minimumWebviewBaseRevision}`,
+            );
+            // The rejection that established the floor already cleared every
+            // optimistic echo posted on the older revision. Do not emit a new
+            // rejection here: doing so would raise the floor again and could
+            // invalidate the first legitimate edit sent after the resync.
+            return;
+          }
+          if (message.baseRevision > documentRevision) {
+            logDebug(
+              `reject webview change ${message.changeId ?? "unknown"}: future base revision ${message.baseRevision} > ${documentRevision}`,
+            );
+            rejectWebviewChange(message.changeId);
+            return;
+          }
+          const authoritativeBeforeText = normalizeDocumentText(
+            document.getText(),
+          );
+          const validation = validateDocumentChangeClaim(
+            authoritativeBeforeText,
+            message.changeGroups !== undefined
+              ? {
+                  beforeText: normalizeDocumentText(message.beforeText),
+                  finalText: normalizeDocumentText(message.text),
+                  changeGroups: message.changeGroups,
+                }
+              : {
+                  beforeText: normalizeDocumentText(message.beforeText),
+                  finalText: normalizeDocumentText(message.text),
+                  changes: message.changes ?? [],
+                },
+          );
+          if (!validation.ok) {
+            logDebug(
+              `reject webview change ${message.changeId ?? "unknown"}: ${validation.code}`,
+            );
+            vscode.window.showWarningMessage(
+              "Markdown live editor stopped a conflicting edit and refreshed from the saved document.",
+            );
+            rejectWebviewChange(message.changeId);
+            return;
+          }
+
           applyingFromWebview = true;
           try {
-            if (message.changeGroups?.length) {
+            if (message.changeGroups !== undefined) {
               logDebug(
                 `apply ${message.changeGroups.length} sequential change group(s) from webview at revision ${message.baseRevision}`,
               );
-              for (const changeGroup of message.changeGroups) {
+              let expectedBeforeGroup = authoritativeBeforeText;
+              for (
+                let groupIndex = 0;
+                groupIndex < message.changeGroups.length;
+                groupIndex++
+              ) {
+                const changeGroup = message.changeGroups[groupIndex];
+                if (
+                  normalizeDocumentText(document.getText()) !==
+                  expectedBeforeGroup
+                ) {
+                  logDebug(
+                    `stop webview change ${message.changeId ?? "unknown"}: document changed before sequential group ${groupIndex + 1}`,
+                  );
+                  vscode.window.showWarningMessage(
+                    "Markdown live editor stopped a conflicting edit and refreshed from the saved document.",
+                  );
+                  rejectWebviewChange(message.changeId);
+                  return;
+                }
+                const expectedAfterGroup = applyNormalizedChangeGroupToText(
+                  expectedBeforeGroup,
+                  changeGroup,
+                );
                 await applyDocumentChanges(document, changeGroup);
+                if (
+                  normalizeDocumentText(document.getText()) !==
+                  expectedAfterGroup
+                ) {
+                  logDebug(
+                    `stop webview change ${message.changeId ?? "unknown"}: document diverged after sequential group ${groupIndex + 1}`,
+                  );
+                  vscode.window.showWarningMessage(
+                    "Markdown live editor detected a conflicting document update and refreshed safely.",
+                  );
+                  rejectWebviewChange(message.changeId);
+                  return;
+                }
+                expectedBeforeGroup = expectedAfterGroup;
               }
             } else if (message.changes?.length) {
               logDebug(
@@ -136,8 +257,10 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
             normalizeDocumentText(message.text)
           ) {
             vscode.window.showWarningMessage(
-              "Markdown live editor changes were applied, but the editor document is out of sync.",
+              "Markdown live editor detected a conflicting document update and refreshed safely.",
             );
+            rejectWebviewChange(message.changeId);
+            return;
           }
           postDocument("webviewAck", message.changeId);
         })
@@ -148,7 +271,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           );
           // Resync the webview with the authoritative document state so an
           // apply failure cannot leave the two sides silently diverged.
-          postDocument();
+          rejectWebviewChange(message.changeId);
         });
     };
 
@@ -160,6 +283,29 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           !applyingFromWebview
         ) {
           postDocument();
+        }
+      }),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        const markdownEditorScope = {
+          uri: document.uri,
+          languageId: "markdown",
+        };
+        if (
+          event.affectsConfiguration(
+            "markdownLiveRenderTables.clipboard",
+            document.uri,
+          ) ||
+          event.affectsConfiguration(
+            "markdownLiveRenderTables.tableNavigation",
+            document.uri,
+          ) ||
+          event.affectsConfiguration("editor.wordWrap", markdownEditorScope) ||
+          event.affectsConfiguration(
+            "editor.scrollBeyondLastLine",
+            markdownEditorScope,
+          )
+        ) {
+          postEditorOptions();
         }
       }),
       webviewPanel.onDidChangeViewState((event) => {
@@ -182,6 +328,32 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           logDebug(`editor command requested: ${message.command}`);
           applyQueue = applyQueue
             .then(async () => {
+              if (message.baseRevision < minimumWebviewBaseRevision) {
+                logDebug(
+                  `drop invalidated ${message.command}: base revision ${message.baseRevision} predates conflict floor ${minimumWebviewBaseRevision}`,
+                );
+                return;
+              }
+              if (
+                message.baseRevision > documentRevision ||
+                normalizeDocumentText(message.beforeText) !==
+                  normalizeDocumentText(document.getText())
+              ) {
+                logDebug(
+                  `reject ${message.command}: command snapshot does not match revision ${documentRevision}`,
+                );
+                rejectWebviewChange();
+                return;
+              }
+              if (
+                !webviewPanel.active ||
+                this.activeLiveDocumentUri?.toString() !== documentKey
+              ) {
+                logDebug(
+                  `drop ${message.command}: the requesting live editor is no longer active`,
+                );
+                return;
+              }
               await vscode.commands.executeCommand(message.command);
             })
             .catch((error: unknown) => {
@@ -192,19 +364,20 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
 
-        if (
-          isChangeMessage(message) &&
-          message.baseRevision <= documentRevision
-        ) {
-          if (
-            normalizeDocumentText(message.text) ===
-            normalizeDocumentText(document.getText())
-          ) {
-            // Nothing to apply, but the webview still expects its optimistic
-            // change to be acknowledged so it can settle its echo queue.
-            postDocument("webviewAck", message.changeId);
-            return;
-          }
+        if (isOpenClipboardSettingsMessage(message)) {
+          void vscode.commands.executeCommand(
+            "workbench.action.openSettings",
+            "@ext:dan-homisak.markdown-live-render-tables clipboard",
+          );
+          return;
+        }
+
+        if (isChangeMessage(message)) {
+          // Always serialize the claim through the apply queue, even when its
+          // final text happens to match the document *right now*. An earlier
+          // queued edit may still be about to change the authoritative text;
+          // bypassing the queue here would lose a rapid edit that restores an
+          // older value (for example, type and immediately Backspace).
           applyFromWebview(message);
         }
       }),
@@ -216,6 +389,7 @@ class MarkdownLiveEditorProvider implements vscode.CustomTextEditorProvider {
       styleText,
       normalizeDocumentText(document.getText()),
       document.uri,
+      clipboardDocumentToken,
     );
 
     webviewPanel.onDidDispose(() => {
@@ -383,10 +557,28 @@ async function applyDocumentChanges(
 
   const applied = await vscode.workspace.applyEdit(edit);
   if (!applied) {
-    vscode.window.showWarningMessage(
-      "Markdown live editor could not apply changes.",
-    );
+    throw new Error("VS Code rejected the document edit.");
   }
+}
+
+/**
+ * Replays one already-validated simultaneous change group. The host uses the
+ * intermediate result as a versionless precondition between sequential
+ * workspace edits, preventing a later group from applying stale offsets after
+ * an intervening formatter, extension, or source-editor edit.
+ */
+function applyNormalizedChangeGroupToText(
+  source: string,
+  changes: readonly DocumentChange[],
+): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const change of changes) {
+    parts.push(source.slice(cursor, change.from), change.text);
+    cursor = change.to;
+  }
+  parts.push(source.slice(cursor));
+  return parts.join("");
 }
 
 interface ReadyMessage {
@@ -402,6 +594,7 @@ interface DocumentChange {
 interface ChangeMessage {
   type: "change";
   changeId?: number;
+  beforeText: string;
   text: string;
   changes?: DocumentChange[];
   changeGroups?: DocumentChange[][];
@@ -417,6 +610,8 @@ interface DebugMessage {
 interface EditorCommandMessage {
   type: "editorCommand";
   command: "undo" | "redo";
+  beforeText: string;
+  baseRevision: number;
 }
 
 interface HostSetDocumentMessage {
@@ -424,8 +619,18 @@ interface HostSetDocumentMessage {
   text: string;
   revision: number;
   debug: boolean;
-  source?: "host" | "webviewAck";
+  source?: "host" | "webviewAck" | "webviewReject";
   ackId?: number;
+  editorOptions: ReturnType<typeof getEditorOptions>;
+}
+
+interface HostSetEditorOptionsMessage {
+  type: "setEditorOptions";
+  editorOptions: ReturnType<typeof getEditorOptions>;
+}
+
+interface OpenClipboardSettingsMessage {
+  type: "openClipboardSettings";
 }
 
 function isReadyMessage(message: unknown): message is ReadyMessage {
@@ -440,6 +645,7 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
       (typeof message.changeId === "number" &&
         Number.isInteger(message.changeId) &&
         message.changeId > 0)) &&
+    typeof message.beforeText === "string" &&
     typeof message.text === "string" &&
     (message.changes === undefined ||
       (Array.isArray(message.changes) &&
@@ -450,7 +656,9 @@ function isChangeMessage(message: unknown): message is ChangeMessage {
           (changeGroup) =>
             Array.isArray(changeGroup) && changeGroup.every(isDocumentChange),
         ))) &&
-    typeof message.baseRevision === "number"
+    typeof message.baseRevision === "number" &&
+    Number.isInteger(message.baseRevision) &&
+    message.baseRevision >= 0
   );
 }
 
@@ -487,8 +695,18 @@ function isEditorCommandMessage(
   return (
     isMessageRecord(message) &&
     message.type === "editorCommand" &&
-    (message.command === "undo" || message.command === "redo")
+    (message.command === "undo" || message.command === "redo") &&
+    typeof message.beforeText === "string" &&
+    typeof message.baseRevision === "number" &&
+    Number.isInteger(message.baseRevision) &&
+    message.baseRevision >= 0
   );
+}
+
+function isOpenClipboardSettingsMessage(
+  message: unknown,
+): message is OpenClipboardSettingsMessage {
+  return isMessageRecord(message) && message.type === "openClipboardSettings";
 }
 
 function isMessageRecord(message: unknown): message is Record<string, unknown> {
@@ -522,6 +740,7 @@ function getEditorHtml(
   styleText: string,
   initialText: string,
   documentUri: vscode.Uri,
+  clipboardDocumentToken: string,
 ): string {
   const nonce = getNonce();
   const initialDocumentScript = JSON.stringify(initialText).replace(
@@ -529,7 +748,9 @@ function getEditorHtml(
     "<\\/script",
   );
   const editorMetricsCss = getEditorMetricsCss(documentUri);
-  const editorOptionsScript = JSON.stringify(getEditorOptions(documentUri));
+  const editorOptionsScript = JSON.stringify(
+    getEditorOptions(documentUri, clipboardDocumentToken),
+  );
   const inlineScript = scriptText.replace(/<\/script/gi, "<\\/script");
   return `<!DOCTYPE html>
 <html lang="en">
@@ -628,15 +849,58 @@ function getEditorMetricsCss(documentUri: vscode.Uri): string {
  * for markdown files (VS Code defaults markdown to "on"), so the webview
  * matches what the stock editor would do for the same document.
  */
-function getEditorOptions(documentUri: vscode.Uri): { lineWrapping: boolean } {
+function getEditorOptions(
+  documentUri: vscode.Uri,
+  clipboardDocumentToken: string,
+): {
+  lineWrapping: boolean;
+  scrollBeyondLastLine: boolean;
+  clipboardDocumentToken: string;
+  defaultCopyMode: "smart" | "rich" | "plain" | "markdown";
+  defaultPasteMode: "auto" | "rich" | "plain" | "markdown";
+  tableNavigationModifierKey: TableNavigationModifierKey;
+} {
   const editorConfig = vscode.workspace.getConfiguration("editor", {
     uri: documentUri,
     languageId: "markdown",
   });
   const wordWrap = editorConfig.get<string>("wordWrap", "on");
+  const extensionConfig = vscode.workspace.getConfiguration(
+    "markdownLiveRenderTables",
+    documentUri,
+  );
   return {
     lineWrapping: wordWrap !== "off",
+    scrollBeyondLastLine: editorConfig.get<boolean>(
+      "scrollBeyondLastLine",
+      true,
+    ),
+    clipboardDocumentToken,
+    tableNavigationModifierKey: normalizeTableNavigationModifierKey(
+      extensionConfig.get<string>(
+        TABLE_NAVIGATION_MODIFIER_KEY_SETTING,
+        DEFAULT_TABLE_NAVIGATION_MODIFIER_KEY,
+      ),
+    ),
+    defaultCopyMode: readEnumSetting(
+      extensionConfig.get<string>(DEFAULT_COPY_MODE_SETTING, "smart"),
+      ["smart", "rich", "plain", "markdown"] as const,
+      "smart",
+    ),
+    defaultPasteMode: readEnumSetting(
+      extensionConfig.get<string>(DEFAULT_PASTE_MODE_SETTING, "auto"),
+      ["auto", "rich", "plain", "markdown"] as const,
+      "auto",
+    ),
   };
+}
+
+function readEnumSetting<const T extends readonly string[]>(
+  value: string,
+  allowed: T,
+  fallback: T[number],
+): T[number] {
+  return allowed.includes(value) ? (value as T[number]) : fallback;
 }
 
 function getFontFeatureSettings(

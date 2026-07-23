@@ -72,7 +72,7 @@ export function createEditorTheme(): Extension {
       minHeight: "100%",
       boxSizing: "border-box",
       padding:
-        "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) var(--mlrt-editor-bottom-padding, 0px) 0",
+        "var(--mlrt-editor-top-padding, 0px) var(--mlrt-editor-right-padding, var(--mlrt-editor-gutter-right-padding, 26px)) calc(var(--mlrt-editor-bottom-padding, 0px) + var(--mlrt-editor-scroll-beyond-last-line, 0px)) 0",
       caretColor: "var(--vscode-editorCursor-foreground, #aeafad)",
     },
     ".cm-line": {
@@ -90,12 +90,21 @@ export function createEditorTheme(): Extension {
     "&.mlrt-table-cell-focused .cm-activeLine": {
       backgroundColor: "transparent",
     },
+    "&.mlrt-selection-active .cm-activeLine": {
+      backgroundColor: "transparent",
+    },
     "&.mlrt-table-cell-focused .cm-cursor": {
       display: "none",
     },
     // While a rendered table cell has focus, the editor selection is parked
     // on some unrelated line; do not let the native gutter highlight it.
     "&.mlrt-table-cell-focused .cm-activeLineGutter": {
+      color: "var(--vscode-editorLineNumber-foreground, #858585)",
+    },
+    // A selection already communicates the active range. Keeping a second
+    // active-line marker on its moving head (or its parked table-source
+    // cursor) leaves a misleading grey line number behind.
+    "&.mlrt-selection-active .cm-activeLineGutter": {
       color: "var(--vscode-editorLineNumber-foreground, #858585)",
     },
   });
